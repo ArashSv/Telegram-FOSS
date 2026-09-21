@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - name: Checkout (recursive submodules: ffmpeg, boringssl, libvpx, libwebp)
+      - name: "Checkout (recursive submodules: ffmpeg, boringssl, libvpx, libwebp)"
         uses: actions/checkout@v4
         with:
           submodules: recursive
