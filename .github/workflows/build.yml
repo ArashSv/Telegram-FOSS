@@ -64,6 +64,19 @@ jobs:
           sed -i 's/abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"/abiFilters "arm64-v8a"/' TMessagesProj_App/build.gradle
           grep -c 'abiFilters "arm64-v8a"' TMessagesProj_App/build.gradle
 
+      - name: "Build native prebuilts (libvpx, ffmpeg, boringssl for arm64)"
+        run: |
+          # Per upstream README: NDK + Ninja required; order matters
+          sudo apt-get install -y ninja-build > /dev/null
+          export NDK="$ANDROID_HOME/ndk/21.4.7075529"
+          export NINJA_PATH="$(which ninja)"
+          cd TMessagesProj/jni
+          ./build_libvpx_clang.sh arm64
+          ./build_ffmpeg_clang.sh arm64
+          ./patch_ffmpeg.sh
+          ./patch_boringssl.sh
+          ./build_boringssl.sh arm64
+
       - name: Build assembleAfatDebug
         run: |
           ./gradlew :TMessagesProj_App:assembleAfatDebug \
