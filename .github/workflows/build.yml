@@ -49,6 +49,8 @@ jobs:
 
       - name: Install pinned NDK 21.4.7075529
         run: |
+          # sdkmanager needs Java 17+, but build needs JDK 11 - use runner JVM for sdkmanager only
+          export JAVA_HOME="${JAVA_HOME_21_X64:-${JAVA_HOME_17_X64:-$JAVA_HOME}}"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;21.4.7075529" > /dev/null
 
