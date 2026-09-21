@@ -19,6 +19,10 @@ on:
         type: choice
         options: [arm64, all]
 
+# github.token needs contents:write to create Releases and upload the APK.
+permissions:
+  contents: write
+
 concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
@@ -94,3 +98,29 @@ jobs:
           path: TMessagesProj_App/build/outputs/apk/afat/debug/*.apk
           retention-days: 14
           if-no-files-found: error
+
+      - name: Stage APK for release (rename + sha256)
+        if: success()
+        run: |
+          mkdir -p release
+          APK="$(ls TMessagesProj_App/build/outputs/apk/afat/debug/*.apk | head -n 1)"
+          cp "$APK" "release/Telegram-FOSS-debug-arm64-build-${GITHUB_RUN_NUMBER}.apk"
+          sha256sum release/Telegram-FOSS-*.apk > release/SHA256SUMS.txt
+
+      - name: Publish APK to GitHub Releases (installable build for testing)
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="build-${GITHUB_RUN_NUMBER}"
+          NOTES="Automated debug build of develop @ ${GITHUB_SHA::7} (afat/debug, arm64-v8a). Install: download APK, allow unknown sources, install. sha256 in SHA256SUMS.txt."
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" release/* \
+              --target "$GITHUB_SHA" \
+              --title "Debug build ${GITHUB_RUN_NUMBER} (arm64-v8a, installable)" \
+              --notes "$NOTES" \
+              --prerelease \
+              -R "$GITHUB_REPOSITORY"
+          fi
