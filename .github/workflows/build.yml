@@ -62,7 +62,11 @@ jobs:
         if: ${{ github.event_name == 'push' || inputs.abi == 'arm64' }}
         run: |
           sed -i 's/abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"/abiFilters "arm64-v8a"/' TMessagesProj_App/build.gradle
-          grep -c 'abiFilters "arm64-v8a"' TMessagesProj_App/build.gradle
+          # Library module has no abiFilters of its own -> AGP builds ALL ABIs there.
+          # Inject arm64-only filter after the unique APP_HASH anchor in defaultConfig.
+          sed -i "s/buildConfigField 'String', 'APP_HASH', getAppHash()/buildConfigField 'String', 'APP_HASH', getAppHash()\n\n        ndk { abiFilters \"arm64-v8a\" }/" TMessagesProj/build.gradle
+          echo "app module:"; grep -c 'abiFilters "arm64-v8a"' TMessagesProj_App/build.gradle
+          echo "lib module:"; grep -c 'abiFilters "arm64-v8a"' TMessagesProj/build.gradle
 
       - name: "Build native prebuilts (libvpx, ffmpeg, boringssl for arm64)"
         run: |
