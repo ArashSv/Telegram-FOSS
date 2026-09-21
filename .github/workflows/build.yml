@@ -1,0 +1,77 @@
+name: Build APK
+
+# Telegram-FOSS specific CI (fork base pins: Gradle 7.2 / AGP 7.0.3 / JDK 11 /
+# compileSdk 33 / buildTools 33.0.0 / NDK 21.4.7075529 / cmake 3.10.2).
+# Do NOT reuse generic Telegram-Android (DrKLO) workflows here.
+
+on:
+  push:
+    branches: [develop]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+    inputs:
+      abi:
+        description: 'ABI set to build'
+        required: false
+        default: 'arm64'
+        type: choice
+        options: [arm64, all]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout (recursive submodules: ffmpeg, boringssl, libvpx, libwebp)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up JDK 11 (Gradle 7.2 / AGP 7.0.3 requirement)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
+
+      - name: Free runner disk (preinstalled NDKs are useless for our pin)
+        run: |
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf "$ANDROID_HOME/ndk" "$ANDROID_HOME/ndk-bundle"
+          echo "After:"; df -h / | tail -1
+
+      - name: Install pinned NDK 21.4.7075529
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;21.4.7075529" > /dev/null
+
+      - name: Write API_KEYS (dummy values; MTProto transport is being replaced by REST)
+        run: |
+          printf 'APP_ID=1\nAPP_HASH=0123456789abcdef0123456789abcdef\n' > API_KEYS
+
+      - name: ABI filter to arm64-v8a (CI-only transform, never committed)
+        if: ${{ github.event_name == 'push' || inputs.abi == 'arm64' }}
+        run: |
+          sed -i 's/abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"/abiFilters "arm64-v8a"/' TMessagesProj_App/build.gradle
+          grep -c 'abiFilters "arm64-v8a"' TMessagesProj_App/build.gradle
+
+      - name: Build assembleAfatDebug
+        run: |
+          ./gradlew :TMessagesProj_App:assembleAfatDebug \
+            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" \
+            --stacktrace
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-${{ github.run_number }}
+          path: TMessagesProj_App/build/outputs/apk/afat/debug/*.apk
+          retention-days: 14
+          if-no-files-found: error
