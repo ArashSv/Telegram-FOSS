@@ -1,0 +1,353 @@
+package org.telegram.tgnet.rest;
+
+import org.json.JSONException;
+import org.json.JSONObject;
+import org.telegram.messenger.FileLog;
+import org.telegram.messenger.UserConfig;
+import org.telegram.tgnet.TLRPC;
+
+/**
+ * T3: the single REST gateway per account towards the MyMessenger backend
+ * (contract: mymessenger-backend docs/API.md v1; deployed under {@link #BASE_URL}).
+ *
+ * <p>Responsibilities:
+ * <ul>
+ *   <li>v1 envelope parsing, including a {@code MALFORMED_RESPONSE} guard — a
+ *       shared host answers proxy/PHP failures with HTML, which must surface as
+ *       a typed error, never as a parser crash;</li>
+ *   <li>{@code Authorization: Bearer} injection from {@link RestAuthStore};</li>
+ *   <li>proactive refresh when the client clock says the access token is nearly
+ *       spent, plus reactive refresh on 401 {@code TOKEN_EXPIRED} — both funnel
+ *       through the single-flight claim in {@link RestAuthStore}, and a request
+ *       is retried <b>once</b> at most. There is no retry loop by construction;</li>
+ *   <li>refresh-token family revocation (401 on /auth/refresh.php = replay
+ *       detection) → {@link RestAuthStore#clear()} + session-invalid listener:
+ *       the only recovery is a fresh login (T4).</li>
+ * </ul>
+ *
+ * <p>Threading: every method blocks on network I/O — worker threads only.
+ * Nothing here is wired into the app yet; this is the typed API that
+ * LoginActivity (T4) and the ConnectionsManager facade (T5) will consume.
+ * {@link RestAuthStore} remains the single source of truth for tokens; the
+ * gateway only persists what the server hands out.
+ */
+public final class RestGateway {
+
+    public static final String BASE_URL = "https://xorbit.ir/tele/api/v1/";
+
+    private static final int DEFAULT_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days, API.md §11
+    private static final int REFRESH_AWAIT_TIMEOUT_MS = 20 * 1000;
+    private static final int REFRESH_AWAIT_SLEEP_MS = 200;
+
+    /** Notified when a token family is revoked or absent and a fresh login is required. */
+    public interface SessionInvalidListener {
+        void onSessionInvalid(int account);
+    }
+
+    /** Result of {@link #sendCode(String)} (API.md §3.1). */
+    public static final class SendCodeResult {
+        public final String phoneCodeHash;
+        public final int codeLength;
+        public final int expiresIn;
+        public final boolean testMode;
+        public final String devCode; // present in test mode only
+
+        SendCodeResult(String phoneCodeHash, int codeLength, int expiresIn, boolean testMode, String devCode) {
+            this.phoneCodeHash = phoneCodeHash;
+            this.codeLength = codeLength;
+            this.expiresIn = expiresIn;
+            this.testMode = testMode;
+            this.devCode = devCode;
+        }
+    }
+
+    /** Result of {@link #verify(String, String, String, String, String)} (API.md §3.2). */
+    public static final class VerifyResult {
+        public final boolean isNewUser;
+        public final TLRPC.TL_user user;
+
+        VerifyResult(boolean isNewUser, TLRPC.TL_user user) {
+            this.isNewUser = isNewUser;
+            this.user = user;
+        }
+    }
+
+    private static final RestGateway[] instances = new RestGateway[UserConfig.MAX_ACCOUNT_COUNT];
+
+    /** Per-account singleton, keyed like the rest of the app (0..MAX_ACCOUNT_COUNT-1). */
+    public static RestGateway getInstance(int account) {
+        if (account < 0 || account >= UserConfig.MAX_ACCOUNT_COUNT) {
+            FileLog.e("RestGateway: invalid account " + account + ", clamping to 0");
+            account = 0;
+        }
+        RestGateway gateway;
+        synchronized (RestGateway.class) {
+            gateway = instances[account];
+            if (gateway == null) {
+                gateway = new RestGateway(account);
+                instances[account] = gateway;
+            }
+        }
+        return gateway;
+    }
+
+    private final int account;
+    private final RestAuthStore store;
+    private volatile SessionInvalidListener sessionInvalidListener;
+
+    private RestGateway(int account) {
+        this.account = account;
+        this.store = RestAuthStore.getInstance(account);
+    }
+
+    public void setSessionInvalidListener(SessionInvalidListener listener) {
+        this.sessionInvalidListener = listener;
+    }
+
+    // ------------------------------------------------------------------ auth API
+
+    /**
+     * POST /auth/send-code.php — pre-auth, no bearer.
+     * Backend codes surfaced on failure: VALIDATION_ERROR, TOO_MANY_ATTEMPTS.
+     */
+    public SendCodeResult sendCode(String phone) {
+        JSONObject body = put(new JSONObject(), "phone", phone);
+        JSONObject response = unauthenticatedRequest("POST", "auth/send-code.php", body);
+        return new SendCodeResult(
+                response.optString("phone_code_hash", null),
+                response.optInt("code_length", 5),
+                response.optInt("expires_in", 300),
+                response.optBoolean("test_mode", false),
+                response.optString("dev_code", null));
+    }
+
+    /**
+     * POST /auth/verify.php — single call does signIn AND signUp (API.md §10).
+     * Persists the returned token pair on success. Backend codes: CODE_EXPIRED,
+     * INVALID_CODE, TOO_MANY_ATTEMPTS.
+     *
+     * @param firstName optional, used by the backend only on first signup
+     */
+    public VerifyResult verify(String phone, String phoneCodeHash, String code, String firstName, String lastName) {
+        JSONObject body = put(new JSONObject(), "phone", phone);
+        put(body, "phone_code_hash", phoneCodeHash);
+        put(body, "code", code);
+        if (firstName != null && firstName.length() > 0) {
+            put(body, "first_name", firstName);
+        }
+        if (lastName != null && lastName.length() > 0) {
+            put(body, "last_name", lastName);
+        }
+        JSONObject response = unauthenticatedRequest("POST", "auth/verify.php", body);
+        persistTokens(response);
+        return new VerifyResult(response.optBoolean("is_new_user", false), selfUser(response));
+    }
+
+    /**
+     * GET /auth/me.php — validates the stored session against the server,
+     * refreshing first when the client clock considers the access token spent.
+     * Throws {@code XoApiException#isSessionInvalid()} when no valid session exists.
+     */
+    public TLRPC.TL_user me() {
+        JSONObject response = authenticatedRequest("GET", "auth/me.php", null);
+        return selfUser(response);
+    }
+
+    // ------------------------------------------------------------------ request core
+
+    private JSONObject unauthenticatedRequest(String method, String path, JSONObject body) {
+        XoHttp.Response response = httpCall(method, path, body, null);
+        return parseEnvelope(response, path);
+    }
+
+    /**
+     * Authenticated request with the 401 policy: proactive refresh when the
+     * client clock says the token is nearly spent, reactive refresh on
+     * TOKEN_EXPIRED/UNAUTHORIZED, retry once — never twice.
+     */
+    private JSONObject authenticatedRequest(String method, String path, JSONObject body) {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            RestAuthStore.TokenSet tokens = store.getTokens();
+            if (tokens == null) {
+                throw sessionInvalid("no stored tokens for " + path);
+            }
+            if (tokens.isAccessTokenProbablyExpired()) {
+                RestAuthStore.TokenSet fresh = refreshNow(tokens);
+                if (fresh != null) {
+                    tokens = fresh; // null = another thread refreshed; re-read below
+                }
+                if (tokens == null) {
+                    tokens = store.getTokens();
+                    if (tokens == null) {
+                        throw sessionInvalid("refresh left no usable tokens for " + path);
+                    }
+                }
+            }
+            XoHttp.Response response = httpCall(method, path, body, tokens.accessToken);
+            if (response.code == 401 && attempt == 0) {
+                String errorCode = envelopeErrorCode(response.body);
+                boolean expired = XoApiException.TOKEN_EXPIRED.equals(errorCode)
+                        || XoApiException.UNAUTHORIZED.equals(errorCode);
+                if (expired) {
+                    RestAuthStore.TokenSet current = store.getTokens();
+                    refreshNow(current != null ? current : tokens);
+                    continue; // exactly one retry with the fresh token
+                }
+            }
+            return parseEnvelope(response, path);
+        }
+        throw sessionInvalid("token still rejected after one refresh + retry: " + path);
+    }
+
+    /**
+     * Single-flight refresh. Returns the fresh TokenSet, or null when another
+     * thread was already refreshing (caller should re-read tokens and proceed).
+     * Throws SESSION_INVALID (family revoked/absent; listener notified) or
+     * passes transport/validation errors through.
+     */
+    private RestAuthStore.TokenSet refreshNow(RestAuthStore.TokenSet known) {
+        if (known == null) {
+            throw sessionInvalid("refresh requested without tokens");
+        }
+        if (!store.beginRefresh(known.refreshToken)) {
+            awaitForeignRefresh();
+            return store.getTokens();
+        }
+        try {
+            JSONObject body = put(new JSONObject(), "refresh_token", known.refreshToken);
+            // pre-auth endpoint: no bearer, and NO retry path — refresh cannot recurse
+            XoHttp.Response response = httpCall("POST", "auth/refresh.php", body, null);
+            JSONObject data = parseEnvelope(response, "auth/refresh.php");
+            long expiresAt = nowSeconds() + data.optLong("expires_in", DEFAULT_TOKEN_TTL_SECONDS);
+            RestAuthStore.TokenSet fresh = new RestAuthStore.TokenSet(
+                    data.getString("access_token"),
+                    data.getString("refresh_token"),
+                    expiresAt);
+            store.endRefresh(known.refreshToken, fresh);
+            return fresh;
+        } catch (XoApiException e) {
+            store.endRefresh(known.refreshToken, null);
+            if (e.httpStatus == 401) {
+                // replay detection or family invalidation: contract says fresh login
+                store.clear();
+                throw sessionInvalid("refresh rejected (http 401, code " + e.errorCode + ")");
+            }
+            throw e;
+        } catch (XoTransportException e) {
+            store.endRefresh(known.refreshToken, null);
+            throw e;
+        } catch (JSONException e) {
+            store.endRefresh(known.refreshToken, null);
+            throw new XoApiException(0, XoApiException.MALFORMED_RESPONSE, "refresh body malformed: " + e.getMessage());
+        }
+    }
+
+    /** Bounded wait while another thread owns the refresh slot. */
+    private void awaitForeignRefresh() {
+        long deadline = System.currentTimeMillis() + REFRESH_AWAIT_TIMEOUT_MS;
+        while (store.isRefreshInFlight() && System.currentTimeMillis() < deadline) {
+            try {
+                Thread.sleep(REFRESH_AWAIT_SLEEP_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    private XoHttp.Response httpCall(String method, String path, JSONObject body, String bearerToken) {
+        try {
+            String jsonBody = body == null ? null : body.toString();
+            return XoHttp.request(BASE_URL + path, method, jsonBody, bearerToken);
+        } catch (Exception e) {
+            FileLog.e("RestGateway: transport failure on " + path, e);
+            throw new XoTransportException(path + " failed: " + e.getMessage(), e);
+        }
+    }
+
+    /** Parses the v1 envelope; ok → data, failure → XoApiException with backend code. */
+    private JSONObject parseEnvelope(XoHttp.Response response, String path) {
+        String body = response.body == null ? "" : response.body.trim();
+        if (body.length() == 0) {
+            throw new XoApiException(response.code, XoApiException.MALFORMED_RESPONSE,
+                    "empty body from " + path + " (http " + response.code + ")");
+        }
+        JSONObject json;
+        try {
+            json = new JSONObject(body);
+        } catch (JSONException e) {
+            // shared-host HTML error pages (502/503/maintenance) land here — typed, not fatal
+            throw new XoApiException(response.code, XoApiException.MALFORMED_RESPONSE,
+                    "non-JSON body from " + path + " (http " + response.code + ")");
+        }
+        if (json.optBoolean("ok", false)) {
+            return json;
+        }
+        JSONObject error = json.optJSONObject("error");
+        String code = error == null ? "UNKNOWN" : error.optString("code", "UNKNOWN");
+        String message = error == null ? "no error detail (http " + response.code + ")"
+                : error.optString("message", "");
+        throw new XoApiException(response.code, code, message);
+    }
+
+    /** Best-effort error-code read for the 401 retry decision, without envelope commitment. */
+    private static String envelopeErrorCode(String body) {
+        try {
+            JSONObject error = new JSONObject(body.trim()).optJSONObject("error");
+            return error == null ? null : error.optString("code", null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Persists the token pair returned by verify/refresh; the store stays authoritative. */
+    private void persistTokens(JSONObject response) {
+        String access = response.optString("access_token", null);
+        String refresh = response.optString("refresh_token", null);
+        long expiresIn = response.optLong("expires_in", DEFAULT_TOKEN_TTL_SECONDS);
+        if (access != null && refresh != null && access.length() > 0 && refresh.length() > 0) {
+            store.saveTokens(access, refresh, nowSeconds() + expiresIn);
+        } else {
+            FileLog.w("RestGateway: response without a token pair, nothing persisted");
+        }
+    }
+
+    private static TLRPC.TL_user selfUser(JSONObject response) {
+        JSONObject user = response.optJSONObject("user");
+        if (user == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "response lacks the user object");
+        }
+        try {
+            return TlJsonMapper.parseUser(user, true);
+        } catch (JSONException e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed user object: " + e.getMessage());
+        }
+    }
+
+    private XoApiException sessionInvalid(String why) {
+        FileLog.e("RestGateway: session invalid on account " + account + ": " + why);
+        SessionInvalidListener listener = sessionInvalidListener;
+        if (listener != null) {
+            try {
+                listener.onSessionInvalid(account);
+            } catch (Exception e) {
+                FileLog.e("RestGateway: session-invalid listener threw", e);
+            }
+        }
+        return new XoApiException(401, XoApiException.SESSION_INVALID, why);
+    }
+
+    /** Fluent put for statically-built bodies; JSONObject.put is checked but cannot fail on string values. */
+    private static JSONObject put(JSONObject json, String key, String value) {
+        try {
+            json.put(key, value);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for key " + key, e);
+        }
+        return json;
+    }
+
+    private static long nowSeconds() {
+        return System.currentTimeMillis() / 1000L;
+    }
+}
