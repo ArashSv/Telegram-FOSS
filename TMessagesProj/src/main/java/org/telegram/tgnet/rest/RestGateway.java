@@ -1,5 +1,6 @@
 package org.telegram.tgnet.rest;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.telegram.messenger.FileLog;
@@ -160,6 +161,91 @@ public final class RestGateway {
     public TLRPC.TL_user me() {
         JSONObject response = authenticatedRequest("GET", "auth/me.php", null);
         return selfUser(response);
+    }
+
+    // ------------------------------------------------------------------ messaging API (T5/T6)
+
+    /** GET /chats/list.php — all chats, newest first, with last_message + unread_count. */
+    public JSONArray chatsList() {
+        JSONObject response = authenticatedRequest("GET", "chats/list.php", null);
+        return response.optJSONArray("chats");
+    }
+
+    /**
+     * POST /chats/create.php — find-or-create private chat (deterministic
+     * pair_key makes repeated calls idempotent). Returns the chat JSON.
+     */
+    public JSONObject createPrivateChat(long peerUserId) {
+        JSONObject body = put(new JSONObject(), "type", "private");
+        putNumber(body, "peer_user_id", peerUserId);
+        return authenticatedRequest("POST", "chats/create.php", body);
+    }
+
+    /**
+     * GET /messages/history.php — two modes: maxId > 0 scrolls back (older
+     * than maxId), maxId == 0 loads the newest page. Returns ascending.
+     */
+    public JSONArray history(long chatId, int maxId, int limit) {
+        StringBuilder url = new StringBuilder("messages/history.php?chat_id=").append(chatId);
+        url.append("&max_id=").append(Math.max(0, maxId));
+        url.append("&limit=").append(Math.max(1, Math.min(100, limit)));
+        JSONObject response = authenticatedRequest("GET", url.toString(), null);
+        return response.optJSONArray("messages");
+    }
+
+    /** POST /messages/send.php — text only in v1 client scope (media = T8). */
+    public JSONObject send(long chatId, String content, int replyToId) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        put(body, "content", content);
+        if (replyToId > 0) {
+            putNumber(body, "reply_to_id", replyToId);
+        }
+        return authenticatedRequest("POST", "messages/send.php", body);
+    }
+
+    /** POST /messages/read.php — idempotent on the server (only advances). */
+    public JSONObject read(long chatId, int maxId) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        putNumber(body, "max_id", maxId);
+        return authenticatedRequest("POST", "messages/read.php", body);
+    }
+
+    /** POST /messages/delete.php — delete-for-everyone semantics, 100 ids max. */
+    public JSONObject delete(long chatId, int[] messageIds) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        JSONArray ids = new JSONArray();
+        for (int id : messageIds) {
+            ids.put(id);
+        }
+        try {
+            body.put("message_ids", ids);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for message_ids", e);
+        }
+        return authenticatedRequest("POST", "messages/delete.php", body);
+    }
+
+    /** GET /users/get.php?ids=1,2,3 — hydration only, no search in v1. */
+    public JSONArray usersGet(long[] userIds) {
+        if (userIds == null || userIds.length == 0) {
+            return new JSONArray();
+        }
+        StringBuilder ids = new StringBuilder();
+        for (int a = 0; a < userIds.length; a++) {
+            if (a > 0) {
+                ids.append(',');
+            }
+            ids.append(userIds[a]);
+        }
+        JSONObject response = authenticatedRequest("GET", "users/get.php?ids=" + ids, null);
+        return response.optJSONArray("users");
+    }
+
+    /** GET /sync/index.php — short-polling page; cursor contract API.md §9. */
+    public JSONObject sync(long cursor, int limit) {
+        String url = "sync/index.php?cursor=" + Math.max(0, cursor)
+                + "&limit=" + Math.max(1, Math.min(500, limit));
+        return authenticatedRequest("GET", url, null);
     }
 
     // ------------------------------------------------------------------ request core
@@ -348,6 +434,16 @@ public final class RestGateway {
 
     /** Fluent put for statically-built bodies; JSONObject.put is checked but cannot fail on string values. */
     private static JSONObject put(JSONObject json, String key, String value) {
+        try {
+            json.put(key, value);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for key " + key, e);
+        }
+        return json;
+    }
+
+    /** Same contract as {@link #put} for long values. */
+    private static JSONObject putNumber(JSONObject json, String key, long value) {
         try {
             json.put(key, value);
         } catch (JSONException e) {

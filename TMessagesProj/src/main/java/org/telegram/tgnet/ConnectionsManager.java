@@ -26,6 +26,7 @@ import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.EmuDetector;
 import org.telegram.messenger.FileLoadOperation;
 import org.telegram.messenger.FileLoader;
+import org.telegram.tgnet.rest.RestDispatcher;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.FileUploadOperation;
 import org.telegram.messenger.KeepAliveJob;
@@ -345,6 +346,14 @@ public class ConnectionsManager extends BaseController {
     }
 
     private void sendRequestInternal(TLObject object, RequestDelegate onComplete, RequestDelegateTimestamp onCompleteTimestamp, QuickAckDelegate onQuickAck, WriteToSocketDelegate onWriteToSocket, int flags, int datacenterId, int connectionType, boolean immediate, int requestToken) {
+        // Xo (T5): REST dispatch — the default-deny gate. Every sendRequest overload
+        // funnels through here, so this is the single interception point: allowlisted
+        // constructors are served by the REST gateway and never reach MTProto, and
+        // everything else is rejected with a TL_error instead of silently leaking to
+        // Telegram datacenters. Callbacks are delivered on stageQueue like native.
+        if (RestDispatcher.tryHandle(currentAccount, object, onComplete, onCompleteTimestamp)) {
+            return;
+        }
         if (BuildVars.LOGS_ENABLED) {
             FileLog.d("send request " + object + " with token = " + requestToken);
         }
