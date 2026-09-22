@@ -127,25 +127,30 @@ public final class RestAuthStore {
     /** @return the stored token pair, or null when not logged in / state unreadable. */
     public TokenSet getTokens() {
         synchronized (lock) {
-            byte[] blob = readFile(blobFile());
-            if (blob == null) {
+            return getTokensLocked();
+        }
+    }
+
+    /** Caller MUST hold {@code lock} (synchronized is reentrant). */
+    private TokenSet getTokensLocked() {
+        byte[] blob = readFile(blobFile());
+        if (blob == null) {
+            return null;
+        }
+        try {
+            JSONObject json = new JSONObject(new String(decrypt(blob), "UTF-8"));
+            String access = json.optString("access", null);
+            String refresh = json.optString("refresh", null);
+            if (access == null || refresh == null || access.length() == 0 || refresh.length() == 0) {
                 return null;
             }
-            try {
-                JSONObject json = new JSONObject(new String(decrypt(blob), "UTF-8"));
-                String access = json.optString("access", null);
-                String refresh = json.optString("refresh", null);
-                if (access == null || refresh == null || access.length() == 0 || refresh.length() == 0) {
-                    return null;
-                }
-                return new TokenSet(access, refresh, json.optLong("expires_at", 0L));
-            } catch (Exception e) {
-                // corrupted blob or Keystore invalidation after device restore:
-                // fall back to logged-out state instead of crashing the app
-                FileLog.e("RestAuthStore: getTokens failed, wiping state", e);
-                wipe();
-                return null;
-            }
+            return new TokenSet(access, refresh, json.optLong("expires_at", 0L));
+        } catch (Exception e) {
+            // corrupted blob or Keystore invalidation after device restore:
+            // fall back to logged-out state instead of crashing the app
+            FileLog.e("RestAuthStore: getTokens failed, wiping state", e);
+            wipe();
+            return null;
         }
     }
 
@@ -167,7 +172,15 @@ public final class RestAuthStore {
     /**
      * Claims the single refresh slot. Returns true when the caller owns the
      * refresh and must call /auth/refresh.php; false when another thread is
-     * already refreshing and should instead re-read the token afterwards.
+     * already refreshing (or has ALREADY rotated past the presented token) and
+     * the caller should instead re-read the tokens afterwards.
+     *
+     * T7d hardening: the claim is only granted when the presented refresh token
+     * is STILL the store's current one. Without this, a caller that read its
+     * TokenSet before another thread's rotation could claim the free slot and
+     * POST an already-rotated token — the backend treats that as replay and
+     * revokes the ENTIRE family (401 UNAUTHORIZED). That race was the session
+     * killer under noisy networks (VPN), where 401-driven refreshes cluster.
      *
      * @param currentRefreshToken the exact string reference the caller read
      *                            from its TokenSet (identity-checked at end)
@@ -175,6 +188,12 @@ public final class RestAuthStore {
     public boolean beginRefresh(String currentRefreshToken) {
         synchronized (lock) {
             if (refreshInFlight) {
+                return false;
+            }
+            TokenSet current = getTokensLocked();
+            if (current == null || !Objects.equals(current.refreshToken, currentRefreshToken)) {
+                // already rotated past the caller's view — never re-POST an old token
+                FileLog.d("RestAuthStore: beginRefresh declined (stale token)");
                 return false;
             }
             refreshInFlight = true;
