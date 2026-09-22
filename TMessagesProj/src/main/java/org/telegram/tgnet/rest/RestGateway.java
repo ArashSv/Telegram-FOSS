@@ -3,9 +3,7 @@ package org.telegram.tgnet.rest;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
-import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.FileLog;
-import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.TLRPC;
 
@@ -287,6 +285,12 @@ public final class RestGateway {
                         || XoApiException.UNAUTHORIZED.equals(errorCode);
                 if (expired) {
                     RestAuthStore.TokenSet current = store.getTokens();
+                    if (current != null && !current.accessToken.equals(tokens.accessToken)) {
+                        // T7d: another thread already rotated past our view — do NOT
+                        // rotate again (each needless rotation burns a family row and
+                        // widens the replay window); retry with the current token.
+                        continue;
+                    }
                     refreshNow(current != null ? current : tokens);
                     continue; // exactly one retry with the fresh token
                 }
@@ -435,23 +439,14 @@ public final class RestGateway {
             } catch (Exception e) {
                 FileLog.e("RestGateway: session-invalid listener threw", e);
             }
-        } else {
-            // T7b: default recovery — clean LOCAL logout (performLogout(0) sends
-            // no RPC) so a genuinely revoked or absent session returns the user
-            // to the login flow instead of leaving a zombie that fails on every
-            // call. Gated on an activated account: inactive accounts legitimately
-            // have no tokens and must not trigger lifecycle work.
-            AndroidUtilities.runOnUIThread(() -> {
-                try {
-                    if (UserConfig.getInstance(account).isClientActivated()) {
-                        FileLog.d("RestGateway: clean logout after session invalid, account " + account);
-                        MessagesController.getInstance(account).performLogout(0);
-                    }
-                } catch (Exception e) {
-                    FileLog.e("RestGateway: logout after session invalid failed", e);
-                }
-            });
         }
+        // T7d: the T7b auto-performLogout here is deliberately REVERTED. It fired
+        // from worker threads while the UI could be mid-login-transition —
+        // LaunchActivity.clearFragments() then left an empty fragment stack: the
+        // exact "confetti, then BLACK screen, no crash" report. Lifecycle moves
+        // belong to the UI layer (via SessionInvalidListener), never to network
+        // callbacks. Recovery for a genuinely dead family = manual logout or a
+        // fresh login; the poller self-stops and errors surface as typed TL_errors.
         return new XoApiException(401, XoApiException.SESSION_INVALID, why);
     }
 
