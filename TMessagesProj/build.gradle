@@ -50,15 +50,26 @@ dependencies {
 def isWindows = String.valueOf(DefaultNativePlatform.currentOperatingSystem.toFamilyName() == OperatingSystemFamily.WINDOWS)
 
 //return an api key from a properties file.
+// T1 (Phase 2, REST-ification): fall back to inert placeholders when the
+// gitignored API_KEYS file is absent, so a fresh clone configures out of the
+// box. These fields become dead config once MTProto transport is removed.
 def getAppId(){
-    Properties properties = new Properties()
-    properties.load(new FileInputStream("./API_KEYS"))
-    return properties.get("APP_ID")
+    def keysFile = new File("./API_KEYS")
+    if (keysFile.exists()) {
+        Properties properties = new Properties()
+        properties.load(new FileInputStream(keysFile))
+        return properties.get("APP_ID")
+    }
+    return "1"
 }
 def getAppHash(){
-    Properties properties = new Properties()
-    properties.load(new FileInputStream("./API_KEYS"))
-    return "\"" + properties.get("APP_HASH") + "\""
+    def keysFile = new File("./API_KEYS")
+    if (keysFile.exists()) {
+        Properties properties = new Properties()
+        properties.load(new FileInputStream(keysFile))
+        return "\"" + properties.get("APP_HASH") + "\""
+    }
+    return "\"0123456789abcdef0123456789abcdef\""
 }
 
 android {

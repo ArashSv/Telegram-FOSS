@@ -58,9 +58,9 @@ jobs:
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;21.4.7075529" > /dev/null
 
-      - name: Write API_KEYS (dummy values; MTProto transport is being replaced by REST)
-        run: |
-          printf 'APP_ID=1\nAPP_HASH=0123456789abcdef0123456789abcdef\n' > API_KEYS
+      # API_KEYS is intentionally NOT written here anymore (T1): gradle now
+      # falls back to inert placeholders when the file is absent, so CI builds
+      # exercise the exact fresh-clone configuration path.
 
       - name: ABI filter to arm64-v8a (CI-only transform, never committed)
         if: ${{ github.event_name == 'push' || inputs.abi == 'arm64' }}
