@@ -49,6 +49,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.text.SpannableStringBuilder;
 import android.text.TextPaint;
+import android.text.InputType;
 import android.text.TextUtils;
 import android.transition.ChangeBounds;
 import android.transition.TransitionManager;
@@ -126,6 +127,7 @@ import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.SerializedData;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.rest.XoChatTools;
 import org.telegram.tgnet.tl.TL_chatlists;
 import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.ActionBar.ActionBar;
@@ -2816,6 +2818,56 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
     }
 
+    // Xo (T7c): "add chat by ID" — shows the account's own numeric id and adds a
+    // private chat by the peer's numeric id (v1 has no contacts/search).
+    private void showAddChatByIdDialog() {
+        Context context = getParentActivity();
+        if (context == null) {
+            return;
+        }
+        AlertDialog.Builder builder = new AlertDialog.Builder(context);
+        builder.setTitle("Add chat by ID");
+        long myId = getUserConfig().clientUserId;
+        builder.setMessage("Your numeric ID (share it so others can add you): " + myId
+                + "\n\nEnter the numeric ID of the person you want to chat with:");
+        final EditText input = new EditText(context);
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setHint("e.g. 11");
+        builder.setView(input);
+        builder.setPositiveButton("Add chat", (dialog, which) -> {
+            final String text = input.getText().toString().trim();
+            final long peerId;
+            try {
+                peerId = Long.parseLong(text);
+            } catch (NumberFormatException e) {
+                Toast.makeText(context, "Enter a numeric ID", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            Toast.makeText(context, "Adding chat…", Toast.LENGTH_SHORT).show();
+            XoChatTools.addPrivateChatById(currentAccount, peerId, new XoChatTools.Result() {
+                @Override
+                public void onReady(long dialogId, String peerName, boolean created) {
+                    Context ctx = getParentActivity();
+                    if (ctx != null) {
+                        Toast.makeText(ctx, created ? "Chat with " + peerName + " is ready"
+                                : "Chat with " + peerName + " already exists", Toast.LENGTH_SHORT).show();
+                    }
+                    scrollToTop(true, false);
+                }
+
+                @Override
+                public void onError(String message) {
+                    Context ctx = getParentActivity();
+                    if (ctx != null) {
+                        Toast.makeText(ctx, "Failed: " + message, Toast.LENGTH_LONG).show();
+                    }
+                }
+            });
+        });
+        builder.setNegativeButton(LocaleController.getString("Cancel", R.string.Cancel), null);
+        showDialog(builder.create());
+    }
+
     private Drawable premiumStar;
 
     public void updateStatus(TLRPC.User user, boolean animated) {
@@ -4558,6 +4610,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         })
                         .open(StoryRecorder.SourceView.fromFloatingButton(floatingButtonContainer), true);
             }
+        });
+
+        // Xo (T7c): add-chat-by-ID. v1 has no contacts/discovery — the pencil
+        // long-press opens a numeric-id dialog (own id shown for sharing).
+        floatingButtonContainer.setOnLongClickListener(v -> {
+            if (initialDialogsType == DIALOGS_TYPE_WIDGET) {
+                return false;
+            }
+            showAddChatByIdDialog();
+            return true;
         });
 
         if (!isArchive() && initialDialogsType == DIALOGS_TYPE_DEFAULT) {

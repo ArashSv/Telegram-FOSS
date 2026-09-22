@@ -8,6 +8,7 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
+import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.messenger.Utilities;
 
@@ -129,6 +130,8 @@ public final class UpdatePoller {
             JSONObject page = gateway.sync(cursor, POLL_LIMIT);
             process(page);
             consecutiveFailures = 0;
+            // Xo (T7c): the poll is the REST liveness heartbeat — keep the header truthful
+            ConnectionsManager.getInstance(account).setXoConnectionState(ConnectionsManager.ConnectionStateConnected);
             long newCursor = page.optLong("cursor", cursor);
             if (newCursor != cursor) {
                 store.setSyncCursor(newCursor);
@@ -145,6 +148,8 @@ public final class UpdatePoller {
             FileLog.e("UpdatePoller: sync api failure (" + consecutiveFailures + ")", e);
         } catch (Exception e) {
             consecutiveFailures++;
+            // Xo (T7c): transport/unknown failure — header goes back to Connecting
+            ConnectionsManager.getInstance(account).setXoConnectionState(ConnectionsManager.ConnectionStateConnecting);
             FileLog.e("UpdatePoller: sync transport failure (" + consecutiveFailures + ")", e);
         }
         long delay = consecutiveFailures == 0 ? POLL_INTERVAL_MS

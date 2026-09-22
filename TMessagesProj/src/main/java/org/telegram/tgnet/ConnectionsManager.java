@@ -563,6 +563,23 @@ public class ConnectionsManager extends BaseController {
         return connectionState;
     }
 
+    /**
+     * Xo (T7c): REST-driven connection state. The MTProto layer can never reach
+     * Telegram DCs on this build, so the header overlay would say "Connecting..."
+     * forever even while the REST gateway works fine. REST liveness (RestDispatcher
+     * route results + UpdatePoller ticks) now reports the truth instead; observers
+     * (LaunchActivity header, ChatActivity) only update indicators on this state.
+     */
+    public void setXoConnectionState(int state) {
+        AndroidUtilities.runOnUIThread(() -> {
+            if (connectionState == state) {
+                return;
+            }
+            connectionState = state;
+            AccountInstance.getInstance(currentAccount).getNotificationCenter().postNotificationName(NotificationCenter.didUpdateConnectionState);
+        });
+    }
+
     public void setUserId(long id) {
         native_setUserId(currentAccount, id);
     }

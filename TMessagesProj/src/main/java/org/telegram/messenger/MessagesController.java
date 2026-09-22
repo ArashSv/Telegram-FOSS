@@ -10883,6 +10883,19 @@ public class MessagesController extends BaseController implements NotificationCe
                     if (onEmptyCallback != null && dialogsRes.dialogs.isEmpty()) {
                         AndroidUtilities.runOnUIThread(onEmptyCallback);
                     }
+                } else {
+                    // Xo (T7c): a failed load must not brick the list for the whole
+                    // session. loadingDialogs stayed true here, so every later
+                    // loadDialogs call returned early and the list stayed empty
+                    // forever. Reset the flag so the UI can retry (onResume,
+                    // pull-to-refresh, add-chat reload).
+                    if (BuildVars.LOGS_ENABLED) {
+                        FileLog.d("loadDialogs failed: " + error.code + " " + error.text);
+                    }
+                    AndroidUtilities.runOnUIThread(() -> {
+                        loadingDialogs.put(folderId, false);
+                        getNotificationCenter().postNotificationName(NotificationCenter.dialogsNeedReload);
+                    });
                 }
             });
         }
