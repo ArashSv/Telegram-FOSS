@@ -49,7 +49,6 @@ import javax.crypto.spec.GCMParameterSpec;
  */
 public final class RestAuthStore {
 
-    private static final String TAG = "RestAuthStore";
     private static final String KEYSTORE_PROVIDER = "AndroidKeyStore";
     private static final String KEY_ALIAS_PREFIX = "rest_auth_";
     private static final String BLOB_FILE_PREFIX = "rest_auth_";
@@ -83,7 +82,7 @@ public final class RestAuthStore {
     /** Per-account singleton, keyed like the rest of the app (0..MAX_ACCOUNT_COUNT-1). */
     public static RestAuthStore getInstance(int account) {
         if (account < 0 || account >= UserConfig.MAX_ACCOUNT_COUNT) {
-            FileLog.e(TAG, "invalid account " + account + ", clamping to 0");
+            FileLog.e("RestAuthStore: invalid account " + account + ", clamping to 0");
             account = 0;
         }
         RestAuthStore store;
@@ -194,7 +193,7 @@ public final class RestAuthStore {
             if (!Objects.equals(currentRefreshToken, claimedRefreshToken)) {
                 // stale claimant (e.g. clear()/logout ran while the refresh was
                 // in flight): release the slot but never persist old tokens
-                FileLog.d(TAG, "endRefresh from stale claimant, ignoring new tokens");
+                FileLog.d("RestAuthStore: endRefresh from stale claimant, ignoring new tokens");
                 refreshInFlight = false;
                 claimedRefreshToken = null;
                 return;
@@ -271,7 +270,7 @@ public final class RestAuthStore {
     private void wipe() {
         File file = blobFile();
         if (file.exists() && !file.delete()) {
-            FileLog.e(TAG, "unable to delete " + file.getName());
+            FileLog.e("RestAuthStore: unable to delete " + file.getName());
         }
         prefs().edit().remove(PREF_CURSOR).apply();
     }
