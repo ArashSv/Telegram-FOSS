@@ -43,6 +43,17 @@ public class XoApiException extends RuntimeException {
         return SESSION_INVALID.equals(errorCode);
     }
 
+    /**
+     * T7b VPN hardening: true ONLY when the 401 carried a genuine backend
+     * envelope lifecycle code (docs/API.md v1 §2). A garbled 401 page from an
+     * intermediary (WAF / proxy / captive portal — typical on VPN paths)
+     * parses as MALFORMED_RESPONSE with http 401 and must never be treated as
+     * proof that the token family is dead.
+     */
+    public boolean isGenuineServerRejection() {
+        return TOKEN_EXPIRED.equals(errorCode) || UNAUTHORIZED.equals(errorCode);
+    }
+
     @Override
     public String toString() {
         return "XoApiException{http=" + httpStatus + ", code=" + errorCode + ", msg=" + getMessage() + "}";

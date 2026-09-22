@@ -3,7 +3,9 @@ package org.telegram.tgnet.rest;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.FileLog;
+import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.TLRPC;
 
@@ -322,10 +324,15 @@ public final class RestGateway {
             return fresh;
         } catch (XoApiException e) {
             store.endRefresh(known.refreshToken, null);
-            if (e.httpStatus == 401) {
-                // replay detection or family invalidation: contract says fresh login
+            // T7b VPN hardening: clear() ONLY on a genuine backend envelope. A
+            // garbled 401 page from an intermediary (WAF/proxy/captive portal on
+            // VPN paths) parses as MALFORMED_RESPONSE with http 401 — that must
+            // never destroy a stored session; the typed error is surfaced and the
+            // tokens stay. Replay/revocation (TOKEN_EXPIRED/UNAUTHORIZED) keeps
+            // the contract: family dead -> fresh login.
+            if (e.httpStatus == 401 && e.isGenuineServerRejection()) {
                 store.clear();
-                throw sessionInvalid("refresh rejected (http 401, code " + e.errorCode + ")");
+                throw sessionInvalid("refresh rejected by backend (http 401, code " + e.errorCode + ")");
             }
             throw e;
         } catch (XoTransportException e) {
@@ -428,6 +435,22 @@ public final class RestGateway {
             } catch (Exception e) {
                 FileLog.e("RestGateway: session-invalid listener threw", e);
             }
+        } else {
+            // T7b: default recovery — clean LOCAL logout (performLogout(0) sends
+            // no RPC) so a genuinely revoked or absent session returns the user
+            // to the login flow instead of leaving a zombie that fails on every
+            // call. Gated on an activated account: inactive accounts legitimately
+            // have no tokens and must not trigger lifecycle work.
+            AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    if (UserConfig.getInstance(account).isClientActivated()) {
+                        FileLog.d("RestGateway: clean logout after session invalid, account " + account);
+                        MessagesController.getInstance(account).performLogout(0);
+                    }
+                } catch (Exception e) {
+                    FileLog.e("RestGateway: logout after session invalid failed", e);
+                }
+            });
         }
         return new XoApiException(401, XoApiException.SESSION_INVALID, why);
     }
