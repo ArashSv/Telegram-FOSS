@@ -123,6 +123,8 @@ import org.telegram.tgnet.RequestDelegate;
 import org.telegram.tgnet.SerializedData;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.rest.RestAuthController;
+import org.telegram.tgnet.rest.RestGateway;
 import org.telegram.tgnet.tl.TL_stats;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.AlertDialog;
@@ -3081,14 +3083,12 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                 changePhoneCode.settings = settings;
                 req = changePhoneCode;
             } else {
+                // Xo (T4): phone auth goes to our backend (docs/API.md v1).
+                // The MTProto sendCode request below is kept ONLY for
+                // MODE_CHANGE_PHONE_NUMBER (no REST equivalent in v1).
                 ConnectionsManager.getInstance(currentAccount).cleanup(false);
-
-                TLRPC.TL_auth_sendCode sendCode = new TLRPC.TL_auth_sendCode();
-                sendCode.api_hash = BuildVars.APP_HASH;
-                sendCode.api_id = BuildVars.APP_ID;
-                sendCode.phone_number = phone;
-                sendCode.settings = settings;
-                req = sendCode;
+                sendCodeViaRest(phone);
+                return;
             }
 
             Bundle params = new Bundle();
@@ -3171,6 +3171,57 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                 }
             }), ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin | ConnectionsManager.RequestFlagTryDifferentDc | ConnectionsManager.RequestFlagEnableUnauthorized);
             needShowProgress(reqId);
+        }
+
+        // Xo (T4): REST replacement for the login sendCode path. Builds the same
+        // params bundle the MTProto path used, then routes through RestAuthController.
+        // Test mode auto-fill rides the native didReceiveSmsCode injection point
+        // (fills the code fields AND auto-submits) — see LoginActivitySmsView.
+        private void sendCodeViaRest(String phone) {
+            Bundle params = new Bundle();
+            params.putString("phone", "+" + codeField.getText() + " " + phoneField.getText());
+            try {
+                params.putString("ephone", "+" + PhoneFormat.stripExceptNumbers(codeField.getText().toString()) + " " + PhoneFormat.stripExceptNumbers(phoneField.getText().toString()));
+            } catch (Exception e) {
+                FileLog.e(e);
+                params.putString("ephone", "+" + phone);
+            }
+            params.putString("phoneFormated", phone);
+            nextPressed = true;
+            PhoneInputData phoneInputData = new PhoneInputData();
+            phoneInputData.phoneNumber = "+" + codeField.getText() + " " + phoneField.getText();
+            phoneInputData.patterns = phoneFormatMap.get(codeField.getText().toString());
+            needShowProgress(0);
+            RestAuthController.sendCode(currentAccount, phone, new RestAuthController.Callback<RestGateway.SendCodeResult>() {
+                @Override
+                public void onResult(RestGateway.SendCodeResult result) {
+                    nextPressed = false;
+                    needHideProgress(false);
+                    params.putBoolean("xoRegistered", result.registered);
+                    if (result.testMode && result.devCode != null && result.devCode.length() > 0) {
+                        params.putString("xoDevCode", result.devCode);
+                    }
+                    fillNextCodeParams(params, RestAuthController.toSentCode(result));
+                    if (result.testMode && result.devCode != null && result.devCode.length() > 0) {
+                        AndroidUtilities.runOnUIThread(() -> NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.didReceiveSmsCode, result.devCode), 800);
+                    }
+                }
+
+                @Override
+                public void onError(TLRPC.TL_error error) {
+                    nextPressed = false;
+                    needHideProgress(false);
+                    if (error.text != null) {
+                        if (error.text.contains("PHONE_NUMBER_INVALID")) {
+                            needShowInvalidAlert(LoginActivity.this, phone, phoneInputData, false);
+                        } else if (error.text.startsWith("FLOOD_WAIT")) {
+                            needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("FloodWait", R.string.FloodWait));
+                        } else {
+                            needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("ErrorOccurred", R.string.ErrorOccurred) + "\n" + error.text);
+                        }
+                    }
+                }
+            });
         }
 
         private boolean numberFilled;
@@ -3879,21 +3930,28 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
 
             nextPressed = true;
 
-            TLRPC.TL_auth_resendCode req = new TLRPC.TL_auth_resendCode();
-            req.phone_number = requestPhone;
-            req.phone_code_hash = phoneHash;
-            int reqId = ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
-                nextPressed = false;
-                if (error == null) {
-                    nextCodeParams = params;
-                    nextCodeAuth = (TLRPC.TL_auth_sentCode) response;
-                    if (nextCodeAuth.type instanceof TLRPC.TL_auth_sentCodeTypeSmsPhrase) {
-                        nextType = AUTH_TYPE_PHRASE;
-                    } else if (nextCodeAuth.type instanceof TLRPC.TL_auth_sentCodeTypeSmsWord) {
-                        nextType = AUTH_TYPE_WORD;
+            // Xo (T4): resend = send-code again (server REPLACE semantics
+            // invalidate the previous hash); xoRegistered + dev_code propagate
+            // to the new params exactly like the initial request.
+            RestAuthController.sendCode(currentAccount, requestPhone, new RestAuthController.Callback<RestGateway.SendCodeResult>() {
+                @Override
+                public void onResult(RestGateway.SendCodeResult result) {
+                    nextPressed = false;
+                    params.putBoolean("xoRegistered", result.registered);
+                    if (result.testMode && result.devCode != null && result.devCode.length() > 0) {
+                        params.putString("xoDevCode", result.devCode);
                     }
+                    nextCodeParams = params;
+                    nextCodeAuth = RestAuthController.toSentCode(result);
                     fillNextCodeParams(nextCodeParams, nextCodeAuth);
-                } else {
+                    if (result.testMode && result.devCode != null && result.devCode.length() > 0) {
+                        AndroidUtilities.runOnUIThread(() -> NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.didReceiveSmsCode, result.devCode), 800);
+                    }
+                }
+
+                @Override
+                public void onError(TLRPC.TL_error error) {
+                    nextPressed = false;
                     if (error.text != null) {
                         if (error.text.contains("PHONE_NUMBER_INVALID")) {
                             needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.InvalidPhoneNumber));
@@ -3905,14 +3963,14 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                             needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.CodeExpired));
                         } else if (error.text.startsWith("FLOOD_WAIT")) {
                             needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.FloodWait));
-                        } else if (error.code != -1000) {
+                        } else {
                             needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.ErrorOccurred) + "\n" + error.text);
                         }
                     }
+                    tryHideProgress(false);
                 }
-                tryHideProgress(false);
-            }), ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin);
-            tryShowProgress(reqId);
+            });
+            tryShowProgress(0);
         }
 
         @Override
@@ -4576,11 +4634,12 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                     break;
                 }
                 default: {
-                    TLRPC.TL_auth_signIn req = new TLRPC.TL_auth_signIn();
-                    req.phone_number = requestPhone;
-                    req.phone_code = code;
-                    req.phone_code_hash = phoneHash;
-                    req.flags |= 1;
+                    // Xo (T4): verify against our backend (docs/API.md §3.2). The
+                    // code is single-use server-side (consumed by the first
+                    // successful verify), so an unregistered number must NOT verify
+                    // here — MTProto's signIn→signUpRequired→signUp re-verify flow
+                    // cannot be reproduced. registered=false goes straight to the
+                    // register-name view with the code carried in params.
                     destroyTimer();
 
                     codeFieldContainer.isFocusSuppressed = true;
@@ -4588,116 +4647,66 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                         f.animateFocusedProgress(0);
                     }
 
-                    int reqId = ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
-                        tryHideProgress(false, true);
+                    boolean xoRegistered = currentParams != null && currentParams.getBoolean("xoRegistered", false);
+                    if (!xoRegistered) {
+                        Bundle params = new Bundle();
+                        params.putString("phoneFormated", requestPhone);
+                        params.putString("phoneHash", phoneHash);
+                        params.putString("code", code);
 
-                        boolean ok = false;
+                        animateSuccess(() -> setPage(VIEW_REGISTER, true, params, false));
+                        break;
+                    }
 
-                        if (error == null) {
+                    tryShowProgress(0, true);
+                    showDoneButton(true, true);
+                    RestAuthController.verify(currentAccount, requestPhone, phoneHash, code, null, null, new RestAuthController.Callback<RestGateway.VerifyResult>() {
+                        @Override
+                        public void onResult(RestGateway.VerifyResult result) {
+                            tryHideProgress(false, true);
                             nextPressed = false;
-                            ok = true;
                             showDoneButton(false, true);
                             destroyTimer();
                             destroyCodeTimer();
-                            if (response instanceof TLRPC.TL_auth_authorizationSignUpRequired) {
-                                TLRPC.TL_auth_authorizationSignUpRequired authorization = (TLRPC.TL_auth_authorizationSignUpRequired) response;
-                                if (authorization.terms_of_service != null) {
-                                    currentTermsOfService = authorization.terms_of_service;
-                                }
-                                Bundle params = new Bundle();
-                                params.putString("phoneFormated", requestPhone);
-                                params.putString("phoneHash", phoneHash);
-                                params.putString("code", req.phone_code);
+                            animateSuccess(() -> onAuthSuccess(RestAuthController.toAuthorization(result)));
+                        }
 
-                                animateSuccess(() -> setPage(VIEW_REGISTER, true, params, false));
-                            } else {
-                                animateSuccess(() -> onAuthSuccess((TLRPC.TL_auth_authorization) response));
-                            }
-                        } else {
+                        @Override
+                        public void onError(TLRPC.TL_error error) {
+                            tryHideProgress(false, true);
                             lastError = error.text;
-                            if (error.text.contains("SESSION_PASSWORD_NEEDED")) {
-                                ok = true;
-                                TLRPC.TL_account_getPassword req2 = new TLRPC.TL_account_getPassword();
-                                ConnectionsManager.getInstance(currentAccount).sendRequest(req2, (response1, error1) -> AndroidUtilities.runOnUIThread(() -> {
-                                    nextPressed = false;
-                                    showDoneButton(false, true);
-                                    if (error1 == null) {
-                                        TLRPC.account_Password password = (TLRPC.account_Password) response1;
-                                        if (!TwoStepVerificationActivity.canHandleCurrentPassword(password, true)) {
-                                            AlertsCreator.showUpdateAppAlert(getParentActivity(), getString("UpdateAppAlert", R.string.UpdateAppAlert), true);
-                                            return;
-                                        }
-                                        Bundle bundle = new Bundle();
-                                        SerializedData data = new SerializedData(password.getObjectSize());
-                                        password.serializeToStream(data);
-                                        bundle.putString("password", Utilities.bytesToHex(data.toByteArray()));
-                                        bundle.putString("phoneFormated", requestPhone);
-                                        bundle.putString("phoneHash", phoneHash);
-                                        bundle.putString("code", req.phone_code);
-
-                                        animateSuccess(() -> setPage(VIEW_PASSWORD, true, bundle, false));
-                                    } else {
-                                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), error1.text);
-                                    }
-                                }), ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin);
-                                destroyTimer();
-                                destroyCodeTimer();
+                            nextPressed = false;
+                            showDoneButton(false, true);
+                            if (currentType == AUTH_TYPE_SMS) {
+                                AndroidUtilities.setWaitingForSms(true);
+                                NotificationCenter.getGlobalInstance().addObserver(LoginActivitySmsView.this, NotificationCenter.didReceiveSmsCode);
+                            }
+                            waitingForEvent = true;
+                            String xoText = error.text == null ? "" : error.text;
+                            boolean isWrongCode = false;
+                            if (xoText.contains("PHONE_CODE_EMPTY") || xoText.contains("PHONE_CODE_INVALID")) {
+                                shakeWrongCode();
+                                isWrongCode = true;
+                            } else if (xoText.contains("PHONE_CODE_EXPIRED")) {
+                                onBackPressed(true);
+                                setPage(VIEW_PHONE_INPUT, true, null, true);
+                                needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("CodeExpired", R.string.CodeExpired));
+                            } else if (xoText.startsWith("FLOOD_WAIT")) {
+                                needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("FloodWait", R.string.FloodWait));
                             } else {
-                                nextPressed = false;
-                                showDoneButton(false, true);
-                                if (currentType == AUTH_TYPE_FLASH_CALL && (nextType == AUTH_TYPE_CALL || nextType == AUTH_TYPE_SMS || nextType == AUTH_TYPE_PHRASE || nextType == AUTH_TYPE_WORD) || currentType == AUTH_TYPE_SMS && (nextType == AUTH_TYPE_CALL || nextType == AUTH_TYPE_FLASH_CALL) || currentType == AUTH_TYPE_CALL && (nextType == AUTH_TYPE_SMS || nextType == AUTH_TYPE_PHRASE || nextType == AUTH_TYPE_WORD)) {
-                                    createTimer();
-                                }
-                                if (currentType == AUTH_TYPE_FRAGMENT_SMS) {
-                                    NotificationCenter.getGlobalInstance().addObserver(LoginActivitySmsView.this, NotificationCenter.didReceiveSmsCode);
-                                } else if (currentType == AUTH_TYPE_SMS) {
-                                    AndroidUtilities.setWaitingForSms(true);
-                                    NotificationCenter.getGlobalInstance().addObserver(LoginActivitySmsView.this, NotificationCenter.didReceiveSmsCode);
-                                } else if (currentType == AUTH_TYPE_FLASH_CALL) {
-                                    AndroidUtilities.setWaitingForCall(true);
-                                    NotificationCenter.getGlobalInstance().addObserver(LoginActivitySmsView.this, NotificationCenter.didReceiveCall);
-                                    AndroidUtilities.runOnUIThread(() -> {
-                                        CallReceiver.checkLastReceivedCall();
-                                    });
-                                }
-                                waitingForEvent = true;
-                                if (currentType != AUTH_TYPE_FLASH_CALL) {
-                                    boolean isWrongCode = false;
-                                    if (error.text.contains("PHONE_NUMBER_INVALID")) {
-                                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidPhoneNumber", R.string.InvalidPhoneNumber));
-                                    } else if (error.text.contains("PHONE_CODE_EMPTY") || error.text.contains("PHONE_CODE_INVALID")) {
-                                        shakeWrongCode();
-                                        isWrongCode = true;
-                                    } else if (error.text.contains("PHONE_CODE_EXPIRED")) {
-                                        onBackPressed(true);
-                                        setPage(VIEW_PHONE_INPUT, true, null, true);
-                                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("CodeExpired", R.string.CodeExpired));
-                                    } else if (error.text.startsWith("FLOOD_WAIT")) {
-                                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("FloodWait", R.string.FloodWait));
-                                    } else {
-                                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("ErrorOccurred", R.string.ErrorOccurred) + "\n" + error.text);
-                                    }
+                                needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("ErrorOccurred", R.string.ErrorOccurred) + "\n" + error.text);
+                            }
 
-                                    if (!isWrongCode) {
-                                        for (int a = 0; a < codeFieldContainer.codeField.length; a++) {
-                                            codeFieldContainer.codeField[a].setText("");
-                                        }
-
-                                        codeFieldContainer.isFocusSuppressed = false;
-                                        codeFieldContainer.codeField[0].requestFocus();
-                                    }
+                            if (!isWrongCode) {
+                                for (int a = 0; a < codeFieldContainer.codeField.length; a++) {
+                                    codeFieldContainer.codeField[a].setText("");
                                 }
+
+                                codeFieldContainer.isFocusSuppressed = false;
+                                codeFieldContainer.codeField[0].requestFocus();
                             }
                         }
-                        if (ok) {
-                            if (currentType == AUTH_TYPE_FLASH_CALL) {
-                                AndroidUtilities.endIncomingCall();
-                                AndroidUtilities.setWaitingForCall(false);
-                            }
-                        }
-                    }), ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin);
-                    tryShowProgress(reqId, true);
-                    showDoneButton(true, true);
+                    });
                     break;
                 }
             }
@@ -7971,45 +7980,49 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                 return;
             }
             nextPressed = true;
-            TLRPC.TL_auth_signUp req = new TLRPC.TL_auth_signUp();
-            req.phone_code_hash = phoneHash;
-            req.phone_number = requestPhone;
-            req.first_name = firstNameField.getText().toString();
-            req.last_name = lastNameField.getText().toString();
             needShowProgress(0);
-            ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
-                nextPressed = false;
-                if (response instanceof TLRPC.TL_auth_authorization) {
+            // Xo (T4): signUp and signIn are ONE REST call (docs/API.md §3.2).
+            // The verification code was carried here through the view params
+            // because the server consumes it — there is no separate signUp
+            // round-trip. Avatar upload stays inert: v1 has no avatar endpoint
+            // (file upload arrives with T8).
+            String xoCode = currentParams != null ? currentParams.getString("code") : null;
+            RestAuthController.verify(currentAccount, requestPhone, phoneHash, xoCode, firstNameField.getText().toString(), lastNameField.getText().toString(), new RestAuthController.Callback<RestGateway.VerifyResult>() {
+                @Override
+                public void onResult(RestGateway.VerifyResult result) {
+                    nextPressed = false;
                     hidePrivacyView();
                     showDoneButton(false, true);
                     postDelayed(() -> {
                         needHideProgress(false, false);
                         AndroidUtilities.hideKeyboard(fragmentView.findFocus());
-                        onAuthSuccess((TLRPC.TL_auth_authorization) response, true);
-                        if (avatarBig != null) {
-                            TLRPC.FileLocation avatar = avatarBig;
-                            Utilities.cacheClearQueue.postRunnable(()-> MessagesController.getInstance(currentAccount).uploadAndApplyUserAvatar(avatar));
-                        }
+                        onAuthSuccess(RestAuthController.toAuthorization(result), true);
                     }, 150);
-                } else {
+                }
+
+                @Override
+                public void onError(TLRPC.TL_error error) {
+                    nextPressed = false;
                     needHideProgress(false);
-                    if (error.text.contains("PHONE_NUMBER_INVALID")) {
-                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidPhoneNumber", R.string.InvalidPhoneNumber));
-                    } else if (error.text.contains("PHONE_CODE_EMPTY") || error.text.contains("PHONE_CODE_INVALID")) {
-                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidCode", R.string.InvalidCode));
-                    } else if (error.text.contains("PHONE_CODE_EXPIRED")) {
-                        onBackPressed(true);
-                        setPage(VIEW_PHONE_INPUT, true, null, true);
-                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("CodeExpired", R.string.CodeExpired));
-                    } else if (error.text.contains("FIRSTNAME_INVALID")) {
-                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidFirstName", R.string.InvalidFirstName));
-                    } else if (error.text.contains("LASTNAME_INVALID")) {
-                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidLastName", R.string.InvalidLastName));
-                    } else {
-                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), error.text);
+                    if (error.text != null) {
+                        if (error.text.contains("PHONE_NUMBER_INVALID")) {
+                            needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidPhoneNumber", R.string.InvalidPhoneNumber));
+                        } else if (error.text.contains("PHONE_CODE_EMPTY") || error.text.contains("PHONE_CODE_INVALID")) {
+                            needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidCode", R.string.InvalidCode));
+                        } else if (error.text.contains("PHONE_CODE_EXPIRED")) {
+                            onBackPressed(true);
+                            setPage(VIEW_PHONE_INPUT, true, null, true);
+                            needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("CodeExpired", R.string.CodeExpired));
+                        } else if (error.text.contains("FIRSTNAME_INVALID")) {
+                            needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidFirstName", R.string.InvalidFirstName));
+                        } else if (error.text.contains("LASTNAME_INVALID")) {
+                            needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidLastName", R.string.InvalidLastName));
+                        } else {
+                            needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), error.text);
+                        }
                     }
                 }
-            }), ConnectionsManager.RequestFlagWithoutLogin | ConnectionsManager.RequestFlagFailOnServerErrors);
+            });
         }
 
         @Override

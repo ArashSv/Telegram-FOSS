@@ -50,13 +50,18 @@ public final class RestGateway {
         public final int codeLength;
         public final int expiresIn;
         public final boolean testMode;
+        /** Phone already has an account (MTProto TL_auth_sentCode.registered semantics).
+         *  Default false when the backend predates the field: the register-name view
+         *  is shown, and the backend ignores the name for existing users — safe. */
+        public final boolean registered;
         public final String devCode; // present in test mode only
 
-        SendCodeResult(String phoneCodeHash, int codeLength, int expiresIn, boolean testMode, String devCode) {
+        SendCodeResult(String phoneCodeHash, int codeLength, int expiresIn, boolean testMode, boolean registered, String devCode) {
             this.phoneCodeHash = phoneCodeHash;
             this.codeLength = codeLength;
             this.expiresIn = expiresIn;
             this.testMode = testMode;
+            this.registered = registered;
             this.devCode = devCode;
         }
     }
@@ -109,6 +114,9 @@ public final class RestGateway {
     /**
      * POST /auth/send-code.php — pre-auth, no bearer.
      * Backend codes surfaced on failure: VALIDATION_ERROR, TOO_MANY_ATTEMPTS.
+     * {@code registered} lets the client pick sign-in vs register-name BEFORE
+     * verify — the code is consumed by the first successful verify, so the
+     * MTProto sign-in→signUpRequired→signUp re-verify flow cannot exist here.
      */
     public SendCodeResult sendCode(String phone) {
         JSONObject body = put(new JSONObject(), "phone", phone);
@@ -118,6 +126,7 @@ public final class RestGateway {
                 response.optInt("code_length", 5),
                 response.optInt("expires_in", 300),
                 response.optBoolean("test_mode", false),
+                response.optBoolean("registered", false),
                 response.optString("dev_code", null));
     }
 
