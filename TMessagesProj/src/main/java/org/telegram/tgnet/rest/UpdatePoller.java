@@ -134,7 +134,10 @@ public final class UpdatePoller {
                 store.setSyncCursor(newCursor);
             }
         } catch (XoApiException e) {
-            if (e.isSessionInvalid() || e.httpStatus == 401) {
+            // T7b: stop only on proof the family is dead (genuine envelope 401 or
+            // SESSION_INVALID). A garbled 401 page from an intermediary keeps the
+            // loop alive under backoff — VPN path noise must not kill live updates.
+            if (e.isSessionInvalid() || (e.httpStatus == 401 && e.isGenuineServerRejection())) {
                 stop("session invalid: " + e.errorCode);
                 return;
             }
