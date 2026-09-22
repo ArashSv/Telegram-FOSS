@@ -6,6 +6,7 @@ import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
+import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.RequestDelegate;
@@ -132,6 +133,12 @@ public final class RestDispatcher {
         } catch (XoApiException e) {
             FileLog.e("RestDispatcher: route " + route + " api failure", e);
             error = toTlError(e);
+        } catch (XoTransportException e) {
+            // Xo (T7c): transport failure means the backend is unreachable — say so
+            // in the header (REST-driven state) instead of MTProto's own guessing.
+            FileLog.e("RestDispatcher: route " + route + " transport failure", e);
+            ConnectionsManager.getInstance(account).setXoConnectionState(ConnectionsManager.ConnectionStateConnecting);
+            error = tlError(-1, e.getMessage() != null ? e.getMessage() : "XO_TRANSPORT");
         } catch (Exception e) {
             FileLog.e("RestDispatcher: route " + route + " unexpected failure", e);
             error = tlError(-1, "XO_GATEWAY_ERROR");
@@ -139,6 +146,8 @@ public final class RestDispatcher {
         if (error == null) {
             // first successful routed call == session is live -> short polling may arm
             UpdatePoller.getInstance(account).ensureStarted();
+            // Xo (T7c): REST is alive — the header reflects the REST layer truth
+            ConnectionsManager.getInstance(account).setXoConnectionState(ConnectionsManager.ConnectionStateConnected);
         }
         deliver(response, error, onComplete, onCompleteTimestamp);
     }
