@@ -119,7 +119,7 @@ public final class RestAuthStore {
                 byte[] blob = encrypt(plain);
                 atomicWrite(blobFile(), blob);
             } catch (Exception e) {
-                FileLog.e(TAG, e);
+                FileLog.e("RestAuthStore: saveTokens failed", e);
             }
         }
     }
@@ -142,7 +142,7 @@ public final class RestAuthStore {
             } catch (Exception e) {
                 // corrupted blob or Keystore invalidation after device restore:
                 // fall back to logged-out state instead of crashing the app
-                FileLog.e(TAG, e);
+                FileLog.e("RestAuthStore: getTokens failed, wiping state", e);
                 wipe();
                 return null;
             }
@@ -311,7 +311,7 @@ public final class RestAuthStore {
             }
             return buf;
         } catch (Exception e) {
-            FileLog.e(TAG, e);
+            FileLog.e("RestAuthStore: readFile failed", e);
             return null;
         } finally {
             if (in != null) {
