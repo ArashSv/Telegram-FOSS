@@ -477,13 +477,17 @@ public final class RestDispatcher {
                         height = video.h;
                     }
                 } else if (attribute instanceof TLRPC.TL_documentAttributeAudio) {
-                    duration = ((TLRPC.TL_documentAttributeAudio) attribute).duration;
+                    // duration is a double field in this tree (serialize casts to int)
+                    duration = (int) Math.round(((TLRPC.TL_documentAttributeAudio) attribute).duration);
                 }
             }
         } else if (req.media instanceof TLRPC.TL_inputMediaPhoto) {
             treeUploadId = mediaPhotoTreeId((TLRPC.TL_inputMediaPhoto) req.media);
         } else if (req.media instanceof TLRPC.TL_inputMediaDocument) {
-            treeUploadId = ((TLRPC.TL_inputMediaDocument) req.media).document.id;
+            // reference/forward path: TL_inputMediaDocument.id is an InputDocument
+            // (TL_inputDocument carries the backend file id planted by the mapper)
+            TLRPC.InputDocument inputDoc = ((TLRPC.TL_inputMediaDocument) req.media).id;
+            treeUploadId = inputDoc instanceof TLRPC.TL_inputDocument ? ((TLRPC.TL_inputDocument) inputDoc).id : 0;
         } else {
             throw new XoApiException(400, "MEDIA_INVALID", "unsupported input media for this backend");
         }

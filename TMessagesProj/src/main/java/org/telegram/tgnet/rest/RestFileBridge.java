@@ -181,7 +181,7 @@ public final class RestFileBridge {
             // FileLoadOperation then builds TL_inputPhotoFileLocation
             parentId = ((TLRPC.TL_inputPhotoFileLocation) location).id;
             String thumbSize = ((TLRPC.TL_inputPhotoFileLocation) location).thumb_size;
-            thumbRequest = PHOTO_SIZE_THUMB.equals(thumbSize);
+            thumbRequest = TlJsonMapper.PHOTO_SIZE_THUMB.equals(thumbSize);
         } else if (location instanceof TLRPC.TL_inputFileLocation) {
             // legacy path for ImageLocations without a parent object
             long volumeId = ((TLRPC.TL_inputFileLocation) location).volume_id;
@@ -211,7 +211,7 @@ public final class RestFileBridge {
     public long thumbFileIdFor(long parentFileId) {
         synchronized (thumbCache) {
             if (thumbCache.indexOfKey(parentFileId) >= 0) {
-                return thumbCache.get(parentFileId, 0);
+                return thumbCache.get(parentFileId, 0L);
             }
         }
         long thumbId = 0;
