@@ -144,19 +144,26 @@ public final class TlJsonMapper {
             message.flags |= 2;
         }
 
+        // Reply contract (T11): the ONLY place reply metadata crosses JSON->TL.
+        // TL_messageReplyHeader serializes reply_to_msg_id ONLY under its own
+        // flag 16 (see TLRPC.TL_messageReplyHeader.serializeToStream) — without
+        // that bit the header round-trips through MessagesStorage EMPTY, which
+        // is why replies rendered live but vanished after a history/storage
+        // reload. Every header we emit must therefore be flag-coherent.
+        long replyTo = msg.optLong("reply_to_id", 0L);
+        if (replyTo > 0) {
+            TLRPC.TL_messageReplyHeader header = new TLRPC.TL_messageReplyHeader();
+            header.flags |= 16; // REPLY_HEADER_FLAG_HAS_MSG_ID — mandatory for serialization
+            header.reply_to_msg_id = (int) replyTo;
+            message.reply_to = header;
+            message.flags |= 8; // MESSAGE_FLAG_HAS_REPLY
+        }
+
         // media must never be null (legacy UI paths deref it) and must stay
         // coherent with the flag bit so storage round-trips survive
         message.media = new TLRPC.TL_messageMediaEmpty();
         message.flags |= 512;
         message.dialog_id = dialogId;
-
-        long replyTo = msg.optLong("reply_to_id", 0L);
-        if (replyTo != 0L) {
-            TLRPC.TL_messageReplyHeader header = new TLRPC.TL_messageReplyHeader();
-            header.reply_to_msg_id = (int) replyTo;
-            message.reply_to = header;
-            message.flags |= 8;
-        }
         return message;
     }
 

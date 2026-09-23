@@ -1,12 +1,10 @@
 package org.telegram.tgnet.rest;
 
 import android.util.SparseArray;
-import android.widget.Toast;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.messenger.AndroidUtilities;
-import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
@@ -249,18 +247,6 @@ public final class UpdatePoller {
         try {
             long dialogId = isGroup ? -chatId : peerUserId;
             TLRPC.TL_message message = TlJsonMapper.parseMessage(msgJson, dialogId, isGroup, peerUserId, selfId);
-            // Xo (T9): receive-side reply probe — TEMPORARY, pairs with the
-            // send-side probe in RestDispatcher.handleSend.
-            if (message.reply_to != null && message.reply_to.reply_to_msg_id > 0) {
-                final int rid = message.reply_to.reply_to_msg_id;
-                AndroidUtilities.runOnUIThread(() -> {
-                    try {
-                        Toast.makeText(ApplicationLoader.applicationContext, "Xo: reply received (#" + rid + ")", Toast.LENGTH_SHORT).show();
-                    } catch (Exception e) {
-                        FileLog.e(e);
-                    }
-                });
-            }
             index.rememberMessages(chatId, new ArrayList<>(java.util.Collections.singletonList(message)));
             TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
             update.message = message;
