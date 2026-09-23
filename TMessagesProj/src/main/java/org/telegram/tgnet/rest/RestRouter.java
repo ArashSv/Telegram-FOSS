@@ -48,6 +48,20 @@ import java.util.HashMap;
  *   <li>ROUTE_STATE / ROUTE_DIFFERENCE → zeroed stubs (pts machinery stays
  *       pinned; getState cannot be error-denied — loadCurrentState retries
  *       forever on non-401 errors).</li>
+ *   <li>ROUTE_FILE_PART / ROUTE_FILE_PART_BIG → TL_boolTrue; consumer
+ *       FileUploadOperation callback (~:573) tests
+ *       {@code response instanceof TL_boolTrue} and treats EVERYTHING else
+ *       (null response with error, or any other class) as upload failure —
+ *       so the answer class is non-negotiable (T8b).</li>
+ *   <li>ROUTE_FILE_GET → TL_upload_file{bytes: NativeByteBuffer}; consumer
+ *       FileLoadOperation (~:2542) instanceof-tests TL_upload_file first,
+ *       TL_upload_webFile second, and HARD-CASTS the remaining branch to
+ *       TL_upload_cdnFile — answering anything else is a ClassCastException
+ *       (T8b; bytes.buffer must be positioned at 0, limit = byte count).</li>
+ *   <li>ROUTE_SEND_MEDIA → TL_updates with one TL_updateNewMessage; the
+ *       consumer is the SAME unified send path as ROUTE_SEND
+ *       (SendMessagesHelper ~:6417: {@code response instanceof Updates} →
+ *       extract TL_updateNewMessage) (T8c).</li>
  * </ul>
  */
 public final class RestRouter {
@@ -65,6 +79,14 @@ public final class RestRouter {
     public static final int ROUTE_USERS_GET = 8;   // TL_users_getUsers -> GET /users/get.php
     public static final int ROUTE_STATE = 9;       // TL_updates_getState -> stub (sync cursor lives in UpdatePoller)
     public static final int ROUTE_DIFFERENCE = 10; // TL_updates_getDifference -> stub (UpdatePoller is the updates source)
+    public static final int ROUTE_FILE_GET = 11;        // TL_upload_getFile -> GET /files/download.php (Range)
+    public static final int ROUTE_FILE_PART = 12;       // TL_upload_saveFilePart -> lazy init + POST /files/chunk.php
+    public static final int ROUTE_FILE_PART_BIG = 13;   // TL_upload_saveBigFilePart -> same (parts > 1 MB files)
+    public static final int ROUTE_SEND_MEDIA = 14;      // TL_messages_sendMedia -> finalize + POST /messages/send.php
+
+    // constructor ints (TLRPC.java, this tree): TL_upload_getFile = 0xbe5335be,
+    // TL_upload_saveFilePart = 0xb304a621, TL_upload_saveBigFilePart = 0xde7b673d,
+    // TL_messages_sendMedia = 0x7852834e
 
     private static final HashMap<Class<?>, Integer> ROUTES = new HashMap<>();
 
@@ -80,6 +102,10 @@ public final class RestRouter {
         ROUTES.put(TLRPC.TL_users_getUsers.class, ROUTE_USERS_GET);
         ROUTES.put(TLRPC.TL_updates_getState.class, ROUTE_STATE);
         ROUTES.put(TLRPC.TL_updates_getDifference.class, ROUTE_DIFFERENCE);
+        ROUTES.put(TLRPC.TL_upload_getFile.class, ROUTE_FILE_GET);
+        ROUTES.put(TLRPC.TL_upload_saveFilePart.class, ROUTE_FILE_PART);
+        ROUTES.put(TLRPC.TL_upload_saveBigFilePart.class, ROUTE_FILE_PART_BIG);
+        ROUTES.put(TLRPC.TL_messages_sendMedia.class, ROUTE_SEND_MEDIA);
     }
 
     private RestRouter() {

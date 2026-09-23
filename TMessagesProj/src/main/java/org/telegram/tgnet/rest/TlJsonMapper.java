@@ -161,10 +161,161 @@ public final class TlJsonMapper {
 
         // media must never be null (legacy UI paths deref it) and must stay
         // coherent with the flag bit so storage round-trips survive
-        message.media = new TLRPC.TL_messageMediaEmpty();
+        JSONObject mediaJson = msg.optJSONObject("media");
+        message.media = parseMedia(mediaJson, message.date);
         message.flags |= 512;
         message.dialog_id = dialogId;
         return message;
+    }
+
+    // ------------------------------------------------------------------ media (T8d)
+
+    /** PhotoSize type letters this mapper plants; shared with the download-route resolver. */
+    public static final String PHOTO_SIZE_FULL = "x";
+    public static final String PHOTO_SIZE_THUMB = "s";
+    /** Server thumb cap (FilesController::makeThumbnail) — mirrored for local layout hints. */
+    private static final int THUMB_MAX_SIDE = 320;
+
+    /**
+     * v1.1 media JSON (MessageMapper join: file_id/mime_type/size/name/kind/
+     * width/height/duration/thumb_file_id) to a flag-coherent MessageMedia.
+     * Never returns null — degenerate input degrades to {@code TL_messageMediaEmpty}
+     * (parse failures must never lose the message; PHASE3_PLAN.md §8).
+     *
+     * <p>Synthetic location contract (the pivot of the download route): every
+     * planted PhotoSize carries {@code TL_fileLocationToBeDeprecated{volume_id =
+     * -parentFileId, local_id = type letter}} — byte-identical to what the
+     * tree's PhotoSize factory reconstructs after a MessagesStorage reload
+     * ({@code volume_id = -photo_id}, T11 flag-coherence lesson applied to
+     * locations). The dispatcher decodes {@code |volume_id|} and — for thumb
+     * letters — resolves the separate thumb file via a cached metadata lookup.
+     *
+     * <p>Photos (kind=image) render as TL_messageMediaPhoto with a thumb +
+     * full size; everything else is a TL_messageMediaDocument (video, audio,
+     * voice notes, "send as file" images — the tree's own semantics), with
+     * attributes rebuilt so the UI renders the right bubble.
+     */
+    public static TLRPC.MessageMedia parseMedia(JSONObject mediaJson, int messageDate) {
+        if (mediaJson == null) {
+            return new TLRPC.TL_messageMediaEmpty();
+        }
+        long fileId = mediaJson.optLong("file_id", 0);
+        if (fileId <= 0) {
+            return new TLRPC.TL_messageMediaEmpty();
+        }
+        String kind = mediaJson.optString("kind", null);
+        String mime = mediaJson.optString("mime_type", null);
+        if (mime == null || mime.length() == 0) {
+            mime = "application/octet-stream";
+        }
+        long size = Math.max(0, mediaJson.optLong("size", 0));
+        int width = mediaJson.optInt("width", 0);
+        int height = mediaJson.optInt("height", 0);
+        int duration = mediaJson.optInt("duration", 0);
+        long thumbFileId = mediaJson.optLong("thumb_file_id", 0);
+
+        if ("image".equals(kind) && width > 0 && height > 0) {
+            return photoMedia(fileId, size, width, height, thumbFileId, messageDate);
+        }
+        return documentMedia(fileId, mime, size, mediaJson.optString("name", null),
+                kind, width, height, duration, thumbFileId, messageDate);
+    }
+
+    /** Photo with one thumb + one full size, both located on the photo id (factory-consistent). */
+    private static TLRPC.MessageMedia photoMedia(long fileId, long size, int width, int height,
+                                                 long thumbFileId, int messageDate) {
+        TLRPC.TL_messageMediaPhoto media = new TLRPC.TL_messageMediaPhoto();
+        media.flags |= 1; // photo present — serialize contract (readParams expects flag 1)
+        TLRPC.TL_photo photo = new TLRPC.TL_photo();
+        photo.id = fileId;
+        photo.access_hash = 0;
+        photo.file_reference = new byte[0];
+        photo.date = messageDate > 0 ? messageDate : (int) (System.currentTimeMillis() / 1000L);
+        photo.dc_id = 0;
+        if (thumbFileId > 0) {
+            int[] dims = thumbDims(width, height);
+            photo.sizes.add(photoSize(PHOTO_SIZE_THUMB, dims[0], dims[1], 0, fileId));
+        }
+        photo.sizes.add(photoSize(PHOTO_SIZE_FULL, width, height, (int) Math.min(size, Integer.MAX_VALUE), fileId));
+        media.photo = photo;
+        return media;
+    }
+
+    /** One TL_photoSize with the factory-consistent synthetic location. */
+    private static TLRPC.TL_photoSize photoSize(String type, int w, int h, int size, long parentFileId) {
+        TLRPC.TL_photoSize photoSize = new TLRPC.TL_photoSize();
+        photoSize.type = type;
+        photoSize.w = Math.max(1, w);
+        photoSize.h = Math.max(1, h);
+        photoSize.size = Math.max(0, size);
+        TLRPC.TL_fileLocationToBeDeprecated location = new TLRPC.TL_fileLocationToBeDeprecated();
+        location.volume_id = -parentFileId; // download route decodes |volume_id|
+        location.local_id = type.charAt(0);
+        photoSize.location = location;
+        return photoSize;
+    }
+
+    /** Document-shaped media: video, audio/voice, gif, generic files, image-as-file. */
+    private static TLRPC.MessageMedia documentMedia(long fileId, String mime, long size, String name,
+                                                    String kind, int width, int height, int duration,
+                                                    long thumbFileId, int messageDate) {
+        TLRPC.TL_messageMediaDocument media = new TLRPC.TL_messageMediaDocument();
+        media.flags |= 1; // document present
+        TLRPC.TL_document document = new TLRPC.TL_document();
+        document.id = fileId;
+        document.access_hash = 0;
+        document.file_reference = new byte[0];
+        document.date = messageDate > 0 ? messageDate : (int) (System.currentTimeMillis() / 1000L);
+        document.mime_type = mime;
+        document.size = size;
+        document.dc_id = 0;
+        if (thumbFileId > 0) {
+            document.flags |= 1; // thumbs vector present
+            int[] dims = thumbDims(width > 0 ? width : 320, height > 0 ? height : 320);
+            TLRPC.TL_photoSize thumb = photoSize(PHOTO_SIZE_THUMB, dims[0], dims[1], 0, fileId);
+            thumb.location.local_id = 1000 + thumb.type.charAt(0); // document-thumb factory convention
+            document.thumbs.add(thumb);
+        }
+        if (name != null && name.length() > 0) {
+            TLRPC.TL_documentAttributeFilename filename = new TLRPC.TL_documentAttributeFilename();
+            filename.file_name = name;
+            document.attributes.add(filename);
+        }
+        boolean isVoice = mime.startsWith("audio/ogg");
+        if (mime.startsWith("video/") || "video".equals(kind)) {
+            TLRPC.TL_documentAttributeVideo video = new TLRPC.TL_documentAttributeVideo();
+            video.duration = Math.max(0.5, duration > 0 ? duration : 1);
+            video.w = Math.max(1, width);
+            video.h = Math.max(1, height);
+            document.attributes.add(video);
+        } else if (mime.startsWith("audio/")) {
+            TLRPC.TL_documentAttributeAudio audio = new TLRPC.TL_documentAttributeAudio();
+            audio.duration = Math.max(1, duration);
+            if (isVoice) {
+                audio.flags |= 1024; // voice note bit — serialize contract
+                audio.voice = true;
+                media.flags |= 256; // media.voice — the UI's voice-bubble selector
+            }
+            document.attributes.add(audio);
+        } else if ("image".equals(kind) && "image/gif".equals(mime)) {
+            document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
+        } else if ("image".equals(kind) && width > 0 && height > 0) {
+            // image sent as file: keep dimensions so the gallery preview renders
+            TLRPC.TL_documentAttributeImageSize imageSize = new TLRPC.TL_documentAttributeImageSize();
+            imageSize.w = width;
+            imageSize.h = height;
+            document.attributes.add(imageSize);
+        }
+        media.document = document;
+        return media;
+    }
+
+    /** Longest side scaled to the server's thumb cap (layout hint only). */
+    private static int[] thumbDims(int width, int height) {
+        int w = Math.max(1, width);
+        int h = Math.max(1, height);
+        double scale = Math.min(1.0, THUMB_MAX_SIDE / (double) Math.max(w, h));
+        return new int[]{Math.max(1, (int) Math.round(w * scale)), Math.max(1, (int) Math.round(h * scale))};
     }
 
     /**
