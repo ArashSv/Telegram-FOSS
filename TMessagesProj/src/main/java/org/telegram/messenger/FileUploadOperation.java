@@ -97,7 +97,17 @@ public class FileUploadOperation {
         isEncrypted = encrypted;
         estimatedSize = estimated;
         currentType = type;
-        uploadFirstPartLater = estimated != 0 && !isEncrypted;
+        // REST fork (T14): the deferred-first-part streaming mode is disabled.
+        // With uploadFirstPartLater=true the first 1024 bytes are held back and
+        // re-sent as part 0 only via the nextPartFirst dance, which on this
+        // build NEVER fires before the upload finishes: every compressed-video
+        // upload reached the server WITHOUT part 0 (server DB forensics:
+        // chunk indices start at 1), so finalize saw received < declared parts
+        // and the send failed after the progress bar hit 100%. The availableSize
+        // gate (checkNewDataAvailable) already protects against reading bytes
+        // the transcoder has not written yet, so streaming uploads are safe
+        // with parts starting at index 0. Encrypted chats are not used here.
+        uploadFirstPartLater = false;
     }
 
     public long getTotalFileSize() {
@@ -472,6 +482,32 @@ public class FileUploadOperation {
                 currentRequestBytes = stream.read(readBuffer);
             }
             if (currentRequestBytes == -1) {
+                // REST fork (T14): a streaming upload (transcoded video) whose
+                // final size is an exact multiple of the chunk size ends with a
+                // read() == -1 and NO short tail, so isLastPart is never set on
+                // any request and the old code simply returned -> the upload
+                // never finished (progress stuck at 100%, then a stuck/failed
+                // send). When every byte is consumed and no request is in
+                // flight, finish exactly like the response path does.
+                if (state == 1 && !isLastPart && estimatedSize == 0
+                        && readBytesCount >= totalFileSize && currentUploadRequetsCount == 0) {
+                    state = 3;
+                    TLRPC.InputFile result;
+                    if (isBigFile) {
+                        result = new TLRPC.TL_inputFileBig();
+                    } else {
+                        result = new TLRPC.TL_inputFile();
+                        result.md5_checksum = "";
+                    }
+                    result.parts = currentPartNum;
+                    result.id = currentFileId;
+                    result.name = uploadingFilePath.substring(uploadingFilePath.lastIndexOf("/") + 1);
+                    if (BuildVars.LOGS_ENABLED) {
+                        FileLog.d("debug_uploading: EOF finish, parts=" + currentPartNum + " file=" + uploadingFilePath);
+                    }
+                    delegate.didFinishUploadingFile(FileUploadOperation.this, result, null, null, null);
+                    cleanup();
+                }
                 return;
             }
             int toAdd = 0;
