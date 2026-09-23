@@ -7,6 +7,7 @@ import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.ConnectionsManager;
+import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.RequestDelegate;
@@ -76,6 +77,18 @@ public final class RestDispatcher {
         return thread;
     });
 
+    /**
+     * T8: separate pool for file traffic. A 50 MB upload is ~400 part requests
+     * (~14 concurrent from the tree); sharing the 3 messaging threads would
+     * stall text sends/history behind media. 4 dedicated threads keep both
+     * lanes moving; keep-alive pooling lives below in XoHttp.
+     */
+    private static final ExecutorService FILE_IO_QUEUE = Executors.newFixedThreadPool(4, r -> {
+        Thread thread = new Thread(r, "XoRestFiles");
+        thread.setPriority(Thread.NORM_PRIORITY - 1);
+        return thread;
+    });
+
     private RestDispatcher() {
     }
 
@@ -104,7 +117,11 @@ public final class RestDispatcher {
             }
             return true;
         }
-        IO_QUEUE.execute(() -> runRoute(account, route, object, onComplete, onCompleteTimestamp));
+        boolean isFileRoute = route == RestRouter.ROUTE_FILE_GET
+                || route == RestRouter.ROUTE_FILE_PART
+                || route == RestRouter.ROUTE_FILE_PART_BIG;
+        ExecutorService queue = isFileRoute ? FILE_IO_QUEUE : IO_QUEUE;
+        queue.execute(() -> runRoute(account, route, object, onComplete, onCompleteTimestamp));
         return true;
     }
 
@@ -136,6 +153,18 @@ public final class RestDispatcher {
                     break;
                 case RestRouter.ROUTE_DIFFERENCE:
                     response = stubDifference();
+                    break;
+                case RestRouter.ROUTE_FILE_GET:
+                    response = handleFileGet(account, (TLRPC.TL_upload_getFile) object);
+                    break;
+                case RestRouter.ROUTE_FILE_PART:
+                    response = handleFilePart(account, (TLRPC.TL_upload_saveFilePart) object);
+                    break;
+                case RestRouter.ROUTE_FILE_PART_BIG:
+                    response = handleFilePartBig(account, (TLRPC.TL_upload_saveBigFilePart) object);
+                    break;
+                case RestRouter.ROUTE_SEND_MEDIA:
+                    response = handleSendMedia(account, (TLRPC.TL_messages_sendMedia) object);
                     break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
@@ -325,6 +354,211 @@ public final class RestDispatcher {
         return res;
     }
 
+    // ------------------------------------------------------------------ file routes (T8b/T8c)
+
+    /**
+     * TL_upload_saveFilePart — small-file path (part size 32..128 KB, NO total
+     * part count in the request). Answer contract: {@code TL_boolTrue} — the
+     * consumer (FileUploadOperation ~:573) treats every other outcome as
+     * upload failure.
+     */
+    private static TLObject handleFilePart(int account, TLRPC.TL_upload_saveFilePart req) {
+        return uploadPart(account, req.file_id, req.file_part, 1, req.bytes);
+    }
+
+    /** TL_upload_saveBigFilePart — big-file path (128 KB parts). {@code file_total_parts} is the best part-count estimate; it may be -1 while streaming (size unknown) — the backend then extends the declared count on out-of-range indices (v1.1b). */
+    private static TLObject handleFilePartBig(int account, TLRPC.TL_upload_saveBigFilePart req) {
+        int estimate = req.file_total_parts > 0 ? req.file_total_parts : 1;
+        return uploadPart(account, req.file_id, req.file_part, estimate, req.bytes);
+    }
+
+    /**
+     * Shared upload-part pipeline: copy the tree's NativeByteBuffer out (the
+     * dispatcher OWNS the request object — sendRequestInternal skips
+     * freeResources() when tryHandle consumed the request, so the buffer is
+     * returned to the native pool HERE, once), lazily initialize the backend
+     * file via {@link RestFileBridge}, and forward the raw part.
+     */
+    private static TLObject uploadPart(int account, long treeUploadId, int part, int chunksTotalEstimate, NativeByteBuffer bytes) {
+        if (bytes == null || bytes.limit() == 0) {
+            throw new XoApiException(400, "VALIDATION_ERROR", "empty part body");
+        }
+        int written = bytes.position() > 0 ? bytes.position() : bytes.limit();
+        byte[] data = new byte[written];
+        java.nio.ByteBuffer src = bytes.buffer.duplicate();
+        src.position(0);
+        src.limit(written);
+        src.get(data);
+        bytes.reuse(); // single free: the tree never serializes a routed request
+
+        long backendId = RestFileBridge.getInstance(account).ensureBackendFile(treeUploadId, chunksTotalEstimate);
+        RestGateway.getInstance(account).fileChunk(backendId, part, data);
+        if (BuildVars.LOGS_ENABLED) {
+            FileLog.d("RestDispatcher: part " + part + " (" + written + "B) treeId=" + treeUploadId + " -> file " + backendId);
+        }
+        return new TLRPC.TL_boolTrue();
+    }
+
+    /**
+     * TL_upload_getFile — ranged download. Location → backend file id per the
+     * synthetic-id contract ({@link RestFileBridge#resolveBackendFileId},
+     * including thumb-letter resolution). Answer contract: {@code TL_upload_file}
+     * with bytes positioned at 0 and limit == byte count (FileLoadOperation
+     * ~:2542 instanceof-tests it and writes bytes.buffer straight into its file
+     * channel; a short tail chunk closes the download).
+     */
+    private static TLObject handleFileGet(int account, TLRPC.TL_upload_getFile req) {
+        long backendId = RestFileBridge.getInstance(account).resolveBackendFileId(req.location);
+        if (backendId <= 0) {
+            throw new XoApiException(400, "FILE_ID_INVALID", "unsupported file location");
+        }
+        if (req.offset < 0) {
+            throw new XoApiException(400, "INVALID_RANGE", "negative offset");
+        }
+        long limit = Math.max(1, Math.min(req.limit, 1024 * 1024)); // tree asks 32..512 KB
+        long end = req.offset + limit - 1;
+        byte[] data = RestGateway.getInstance(account).fileDownloadRange(backendId, req.offset, end);
+        TLRPC.TL_upload_file result = new TLRPC.TL_upload_file();
+        result.type = new TLRPC.TL_storage_fileUnknown();
+        result.mtime = (int) (System.currentTimeMillis() / 1000L);
+        try {
+            NativeByteBuffer buffer = new NativeByteBuffer(data.length);
+            buffer.writeBytes(data, 0, data.length);
+            buffer.buffer.position(0); // the consumer writes buffer.remaining() to its channel
+            result.bytes = buffer;
+        } catch (Exception e) {
+            FileLog.e("RestDispatcher: cannot wrap download bytes", e);
+            throw new XoApiException(500, "SERVER_ERROR", "buffer allocation failed");
+        }
+        return result;
+    }
+
+    /**
+     * TL_messages_sendMedia — the media SEND. The tree uploads all parts
+     * FIRST, then reveals media context here (mime/name/attributes). Pipeline:
+     * finalize the backend file (idempotent; also carries the client-declared
+     * video/audio context the server cannot detect) →
+     * POST /messages/send.php {media_file_id} → same TL_updates contract as
+     * text sends (SendMessagesHelper ~:6417 extracts TL_updateNewMessage).
+     */
+    private static TLObject handleSendMedia(int account, TLRPC.TL_messages_sendMedia req) {
+        RestFileBridge bridge = RestFileBridge.getInstance(account);
+        long treeUploadId;
+        int parts = 0;
+        String mime = null;
+        String name = null;
+        Integer width = null, height = null, duration = null;
+
+        if (req.media instanceof TLRPC.TL_inputMediaUploadedPhoto) {
+            TLRPC.InputFile file = ((TLRPC.TL_inputMediaUploadedPhoto) req.media).file;
+            treeUploadId = file.id;
+            parts = file.parts;
+            name = file.name;
+        } else if (req.media instanceof TLRPC.TL_inputMediaUploadedDocument) {
+            TLRPC.TL_inputMediaUploadedDocument input = (TLRPC.TL_inputMediaUploadedDocument) req.media;
+            treeUploadId = input.file.id;
+            parts = input.file.parts;
+            name = input.file.name;
+            mime = input.mime_type;
+            for (int a = 0; a < input.attributes.size(); a++) {
+                TLRPC.DocumentAttribute attribute = input.attributes.get(a);
+                if (attribute instanceof TLRPC.TL_documentAttributeFilename) {
+                    name = ((TLRPC.TL_documentAttributeFilename) attribute).file_name;
+                } else if (attribute instanceof TLRPC.TL_documentAttributeImageSize) {
+                    width = ((TLRPC.TL_documentAttributeImageSize) attribute).w;
+                    height = ((TLRPC.TL_documentAttributeImageSize) attribute).h;
+                } else if (attribute instanceof TLRPC.TL_documentAttributeVideo) {
+                    TLRPC.TL_documentAttributeVideo video = (TLRPC.TL_documentAttributeVideo) attribute;
+                    duration = (int) Math.round(video.duration);
+                    if (video.w > 0) {
+                        width = video.w;
+                    }
+                    if (video.h > 0) {
+                        height = video.h;
+                    }
+                } else if (attribute instanceof TLRPC.TL_documentAttributeAudio) {
+                    duration = ((TLRPC.TL_documentAttributeAudio) attribute).duration;
+                }
+            }
+        } else if (req.media instanceof TLRPC.TL_inputMediaPhoto) {
+            treeUploadId = mediaPhotoTreeId((TLRPC.TL_inputMediaPhoto) req.media);
+        } else if (req.media instanceof TLRPC.TL_inputMediaDocument) {
+            treeUploadId = ((TLRPC.TL_inputMediaDocument) req.media).document.id;
+        } else {
+            throw new XoApiException(400, "MEDIA_INVALID", "unsupported input media for this backend");
+        }
+        if (treeUploadId == 0) {
+            throw new XoApiException(400, "FILE_ID_INVALID", "upload carries no file id");
+        }
+        // Referenced media (forward path): the id IS already a backend file id
+        // (planted by the receive mapper) — skip finalize, the file is ready.
+        boolean alreadyBackend = req.media instanceof TLRPC.TL_inputMediaPhoto
+                || req.media instanceof TLRPC.TL_inputMediaDocument;
+        if (!alreadyBackend) {
+            // finalize is the single metadata injection point; the tree's real
+            // part count patches any streaming-extended estimate (v1.1b)
+            bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration);
+        }
+        long mediaFileId = alreadyBackend ? treeUploadId : bridge.backendFileIdFor(treeUploadId);
+        if (mediaFileId == 0) {
+            throw new XoApiException(400, "FILE_ID_INVALID", "upload was never routed through this client");
+        }
+
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        PeerRef peer = resolvePeer(account, req.peer);
+        if (peer == null) {
+            throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable peer for send-media");
+        }
+        long chatId = requireChatId(account, peer);
+        int replyToId = 0;
+        if (req.reply_to instanceof TLRPC.TL_inputReplyToMessage) {
+            replyToId = ((TLRPC.TL_inputReplyToMessage) req.reply_to).reply_to_msg_id;
+        }
+        if (replyToId <= 0) {
+            replyToId = 0;
+        }
+        String caption = req.message == null ? "" : req.message;
+        if (BuildVars.LOGS_ENABLED) {
+            FileLog.d("RestDispatcher: send-media chat=" + chatId + " file=" + mediaFileId + " caption=" + caption.length());
+        }
+
+        JSONObject sent = RestGateway.getInstance(account).sendMedia(chatId, mediaFileId, caption, replyToId);
+        JSONObject msgJson = sent.optJSONObject("message");
+        if (msgJson == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "send response lacks the message object");
+        }
+        TLRPC.TL_message message;
+        try {
+            message = TlJsonMapper.parseMessage(msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+        } catch (org.json.JSONException e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed sent media message: " + e.getMessage());
+        }
+        RestChatIndex.getInstance(account).rememberMessages(chatId, java.util.Collections.singletonList(message));
+
+        TLRPC.TL_updates updates = new TLRPC.TL_updates();
+        TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
+        update.message = message;
+        update.pts = 0;
+        update.pts_count = 0;
+        updates.updates.add(update);
+        updates.date = nowSeconds();
+        updates.seq = 0;
+        updates.users.addAll(hydrateSenders(account, java.util.Collections.singletonList(message)));
+        return updates;
+    }
+
+    /**
+     * TL_inputMediaPhoto carries a {@code TL_photo} reference built from a
+     * RECEIVED message — whose id the receive mapper planted as the backend
+     * file id. Direct file-id passthrough (forwarding/reuse, no re-upload).
+     */
+    private static long mediaPhotoTreeId(TLRPC.TL_inputMediaPhoto media) {
+        if (media.id instanceof TLRPC.TL_inputPhoto) {
+            return ((TLRPC.TL_inputPhoto) media.id).id;
+        }
+        return 0;
+    }
+
     private static TLObject handleUsersGet(int account, TLRPC.TL_users_getUsers req) {
         long selfId = UserConfig.getInstance(account).clientUserId;
         long[] ids = new long[req.id.size()];
@@ -486,7 +720,14 @@ public final class RestDispatcher {
 
     /** Maps a gateway failure onto TL_error for the original call site's error chain. */
     private static TLRPC.TL_error toTlError(XoApiException e) {
-        return tlError(e.httpStatus == 0 ? 400 : e.httpStatus, e.errorCode);
+        String text = e.errorCode;
+        if ("INVALID_RANGE".equals(text)) {
+            // backend 416 (beyond EOF) == MTProto's canonical answer the tree
+            // already understands: FileLoadOperation finishes the download on
+            // OFFSET_INVALID when the received bytes align (processRequestResult)
+            text = "OFFSET_INVALID";
+        }
+        return tlError(e.httpStatus == 0 ? 400 : e.httpStatus, text);
     }
 
     private static TLRPC.TL_error tlError(int code, String text) {

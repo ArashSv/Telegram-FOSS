@@ -7,6 +7,8 @@ import org.telegram.messenger.FileLog;
 import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.TLRPC;
 
+import java.io.IOException;
+
 /**
  * T3: the single REST gateway per account towards the MyMessenger backend
  * (contract: mymessenger-backend docs/API.md v1; deployed under {@link #BASE_URL}).
@@ -248,6 +250,107 @@ public final class RestGateway {
         return authenticatedRequest("GET", url, null);
     }
 
+    // ------------------------------------------------------------------ file & media API (T8)
+
+    /**
+     * POST /files/init.php — streaming start (size always 0: the tree decides
+     * part counts, may extend them on the fly, and the real size is computed
+     * from the assembled blob at finalize). Returns the backend file_id.
+     */
+    public long fileInit(int chunksTotalEstimate) {
+        JSONObject body = putNumber(new JSONObject(), "size", 0);
+        putNumber(body, "chunks_total", Math.max(1, chunksTotalEstimate));
+        JSONObject response = authenticatedRequest("POST", "files/init.php", body);
+        return response.optLong("file_id", 0);
+    }
+
+    /**
+     * POST /files/chunk.php?file_id=&index= — raw octet-stream part (128 KB
+     * Telegram-style; idempotent: a retried part overwrites itself).
+     */
+    public void fileChunk(long backendFileId, int index, byte[] bytes) {
+        JSONObject response = authenticatedBinaryPost(
+                "files/chunk.php?file_id=" + backendFileId + "&index=" + index, bytes);
+        if (!response.optBoolean("ok", false)) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "chunk answer without ok");
+        }
+    }
+
+    /**
+     * POST /files/finalize.php — assembles + inspects the blob server-side and
+     * returns the v1.1 File JSON (kind/width/height/duration/thumb_file_id/
+     * sha256). {@code mediaMime/mediaName/width/height/duration} are the
+     * client-declared values the server cannot detect itself (video/audio);
+     * images are fully server-validated. Idempotent on ready files.
+     */
+    public JSONObject fileFinalize(long backendFileId, int chunksTotal, String mediaMime, String mediaName,
+                                   Integer width, Integer height, Integer duration) {
+        JSONObject body = putNumber(new JSONObject(), "file_id", backendFileId);
+        putNumber(body, "chunks_total", Math.max(1, chunksTotal));
+        if (mediaMime != null && mediaMime.length() > 0) {
+            put(body, "mime_type", mediaMime);
+        }
+        if (mediaName != null && mediaName.length() > 0) {
+            put(body, "name", mediaName);
+        }
+        if (width != null && width > 0) {
+            putNumber(body, "width", width);
+        }
+        if (height != null && height > 0) {
+            putNumber(body, "height", height);
+        }
+        if (duration != null && duration > 0) {
+            putNumber(body, "duration", duration);
+        }
+        return authenticatedRequest("POST", "files/finalize.php", body);
+    }
+
+    /** GET /files/get.php?file_id= — v1.1 metadata (kind/dimensions/thumb_file_id/sha256); thumb resolution + resume awareness. */
+    public JSONObject fileMetadata(long backendFileId) {
+        return authenticatedRequest("GET", "files/get.php?file_id=" + backendFileId, null);
+    }
+
+    /**
+     * GET /files/download.php?file_id= with a Range header — raw bytes of one
+     * chunk (the tree asks 32..512 KB at a time; a short tail chunk closes the
+     * file). Typed errors: NOT_FOUND, INVALID_RANGE (= tree's OFFSET_INVALID),
+     * transport failures surface as {@link XoTransportException}.
+     */
+    public byte[] fileDownloadRange(long backendFileId, long startInclusive, long endInclusive) {
+        RestAuthStore.TokenSet tokens = requireTokens("files/download.php");
+        try {
+            XoHttp.BinaryResponse response = XoHttp.binaryRequest(
+                    BASE_URL + "files/download.php?file_id=" + backendFileId,
+                    tokens.accessToken, startInclusive, endInclusive);
+            if (response.code == 200 || response.code == 206) {
+                return response.data;
+            }
+            if (response.code == 416) {
+                throw new XoApiException(416, "INVALID_RANGE", "requested range beyond EOF");
+            }
+            throw new XoApiException(response.code, response.code == 404 ? "NOT_FOUND" : "SERVER_ERROR",
+                    "download http " + response.code);
+        } catch (IOException e) {
+            FileLog.e("RestGateway: transport failure on file download", e);
+            throw new XoTransportException("file download failed: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * POST /messages/send.php with {@code media_file_id} — the media message
+     * contract (media ≠ file: only the reference travels in the message). The
+     * response carries the full message JSON (media joined by the backend).
+     */
+    public JSONObject sendMedia(long chatId, long mediaFileId, String caption, int replyToId) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        putNumber(body, "media_file_id", mediaFileId);
+        put(body, "content", caption == null ? "" : caption);
+        if (replyToId > 0) {
+            putNumber(body, "reply_to_id", replyToId);
+        }
+        return authenticatedRequest("POST", "messages/send.php", body);
+    }
+
     // ------------------------------------------------------------------ request core
 
     private JSONObject unauthenticatedRequest(String method, String path, JSONObject body) {
@@ -262,22 +365,7 @@ public final class RestGateway {
      */
     private JSONObject authenticatedRequest(String method, String path, JSONObject body) {
         for (int attempt = 0; attempt < 2; attempt++) {
-            RestAuthStore.TokenSet tokens = store.getTokens();
-            if (tokens == null) {
-                throw sessionInvalid("no stored tokens for " + path);
-            }
-            if (tokens.isAccessTokenProbablyExpired()) {
-                RestAuthStore.TokenSet fresh = refreshNow(tokens);
-                if (fresh != null) {
-                    tokens = fresh; // null = another thread refreshed; re-read below
-                }
-                if (tokens == null) {
-                    tokens = store.getTokens();
-                    if (tokens == null) {
-                        throw sessionInvalid("refresh left no usable tokens for " + path);
-                    }
-                }
-            }
+            RestAuthStore.TokenSet tokens = requireTokens(path);
             XoHttp.Response response = httpCall(method, path, body, tokens.accessToken);
             if (response.code == 401 && attempt == 0) {
                 String errorCode = envelopeErrorCode(response.body);
@@ -298,6 +386,61 @@ public final class RestGateway {
             return parseEnvelope(response, path);
         }
         throw sessionInvalid("token still rejected after one refresh + retry: " + path);
+    }
+
+    /**
+     * T8: authenticated raw-octet-stream POST (file parts). Same 401 policy as
+     * {@link #authenticatedRequest} — the envelope semantics are identical, only
+     * the request body is binary.
+     */
+    private JSONObject authenticatedBinaryPost(String path, byte[] bytes) {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            RestAuthStore.TokenSet tokens = requireTokens(path);
+            XoHttp.Response response;
+            try {
+                response = XoHttp.request(BASE_URL + path, "POST", bytes,
+                        "application/octet-stream", tokens.accessToken);
+            } catch (Exception e) {
+                FileLog.e("RestGateway: transport failure on " + path, e);
+                throw new XoTransportException(path + " failed: " + e.getMessage(), e);
+            }
+            if (response.code == 401 && attempt == 0) {
+                String errorCode = envelopeErrorCode(response.body);
+                boolean expired = XoApiException.TOKEN_EXPIRED.equals(errorCode)
+                        || XoApiException.UNAUTHORIZED.equals(errorCode);
+                if (expired) {
+                    RestAuthStore.TokenSet current = store.getTokens();
+                    if (current != null && !current.accessToken.equals(tokens.accessToken)) {
+                        continue; // T7d: foreign refresh already moved past our view
+                    }
+                    refreshNow(current != null ? current : tokens);
+                    continue; // exactly one retry with the fresh token
+                }
+            }
+            return parseEnvelope(response, path);
+        }
+        throw sessionInvalid("token still rejected after one refresh + retry: " + path);
+    }
+
+    /** Valid tokens, proactively refreshed when the clock says they are nearly spent. */
+    private RestAuthStore.TokenSet requireTokens(String path) {
+        RestAuthStore.TokenSet tokens = store.getTokens();
+        if (tokens == null) {
+            throw sessionInvalid("no stored tokens for " + path);
+        }
+        if (tokens.isAccessTokenProbablyExpired()) {
+            RestAuthStore.TokenSet fresh = refreshNow(tokens);
+            if (fresh != null) {
+                tokens = fresh; // null = another thread refreshed; re-read below
+            }
+            if (tokens == null) {
+                tokens = store.getTokens();
+                if (tokens == null) {
+                    throw sessionInvalid("refresh left no usable tokens for " + path);
+                }
+            }
+        }
+        return tokens;
     }
 
     /**
