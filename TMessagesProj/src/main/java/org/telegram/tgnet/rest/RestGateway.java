@@ -42,6 +42,21 @@ public final class RestGateway {
     private static final int REFRESH_AWAIT_TIMEOUT_MS = 20 * 1000;
     private static final int REFRESH_AWAIT_SLEEP_MS = 200;
 
+    /**
+     * T8 reliability: extra transport-level attempts for the IDEMPOTENT file
+     * routes (init/chunk/finalize/metadata/download — all safe to re-issue by
+     * contract: a retried part overwrites itself, finalize is idempotent,
+     * init under RestFileBridge's lock may at worst orphan a row for the
+     * server-side cleanup tool). Rationale: FileUploadOperation fails the
+     * WHOLE upload on one part error — a 300 MB video is ~2400 part requests,
+     * and a single Wi-Fi/LTE handover would otherwise kill the send. Only
+     * network-level failures retry; typed API errors (VALIDATION_ERROR,
+     * PAYLOAD_TOO_LARGE, ...) propagate untouched. Messaging routes are NOT
+     * covered — the tree owns their retry semantics.
+     */
+    private static final int FILE_TRANSPORT_RETRIES = 2;
+    private static final long FILE_RETRY_BACKOFF_MS = 600;
+
     /** Notified when a token family is revoked or absent and a fresh login is required. */
     public interface SessionInvalidListener {
         void onSessionInvalid(int account);
@@ -260,7 +275,8 @@ public final class RestGateway {
     public long fileInit(int chunksTotalEstimate) {
         JSONObject body = putNumber(new JSONObject(), "size", 0);
         putNumber(body, "chunks_total", Math.max(1, chunksTotalEstimate));
-        JSONObject response = authenticatedRequest("POST", "files/init.php", body);
+        JSONObject response = fileRequestRetry("files/init.php",
+                () -> authenticatedRequest("POST", "files/init.php", body));
         return response.optLong("file_id", 0);
     }
 
@@ -269,8 +285,9 @@ public final class RestGateway {
      * Telegram-style; idempotent: a retried part overwrites itself).
      */
     public void fileChunk(long backendFileId, int index, byte[] bytes) {
-        JSONObject response = authenticatedBinaryPost(
-                "files/chunk.php?file_id=" + backendFileId + "&index=" + index, bytes);
+        JSONObject response = fileRequestRetry("files/chunk.php",
+                () -> authenticatedBinaryPost(
+                        "files/chunk.php?file_id=" + backendFileId + "&index=" + index, bytes));
         if (!response.optBoolean("ok", false)) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "chunk answer without ok");
         }
@@ -302,12 +319,14 @@ public final class RestGateway {
         if (duration != null && duration > 0) {
             putNumber(body, "duration", duration);
         }
-        return authenticatedRequest("POST", "files/finalize.php", body);
+        return fileRequestRetry("files/finalize.php",
+                () -> authenticatedRequest("POST", "files/finalize.php", body));
     }
 
     /** GET /files/get.php?file_id= — v1.1 metadata (kind/dimensions/thumb_file_id/sha256); thumb resolution + resume awareness. */
     public JSONObject fileMetadata(long backendFileId) {
-        return authenticatedRequest("GET", "files/get.php?file_id=" + backendFileId, null);
+        return fileRequestRetry("files/get.php",
+                () -> authenticatedRequest("GET", "files/get.php?file_id=" + backendFileId, null));
     }
 
     /**
@@ -317,23 +336,58 @@ public final class RestGateway {
      * transport failures surface as {@link XoTransportException}.
      */
     public byte[] fileDownloadRange(long backendFileId, long startInclusive, long endInclusive) {
-        RestAuthStore.TokenSet tokens = requireTokens("files/download.php");
-        try {
-            XoHttp.BinaryResponse response = XoHttp.binaryRequest(
-                    BASE_URL + "files/download.php?file_id=" + backendFileId,
-                    tokens.accessToken, startInclusive, endInclusive);
-            if (response.code == 200 || response.code == 206) {
-                return response.data;
+        return fileRequestRetry("files/download.php", () -> {
+            RestAuthStore.TokenSet tokens = requireTokens("files/download.php");
+            try {
+                XoHttp.BinaryResponse response = XoHttp.binaryRequest(
+                        BASE_URL + "files/download.php?file_id=" + backendFileId,
+                        tokens.accessToken, startInclusive, endInclusive);
+                if (response.code == 200 || response.code == 206) {
+                    return response.data;
+                }
+                if (response.code == 416) {
+                    throw new XoApiException(416, "INVALID_RANGE", "requested range beyond EOF");
+                }
+                throw new XoApiException(response.code, response.code == 404 ? "NOT_FOUND" : "SERVER_ERROR",
+                        "download http " + response.code);
+            } catch (IOException e) {
+                FileLog.e("RestGateway: transport failure on file download", e);
+                throw new XoTransportException("file download failed: " + e.getMessage(), e);
             }
-            if (response.code == 416) {
-                throw new XoApiException(416, "INVALID_RANGE", "requested range beyond EOF");
+        });
+    }
+
+    /**
+     * Transport-retry wrapper for the idempotent file routes (see the class
+     * constants for the reasoning). {@code XoTransportException} (DNS/TLS/
+     * timeout/reset) retries with a small linear backoff; typed
+     * {@link XoApiException} answers NEVER retry — the server said no, and
+     * resending the same bytes cannot change its mind.
+     */
+    private <T> T fileRequestRetry(String path, FileRequest<T> request) {
+        XoTransportException last = null;
+        for (int attempt = 0; attempt <= FILE_TRANSPORT_RETRIES; attempt++) {
+            if (attempt > 0) {
+                try {
+                    Thread.sleep(FILE_RETRY_BACKOFF_MS * attempt);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw last != null ? last : new XoTransportException(path + " interrupted", e);
+                }
             }
-            throw new XoApiException(response.code, response.code == 404 ? "NOT_FOUND" : "SERVER_ERROR",
-                    "download http " + response.code);
-        } catch (IOException e) {
-            FileLog.e("RestGateway: transport failure on file download", e);
-            throw new XoTransportException("file download failed: " + e.getMessage(), e);
+            try {
+                return request.run();
+            } catch (XoTransportException e) {
+                last = e;
+                FileLog.w("RestGateway: transport retry " + attempt + "/" + FILE_TRANSPORT_RETRIES + " on " + path);
+            }
         }
+        throw last;
+    }
+
+    /** Work unit for {@link #fileRequestRetry} (checked-exception-free lambda target). */
+    private interface FileRequest<T> {
+        T run();
     }
 
     /**
