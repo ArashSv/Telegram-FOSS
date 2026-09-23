@@ -173,6 +173,43 @@ public final class TlJsonMapper {
     /** PhotoSize type letters this mapper plants; shared with the download-route resolver. */
     public static final String PHOTO_SIZE_FULL = "x";
     public static final String PHOTO_SIZE_THUMB = "s";
+
+    /**
+     * Virtual datacenter id planted on every synthetic Photo, Document and
+     * PhotoSize location (v1.2 contract correction — the root cause of the
+     * "progress bar never moves" media-download outage, both accounts).
+     *
+     * <p>MTProto media is addressable per-DC, and this tree treats
+     * {@code dc_id == 0} as "not a downloadable object" in four independent
+     * places, every one verified in-tree while debugging the outage:
+     * <ul>
+     *   <li>{@code FileLoadOperation.start()} — {@code datacenterId == 0}
+     *       calls {@code onFail(true, 0)} BEFORE any network request, in BOTH
+     *       branches (volume-id branch :919, id branch :942). Every download
+     *       of every media type died here instantly and silently: no bytes,
+     *       no progress, no error, no timeout — exactly the field report;</li>
+     *   <li>{@code ImageLocation.getKey()} :405 — {@code document.dc_id == 0}
+     *       yields a null key, so {@code ImageLocation.getForDocument(document)}
+     *       locations never even enter the ImageLoader pipeline;</li>
+     *   <li>{@code MessageObject.isEditingMedia()} :8215 —
+     *       {@code document.dc_id == 0} reports true for every document
+     *       message (wrong edit-state semantics);</li>
+     *   <li>{@code ImageReceiver} :599 — the document-preview path refuses
+     *       {@code dc_id == 0} documents.</li>
+     * </ul>
+     * The value itself is irrelevant under the REST layer — the T5 hook
+     * ignores {@code datacenterId} end-to-end — so 1 (the canonical "first
+     * DC") is safe and keeps document cache keys ({@code dc_id}
+     * + "_" + id) stable.
+     *
+     * <p>Durability note: {@code TL_fileLocationToBeDeprecated} does NOT
+     * serialize {@code dc_id} — after a MessagesStorage reload the location
+     * dc reverts to 0 and {@code ImageLocation.getForPhoto} falls back to
+     * {@code photo.dc_id}. {@code TL_photo} and {@code TL_document} DO
+     * serialize {@code dc_id}, so the durable value lives on the parents;
+     * locations are planted too for in-memory coherence.
+     */
+    public static final int VIRTUAL_DC = 1;
     /** Server thumb cap (FilesController::makeThumbnail) — mirrored for local layout hints. */
     private static final int THUMB_MAX_SIDE = 320;
 
@@ -231,7 +268,7 @@ public final class TlJsonMapper {
         photo.access_hash = 0;
         photo.file_reference = new byte[0];
         photo.date = messageDate > 0 ? messageDate : (int) (System.currentTimeMillis() / 1000L);
-        photo.dc_id = 0;
+        photo.dc_id = VIRTUAL_DC; // durable across storage reload (TL_photo serializes dc_id) — see VIRTUAL_DC javadoc
         if (thumbFileId > 0) {
             int[] dims = thumbDims(width, height);
             photo.sizes.add(photoSize(PHOTO_SIZE_THUMB, dims[0], dims[1], 0, fileId));
@@ -251,6 +288,7 @@ public final class TlJsonMapper {
         TLRPC.TL_fileLocationToBeDeprecated location = new TLRPC.TL_fileLocationToBeDeprecated();
         location.volume_id = -parentFileId; // download route decodes |volume_id|
         location.local_id = type.charAt(0);
+        location.dc_id = VIRTUAL_DC; // in-memory coherence only — this class does not serialize dc_id
         photoSize.location = location;
         return photoSize;
     }
@@ -268,7 +306,7 @@ public final class TlJsonMapper {
         document.date = messageDate > 0 ? messageDate : (int) (System.currentTimeMillis() / 1000L);
         document.mime_type = mime;
         document.size = size;
-        document.dc_id = 0;
+        document.dc_id = VIRTUAL_DC; // durable across storage reload (TL_document serializes dc_id) — see VIRTUAL_DC javadoc
         if (thumbFileId > 0) {
             document.flags |= 1; // thumbs vector present
             int[] dims = thumbDims(width > 0 ? width : 320, height > 0 ? height : 320);

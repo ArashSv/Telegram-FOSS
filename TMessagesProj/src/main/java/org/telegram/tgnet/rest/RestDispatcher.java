@@ -2,9 +2,11 @@ package org.telegram.tgnet.rest;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.NativeByteBuffer;
@@ -200,6 +202,7 @@ public final class RestDispatcher {
             // pagination request from the UI means the end of the list
             return new TLRPC.TL_messages_dialogs();
         }
+        healStaleMediaLocationsOnce(account);
         long selfId = UserConfig.getInstance(account).clientUserId;
         RestChatIndex index = RestChatIndex.getInstance(account);
         TLRPC.TL_messages_dialogs dialogs = TlJsonMapper.parseDialogs(
@@ -217,6 +220,41 @@ public final class RestDispatcher {
             }
         }
         return dialogs;
+    }
+
+    /**
+     * One-time local-database re-anchor per account (v1.2 media contract fix).
+     *
+     * <p>Rationale: messages parsed BEFORE the {@link TlJsonMapper#VIRTUAL_DC}
+     * correction were persisted into MessagesStorage with {@code dc_id == 0}
+     * (the location classes do not even serialize it). The tree refuses such
+     * media at download time — FileLoadOperation.start() fails them before any
+     * network request — and processLoadedMessages only re-queries the server
+     * when the local cache page is EMPTY, so a cached chat never self-heals by
+     * reopening it. The REST layer is the sole source of truth for this app
+     * (no local-only content exists), so the deterministic repair is the
+     * tree's own supported mechanism: clear the local database once; every
+     * dialog and message is then re-fetched from the backend and re-persisted
+     * with the corrected synthetic locations.
+     *
+     * <p>Trigger point: the first getDialogs fetch after login/start (the
+     * session bootstrap). The once-ever guard lives in a dedicated per-account
+     * prefs file, versioned so future contract corrections can reuse the
+     * pattern. clearLocalDatabase() is asynchronous (posts to the storage
+     * queue) and leaves params/auth untouched; the fresh dialogs answer this
+     * call already carries is repopulated right after.
+     */
+    private static void healStaleMediaLocationsOnce(int account) {
+        android.content.SharedPreferences prefs = ApplicationLoader.applicationContext
+                .getSharedPreferences("xoheal_" + account, android.content.Context.MODE_PRIVATE);
+        if (prefs.getBoolean("heal_2026_09_dc_v1", false)) {
+            return;
+        }
+        prefs.edit().putBoolean("heal_2026_09_dc_v1", true).apply();
+        MessagesStorage.getInstance(account).clearLocalDatabase();
+        if (BuildVars.LOGS_ENABLED) {
+            FileLog.d("RestDispatcher: one-time local database re-anchor for media contract v1.2 (account " + account + ")");
+        }
     }
 
     private static TLObject handleHistory(int account, TLRPC.TL_messages_getHistory req) {
