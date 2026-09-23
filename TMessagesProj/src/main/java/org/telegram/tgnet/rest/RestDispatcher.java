@@ -430,7 +430,20 @@ public final class RestDispatcher {
         bytes.reuse(); // single free: the tree never serializes a routed request
 
         long backendId = RestFileBridge.getInstance(account).ensureBackendFile(treeUploadId, chunksTotalEstimate);
-        RestGateway.getInstance(account).fileChunk(backendId, part, data);
+        // T14: the host WAF rejects binary POST bodies under ~10 KB, which
+        // kills short final tail parts and small thumbnails (upload fails
+        // after the progress bar hits 100%). Pad sub-32 KB bodies to a
+        // normal-looking 32 KB part and declare the real length via &len= —
+        // the backend truncates before storing, so the blob stays exact.
+        if (data.length < 32 * 1024) {
+            byte[] padded = new byte[32 * 1024];
+            System.arraycopy(data, 0, padded, 0, data.length);
+            RestGateway.getInstance(account).fileChunk(backendId, part, padded, data.length);
+            RestFileBridge.getInstance(account).noteUploadBytes(treeUploadId, data.length);
+        } else {
+            RestGateway.getInstance(account).fileChunk(backendId, part, data);
+            RestFileBridge.getInstance(account).noteUploadBytes(treeUploadId, written);
+        }
         if (BuildVars.LOGS_ENABLED) {
             FileLog.d("RestDispatcher: part " + part + " (" + written + "B) treeId=" + treeUploadId + " -> file " + backendId);
         }
@@ -486,6 +499,7 @@ public final class RestDispatcher {
         String mime = null;
         String name = null;
         Integer width = null, height = null, duration = null;
+        long thumbTreeId = 0;
 
         if (req.media instanceof TLRPC.TL_inputMediaUploadedPhoto) {
             TLRPC.InputFile file = ((TLRPC.TL_inputMediaUploadedPhoto) req.media).file;
@@ -498,6 +512,13 @@ public final class RestDispatcher {
             parts = input.file.parts;
             name = input.file.name;
             mime = input.mime_type;
+            // T14: the tree uploads video/document thumbnails as separate small
+            // files (input.thumb) — previously ignored, they lingered as dead
+            // 'uploading' rows and video messages had no preview. Finalize the
+            // thumb (its parts went through this dispatcher) and link it.
+            if (input.thumb instanceof TLRPC.TL_inputFile || input.thumb instanceof TLRPC.TL_inputFileBig) {
+                thumbTreeId = input.thumb.id;
+            }
             for (int a = 0; a < input.attributes.size(); a++) {
                 TLRPC.DocumentAttribute attribute = input.attributes.get(a);
                 if (attribute instanceof TLRPC.TL_documentAttributeFilename) {
@@ -536,10 +557,26 @@ public final class RestDispatcher {
         // (planted by the receive mapper) — skip finalize, the file is ready.
         boolean alreadyBackend = req.media instanceof TLRPC.TL_inputMediaPhoto
                 || req.media instanceof TLRPC.TL_inputMediaDocument;
+        long thumbBackendId = 0;
         if (!alreadyBackend) {
             // finalize is the single metadata injection point; the tree's real
-            // part count patches any streaming-extended estimate (v1.1b)
-            bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration);
+            // part count patches any streaming-extended estimate (v1.1b). T14:
+            // declare the exact streamed byte total (corruption cross-check).
+            long declaredBytes = bridge.uploadedBytesFor(treeUploadId);
+            bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes);
+            if (thumbTreeId != 0) {
+                try {
+                    JSONObject thumbEnvelope = bridge.finalizeUpload(thumbTreeId, 1, "image/jpeg", null, null, null, null, bridge.uploadedBytesFor(thumbTreeId));
+                    JSONObject thumbJson = thumbEnvelope != null ? thumbEnvelope.optJSONObject("file") : null;
+                    thumbBackendId = thumbJson != null ? thumbJson.optLong("file_id", 0) : 0;
+                } catch (Exception e) {
+                    // a thumb must never fail the send; fall back to the mapping
+                    FileLog.w("RestDispatcher: thumb finalize failed, continuing without link");
+                }
+                if (thumbBackendId == 0) {
+                    thumbBackendId = bridge.backendFileIdFor(thumbTreeId);
+                }
+            }
         }
         long mediaFileId = alreadyBackend ? treeUploadId : bridge.backendFileIdFor(treeUploadId);
         if (mediaFileId == 0) {
@@ -564,7 +601,7 @@ public final class RestDispatcher {
             FileLog.d("RestDispatcher: send-media chat=" + chatId + " file=" + mediaFileId + " caption=" + caption.length());
         }
 
-        JSONObject sent = RestGateway.getInstance(account).sendMedia(chatId, mediaFileId, caption, replyToId);
+        JSONObject sent = RestGateway.getInstance(account).sendMedia(chatId, mediaFileId, caption, replyToId, thumbBackendId);
         JSONObject msgJson = sent.optJSONObject("message");
         if (msgJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "send response lacks the message object");

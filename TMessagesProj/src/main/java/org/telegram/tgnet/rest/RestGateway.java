@@ -281,16 +281,30 @@ public final class RestGateway {
     }
 
     /**
-     * POST /files/chunk.php?file_id=&index= — raw octet-stream part (128 KB
-     * Telegram-style; idempotent: a retried part overwrites itself).
+     * POST /files/chunk.php?file_id=&index=&len= — raw octet-stream part (128 KB
+     * Telegram-style; idempotent: a retried part overwrites itself). T14:
+     * {@code realLen} declares the true byte count when the body is PADDED —
+     * the host WAF rejects binary POST bodies under ~10 KB (short final tails
+     * and small thumbnails), so the dispatcher pads sub-32 KB bodies to 32 KB
+     * and the backend truncates back to {@code len} before storing. 0 = no
+     * padding (body is exact).
      */
-    public void fileChunk(long backendFileId, int index, byte[] bytes) {
+    public void fileChunk(long backendFileId, int index, byte[] bytes, int realLen) {
+        String q = "?file_id=" + backendFileId + "&index=" + index;
+        if (realLen > 0 && realLen < bytes.length) {
+            q += "&len=" + realLen;
+        }
+        final String query = q;
         JSONObject response = fileRequestRetry("files/chunk.php",
                 () -> authenticatedBinaryPost(
-                        "files/chunk.php?file_id=" + backendFileId + "&index=" + index, bytes));
+                        "files/chunk.php" + query, bytes));
         if (!response.optBoolean("ok", false)) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "chunk answer without ok");
         }
+    }
+
+    public void fileChunk(long backendFileId, int index, byte[] bytes) {
+        fileChunk(backendFileId, index, bytes, 0);
     }
 
     /**
@@ -301,9 +315,14 @@ public final class RestGateway {
      * images are fully server-validated. Idempotent on ready files.
      */
     public JSONObject fileFinalize(long backendFileId, int chunksTotal, String mediaMime, String mediaName,
-                                   Integer width, Integer height, Integer duration) {
+                                   Integer width, Integer height, Integer duration, long declaredBytes) {
         JSONObject body = putNumber(new JSONObject(), "file_id", backendFileId);
         putNumber(body, "chunks_total", Math.max(1, chunksTotal));
+        if (declaredBytes > 0) {
+            // T14: exact streamed byte total — the backend cross-checks it
+            // against the assembled blob (truncation/corruption detector).
+            putNumber(body, "size", declaredBytes);
+        }
         if (mediaMime != null && mediaMime.length() > 0) {
             put(body, "mime_type", mediaMime);
         }
@@ -396,9 +415,24 @@ public final class RestGateway {
      * response carries the full message JSON (media joined by the backend).
      */
     public JSONObject sendMedia(long chatId, long mediaFileId, String caption, int replyToId) {
+        return sendMedia(chatId, mediaFileId, caption, replyToId, 0);
+    }
+
+    /**
+     * POST /messages/send.php with {@code media_file_id} — the media message
+     * contract (media ≠ file: only the reference travels in the message). The
+     * response carries the full message JSON (media joined by the backend).
+     * T14: {@code thumbFileId} > 0 links a client-uploaded thumbnail (the
+     * tree uploads video/document thumbs as separate files) — the backend
+     * validates + links it, and the receive mapper plants the doc thumb.
+     */
+    public JSONObject sendMedia(long chatId, long mediaFileId, String caption, int replyToId, long thumbFileId) {
         JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
         putNumber(body, "media_file_id", mediaFileId);
         put(body, "content", caption == null ? "" : caption);
+        if (thumbFileId > 0) {
+            putNumber(body, "thumb_file_id", thumbFileId);
+        }
         if (replyToId > 0) {
             putNumber(body, "reply_to_id", replyToId);
         }

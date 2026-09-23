@@ -74,6 +74,8 @@ public final class RestFileBridge {
     private final android.util.LongSparseArray<Long> cache = new android.util.LongSparseArray<>();
     /** parentFileId -> thumbFileId (0 = none/failure); guarded by itself. */
     private final android.util.LongSparseArray<Long> thumbCache = new android.util.LongSparseArray<>();
+    /** treeUploadId -> uploaded byte total (T14 size cross-check); guarded by itself. */
+    private final android.util.LongSparseArray<Long> byteCache = new android.util.LongSparseArray<>();
 
     private RestFileBridge(int account) {
         this.account = account;
@@ -144,14 +146,66 @@ public final class RestFileBridge {
      * finally reveals mime/name/dimensions/duration. Returns null when the
      * tree id is unknown (upload never went through this client session —
      * caller answers a typed error).
+     *
+     * <p>T14: {@code declaredBytes} is the exact byte total this client
+     * streamed through {@link #noteUploadBytes} — the backend cross-checks it
+     * against the assembled blob (SIZE_MISMATCH on transport truncation) and
+     * uses it as the declared size. 0 = unknown (skip the cross-check).
      */
     public JSONObject finalizeUpload(long treeUploadId, int chunksTotal, String mime, String name,
                                      Integer width, Integer height, Integer duration) {
+        return finalizeUpload(treeUploadId, chunksTotal, mime, name, width, height, duration, 0);
+    }
+
+    /** @see #finalizeUpload(long, int, String, String, Integer, Integer, Integer) */
+    public JSONObject finalizeUpload(long treeUploadId, int chunksTotal, String mime, String name,
+                                     Integer width, Integer height, Integer duration, long declaredBytes) {
         long backendId = backendFileIdFor(treeUploadId);
         if (backendId == 0) {
             return null;
         }
-        return RestGateway.getInstance(account).fileFinalize(backendId, chunksTotal, mime, name, width, height, duration);
+        return RestGateway.getInstance(account).fileFinalize(backendId, chunksTotal, mime, name, width, height, duration, declaredBytes);
+    }
+
+    /**
+     * T14: accounts the bytes of one delivered part (persisted like the id
+     * mapping — the tree resumes uploads across process death, and the resumed
+     * stream only sends the parts AFTER the resume point, so the total must
+     * survive). The sum is declared at finalize as the exact expected size.
+     */
+    public void noteUploadBytes(long treeUploadId, int bytes) {
+        if (treeUploadId == 0 || bytes <= 0) {
+            return;
+        }
+        synchronized (byteCache) {
+            long total = byteCache.get(treeUploadId, 0L);
+            if (total == 0) {
+                total = prefs.getLong(KEY_PREFIX + treeUploadId + "_bytes", 0);
+            }
+            total += bytes;
+            byteCache.put(treeUploadId, total);
+            prefs.edit().putLong(KEY_PREFIX + treeUploadId + "_bytes", total).apply();
+        }
+    }
+
+    /** T14: total bytes streamed for a tree id so far (0 = none recorded). */
+    public long uploadedBytesFor(long treeUploadId) {
+        if (treeUploadId == 0) {
+            return 0;
+        }
+        synchronized (byteCache) {
+            Long cached = byteCache.get(treeUploadId);
+            if (cached != null) {
+                return cached;
+            }
+        }
+        long persisted = prefs.getLong(KEY_PREFIX + treeUploadId + "_bytes", 0);
+        if (persisted != 0) {
+            synchronized (byteCache) {
+                byteCache.put(treeUploadId, persisted);
+            }
+        }
+        return persisted;
     }
 
     /**
