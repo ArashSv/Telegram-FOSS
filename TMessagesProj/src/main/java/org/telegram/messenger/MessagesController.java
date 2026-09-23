@@ -50,6 +50,7 @@ import org.telegram.messenger.support.LongSparseIntArray;
 import org.telegram.messenger.support.LongSparseLongArray;
 import org.telegram.messenger.voip.VoIPService;
 import org.telegram.tgnet.ConnectionsManager;
+import org.telegram.tgnet.rest.RestAuthStore;
 import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.RequestDelegate;
 import org.telegram.tgnet.SerializedData;
@@ -14140,6 +14141,15 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void performLogout(int type) {
+        // Xo (T10): the ONLY session-destruction path for our REST layer. The
+        // network layer never wipes tokens on its own (no auto logout on 401 /
+        // revocation / transport noise) — this runs when the USER presses
+        // Log Out, so the stored tokens + sync cursor die with the account.
+        try {
+            RestAuthStore.getInstance(currentAccount).clear();
+        } catch (Exception e) {
+            FileLog.e("performLogout: RestAuthStore clear failed", e);
+        }
         if (type == 1) {
             unregistedPush();
             TLRPC.TL_auth_logOut req = new TLRPC.TL_auth_logOut();

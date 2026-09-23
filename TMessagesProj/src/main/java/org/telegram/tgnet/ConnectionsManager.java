@@ -780,13 +780,13 @@ public class ConnectionsManager extends BaseController {
     }
 
     public static void onLogout(final int currentAccount) {
-        AndroidUtilities.runOnUIThread(() -> {
-            AccountInstance accountInstance = AccountInstance.getInstance(currentAccount);
-            if (accountInstance.getUserConfig().getClientUserId() != 0) {
-                accountInstance.getUserConfig().clearConfig();
-                accountInstance.getMessagesController().performLogout(0);
-            }
-        });
+        // Xo (T10): native-driven logout DISABLED. The MTProto layer on this
+        // build carries no user session (every RPC is REST-dispatched), so a
+        // native logout event is noise — and it used to cascade into
+        // UserConfig.clearConfig() + performLogout, i.e. an automatic session
+        // destruction. Session destruction happens ONLY when the user presses
+        // Log Out (which calls performLogout itself).
+        FileLog.d("ConnectionsManager: native onLogout ignored (T10, manual logout only)");
     }
 
     public static int getInitFlags() {

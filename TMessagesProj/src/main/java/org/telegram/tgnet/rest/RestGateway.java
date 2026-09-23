@@ -21,9 +21,9 @@ import org.telegram.tgnet.TLRPC;
  *       spent, plus reactive refresh on 401 {@code TOKEN_EXPIRED} — both funnel
  *       through the single-flight claim in {@link RestAuthStore}, and a request
  *       is retried <b>once</b> at most. There is no retry loop by construction;</li>
- *   <li>refresh-token family revocation (401 on /auth/refresh.php = replay
- *       detection) → {@link RestAuthStore#clear()} + session-invalid listener:
- *       the only recovery is a fresh login (T4).</li>
+ *   <li>NO automatic session destruction (T10): a rejected refresh surfaces as
+ *       a typed error and the tokens stay. The only session-destruction path is
+ *       the user's manual logout (MessagesController.performLogout).</li>
  * </ul>
  *
  * <p>Threading: every method blocks on network I/O — worker threads only.
@@ -328,15 +328,15 @@ public final class RestGateway {
             return fresh;
         } catch (XoApiException e) {
             store.endRefresh(known.refreshToken, null);
-            // T7b VPN hardening: clear() ONLY on a genuine backend envelope. A
-            // garbled 401 page from an intermediary (WAF/proxy/captive portal on
-            // VPN paths) parses as MALFORMED_RESPONSE with http 401 — that must
-            // never destroy a stored session; the typed error is surfaced and the
-            // tokens stay. Replay/revocation (TOKEN_EXPIRED/UNAUTHORIZED) keeps
-            // the contract: family dead -> fresh login.
+            // T10: NO automatic session destruction, EVER. A 401 on refresh
+            // (replay detection / family revocation — typically caused by a
+            // refresh response lost under VPN) previously wiped the store and
+            // kicked the user. Now the tokens STAY: the still-valid access
+            // token keeps the app working, and recovery is a manual logout +
+            // fresh login (the ONLY session-destruction path is the logout
+            // button, wired in MessagesController.performLogout).
             if (e.httpStatus == 401 && e.isGenuineServerRejection()) {
-                store.clear();
-                throw sessionInvalid("refresh rejected by backend (http 401, code " + e.errorCode + ")");
+                FileLog.e("RestGateway: refresh rejected by backend (http 401, code " + e.errorCode + ") — tokens kept, no auto logout");
             }
             throw e;
         } catch (XoTransportException e) {
