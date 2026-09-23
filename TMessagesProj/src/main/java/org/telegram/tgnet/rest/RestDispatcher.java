@@ -44,11 +44,22 @@ import java.util.concurrent.Executors;
  *   <li>sendMessage → {@link TLRPC.TL_updates} carrying one
  *       {@code TL_updateNewMessage} (SendMessagesHelper:6420 extracts it and
  *       assigns the server id — no random_id echo needed);</li>
- *   <li>readHistory/deleteMessages → {@link TLRPC.TL_messages_affectedHistory}
- *       — deliberately NOT {@code TL_messages_affectedMessages}, because the
- *       callers branch on that class to apply pts params
- *       (MessagesController:12906); our pts is always 0, so the safest
- *       response is one the call sites ignore by type;</li>
+ *   <li>readHistory → {@link TLRPC.TL_messages_affectedHistory} — the MTProto
+ *       schema type for messages.readHistory. The sole call site
+ *       (MessagesController:12920) type-tests with
+ *       {@code instanceof TL_messages_affectedMessages} before casting, so a
+ *       schema-faithful affectedHistory is simply ignored there — safe;</li>
+ *   <li>deleteMessages → {@link TLRPC.TL_messages_affectedMessages} — the
+ *       MTProto schema type for messages.deleteMessages, and the class the
+ *       sole call site (MessagesController:8262) <b>hard-casts</b> to.
+ *       T12 root cause: this route used to answer affectedHistory (the two
+ *       methods were assumed interchangeable), the cast threw
+ *       ClassCastException on the stageQueue, and because the request is
+ *       persisted as a pending task (MessagesStorage magic 24) whose
+ *       {@code removePendingTask} runs only inside that very callback, the
+ *       task re-fired and re-crashed on every launch until app data was
+ *       cleared. Contract: every routed response class MUST equal what the
+ *       consuming call site casts — see RestRouter's contract table;</li>
  *   <li>users_getUsers → {@link TLRPC.Vector} of users (MessagesController:5953);</li>
  *   <li>updates_getState/getDifference → zeroed stubs: the sync cursor lives
  *       in {@link UpdatePoller}, so the legacy pts/seq machinery must stay at
@@ -267,32 +278,51 @@ public final class RestDispatcher {
         }
         long chatId = requireChatId(account, peer);
         RestGateway.getInstance(account).read(chatId, req.max_id);
-        // affectedHistory (NOT affectedMessages) so the call sites that apply
-        // pts params on TL_messages_affectedMessages ignore the response
+        // Schema class for messages.readHistory. The sole call site
+        // (MessagesController:12920) guards its cast with
+        // `instanceof TL_messages_affectedMessages`, so this answer is safely
+        // ignored there — and pts MUST stay 0 anyway (pinned baseline).
         return new TLRPC.TL_messages_affectedHistory();
     }
 
+    /**
+     * messages.deleteMessages is consumed by MessagesController.deleteMessages
+     * (the method's only sender), whose callback HARD-CASTS the response to
+     * {@code TL_messages_affectedMessages} (MessagesController:8262) and only
+     * then clears the persisted pending task. Answering any other class is a
+     * stageQueue ClassCastException that re-fires on every launch — T12.
+     * pts/pts_count stay 0: processNewDifferenceParams(-1, 0, -1, 0) is a
+     * no-op against our pinned baseline (lastPts == 0), by construction.
+     */
     private static TLObject handleDelete(int account, TLRPC.TL_messages_deleteMessages req) {
         if (req.id.isEmpty()) {
-            return new TLRPC.TL_messages_affectedHistory();
+            return affectedMessages();
         }
         if (!req.revoke) {
             // delete-for-me only: local deletion already happened, and the v1
             // endpoint is delete-for-everyone — calling it would exceed intent
-            return new TLRPC.TL_messages_affectedHistory();
+            return affectedMessages();
         }
         RestChatIndex index = RestChatIndex.getInstance(account);
         long chatId = index.chatIdForAnyMessage(req.id);
         if (chatId == 0) {
             FileLog.w("RestDispatcher: revoke for unseen message ids, nothing to delete server-side");
-            return new TLRPC.TL_messages_affectedHistory();
+            return affectedMessages();
         }
         int[] ids = new int[req.id.size()];
         for (int a = 0; a < ids.length; a++) {
             ids[a] = req.id.get(a);
         }
         RestGateway.getInstance(account).delete(chatId, ids);
-        return new TLRPC.TL_messages_affectedHistory();
+        return affectedMessages();
+    }
+
+    /** The delete-route answer: the schema class, with pts pinned at the baseline. */
+    private static TLRPC.TL_messages_affectedMessages affectedMessages() {
+        TLRPC.TL_messages_affectedMessages res = new TLRPC.TL_messages_affectedMessages();
+        res.pts = 0;
+        res.pts_count = 0;
+        return res;
     }
 
     private static TLObject handleUsersGet(int account, TLRPC.TL_users_getUsers req) {
@@ -423,41 +453,22 @@ public final class RestDispatcher {
     }
 
     /**
-     * One /users/get.php call per page for sender ids missing from the
-     * memory cache — keeps group history renderable (the history endpoint
-     * itself carries no user objects) without N round trips.
+     * Users vector for TL response containers: cached senders pass through,
+     * the rest share ONE /users/get.php call ({@link UserHydration}) so group
+     * history renders without N round trips. The history endpoint itself
+     * carries no user objects.
      */
     private static ArrayList<TLRPC.TL_user> hydrateSenders(int account, List<? extends TLRPC.Message> messages) {
+        ArrayList<Long> senderIds = UserHydration.senderIds(messages);
         ArrayList<TLRPC.TL_user> users = new ArrayList<>();
-        ArrayList<Long> missing = null;
-        for (int a = 0; a < messages.size(); a++) {
-            TLRPC.Message message = messages.get(a);
-            long senderId = message.from_id instanceof TLRPC.TL_peerUser
-                    ? ((TLRPC.TL_peerUser) message.from_id).user_id : 0;
-            if (senderId == 0) {
-                continue;
-            }
-            TLRPC.User cached = MessagesController.getInstance(account).getUser(senderId);
+        MessagesController controller = MessagesController.getInstance(account);
+        for (int a = 0; a < senderIds.size(); a++) {
+            TLRPC.User cached = controller.getUser(senderIds.get(a));
             if (cached instanceof TLRPC.TL_user) {
                 users.add((TLRPC.TL_user) cached);
-            } else {
-                if (missing == null) {
-                    missing = new ArrayList<>();
-                }
-                missing.add(senderId);
             }
         }
-        if (missing != null && !missing.isEmpty()) {
-            long[] ids = new long[missing.size()];
-            for (int a = 0; a < ids.length; a++) {
-                ids[a] = missing.get(a);
-            }
-            try {
-                users.addAll(TlJsonMapper.parseUsers(RestGateway.getInstance(account).usersGet(ids)));
-            } catch (Exception e) {
-                FileLog.e("RestDispatcher: sender hydration failed, dialog may render raw ids", e);
-            }
-        }
+        users.addAll(UserHydration.fetchUncached(account, senderIds));
         return users;
     }
 

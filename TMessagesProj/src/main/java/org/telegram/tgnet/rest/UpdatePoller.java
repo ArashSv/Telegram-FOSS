@@ -1,10 +1,9 @@
 package org.telegram.tgnet.rest;
 
-import android.util.SparseArray;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
@@ -43,13 +42,21 @@ import java.util.concurrent.TimeUnit;
  *       {@link #ensureStarted()}.</li>
  * </ul>
  *
- * <p>Interval is the API-recommended 1.5 s active value — the Phase-2
- * acceptance target is end-to-end delivery under 2 s. Background throttling
- * (30 s / Doze) is a later hardening task, not wired now.
+ * <p>Interval is adaptive (T13 hardening, replacing the fixed 1.5 s of the
+ * first wiring): 1.5 s while the user is looking at the app
+ * ({@code !mainInterfacePaused && isScreenOn}) — the Phase-2 acceptance
+ * target is end-to-end delivery under 2 s foregrounded; 10 s once the UI is
+ * paused or the screen is off. Same cursor contract, same backoff ladder in
+ * both modes; the signal is the tree-canonical volatile pair that
+ * NotificationsController/MediaController already read, so there is no new
+ * lifecycle coupling. Failures back off exponentially (1.5s/10s → 60s) and a
+ * session-invalid answer stops the loop; a later successful routed call
+ * re-arms it via {@link #ensureStarted()}.
  */
 public final class UpdatePoller {
 
     private static final long POLL_INTERVAL_MS = 1500;
+    private static final long BACKGROUND_POLL_INTERVAL_MS = 10_000;
     private static final long MAX_BACKOFF_MS = 60_000;
     private static final int POLL_LIMIT = 200;
 
@@ -152,9 +159,15 @@ public final class UpdatePoller {
             ConnectionsManager.getInstance(account).setXoConnectionState(ConnectionsManager.ConnectionStateConnecting);
             FileLog.e("UpdatePoller: sync transport failure (" + consecutiveFailures + ")", e);
         }
-        long delay = consecutiveFailures == 0 ? POLL_INTERVAL_MS
-                : Math.min(POLL_INTERVAL_MS << Math.min(consecutiveFailures, 6), MAX_BACKOFF_MS);
+        long idleInterval = isBackground() ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+        long delay = consecutiveFailures == 0 ? idleInterval
+                : Math.min(idleInterval << Math.min(consecutiveFailures, 6), MAX_BACKOFF_MS);
         scheduler.schedule(this::tick, delay, TimeUnit.MILLISECONDS);
+    }
+
+    /** Tree-canonical foreground signal: UI paused or screen off → background cadence. */
+    private static boolean isBackground() {
+        return ApplicationLoader.mainInterfacePaused || !ApplicationLoader.isScreenOn;
     }
 
     // ------------------------------------------------------------------ event application
@@ -167,7 +180,9 @@ public final class UpdatePoller {
         ArrayList<TLRPC.Update> tlUpdates = new ArrayList<>();
         ArrayList<TLRPC.TL_message> parsedMessages = new ArrayList<>();
         ArrayList<TLRPC.Chat> chatsArr = new ArrayList<>();
-        SparseArray<long[]> pendingReads = new SparseArray<>(); // position -> {readerId, maxId, chatId}
+        // T13: a plain list of {readerId, maxId, chatId} rows — the old
+        // SparseArray-as-list keyed by position added indirection, nothing else
+        ArrayList<long[]> pendingReads = new ArrayList<>();
 
         for (int a = 0; a < updates.length(); a++) {
             JSONObject update = updates.optJSONObject(a);
@@ -247,7 +262,7 @@ public final class UpdatePoller {
         try {
             long dialogId = isGroup ? -chatId : peerUserId;
             TLRPC.TL_message message = TlJsonMapper.parseMessage(msgJson, dialogId, isGroup, peerUserId, selfId);
-            index.rememberMessages(chatId, new ArrayList<>(java.util.Collections.singletonList(message)));
+            index.rememberMessages(chatId, java.util.Collections.singletonList(message));
             TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
             update.message = message;
             update.pts = 0;
@@ -259,14 +274,14 @@ public final class UpdatePoller {
         }
     }
 
-    private void handleRead(JSONObject update, SparseArray<long[]> pendingReads) {
+    private void handleRead(JSONObject update, ArrayList<long[]> pendingReads) {
         long readerId = update.optLong("user_id", 0);
         int maxId = (int) update.optLong("max_id", 0);
         long chatId = update.optLong("chat_id", 0);
         if (readerId == 0 || maxId <= 0) {
             return;
         }
-        pendingReads.put(pendingReads.size(), new long[]{readerId, maxId, chatId});
+        pendingReads.add(new long[]{readerId, maxId, chatId});
     }
 
     private void handleDelete(JSONObject update, ArrayList<TLRPC.Update> tlUpdates) {
@@ -309,10 +324,10 @@ public final class UpdatePoller {
      * Read updates carry no users, so they are appended after the user
      * hydration pass — positionally, to keep the batch ordering intact.
      */
-    private void appendReadUpdates(ArrayList<TLRPC.Update> tlUpdates, SparseArray<long[]> pendingReads) {
+    private void appendReadUpdates(ArrayList<TLRPC.Update> tlUpdates, ArrayList<long[]> pendingReads) {
         RestChatIndex index = RestChatIndex.getInstance(account);
         for (int a = 0; a < pendingReads.size(); a++) {
-            long[] entry = pendingReads.valueAt(a);
+            long[] entry = pendingReads.get(a);
             long readerId = entry[0];
             int maxId = (int) entry[1];
             long chatId = entry[2];
@@ -342,45 +357,15 @@ public final class UpdatePoller {
 
     /**
      * Senders present in the memory cache pass through; the rest share one
-     * /users/get.php call; anything still unknown degrades to a
-     * {@code user<id>} placeholder so a message is never lost to hydration.
+     * /users/get.php call ({@link UserHydration}, shared with the dispatcher);
+     * anything still unknown degrades to a {@code user<id>} placeholder so a
+     * message is never lost to hydration.
      */
     private ArrayList<TLRPC.User> resolveUsers(ArrayList<TLRPC.TL_message> messages, long selfId) {
-        ArrayList<TLRPC.User> usersArr = new ArrayList<>();
-        ArrayList<Long> missing = null;
-        for (int a = 0; a < messages.size(); a++) {
-            TLRPC.TL_message message = messages.get(a);
-            if (!(message.from_id instanceof TLRPC.TL_peerUser)) {
-                continue;
-            }
-            long senderId = ((TLRPC.TL_peerUser) message.from_id).user_id;
-            if (hasCachedUser(senderId)) {
-                continue;
-            }
-            if (missing == null) {
-                missing = new ArrayList<>();
-            }
-            if (!missing.contains(senderId)) {
-                missing.add(senderId);
-            }
-        }
-        if (missing != null) {
-            long[] ids = new long[missing.size()];
-            for (int a = 0; a < ids.length; a++) {
-                ids[a] = missing.get(a);
-            }
-            try {
-                usersArr.addAll(TlJsonMapper.parseUsers(gateway.usersGet(ids)));
-            } catch (Exception e) {
-                FileLog.e("UpdatePoller: sender hydration failed", e);
-            }
-        }
-        for (int a = 0; a < messages.size(); a++) {
-            TLRPC.TL_message message = messages.get(a);
-            if (!(message.from_id instanceof TLRPC.TL_peerUser)) {
-                continue;
-            }
-            long senderId = ((TLRPC.TL_peerUser) message.from_id).user_id;
+        ArrayList<Long> senderIds = UserHydration.senderIds(messages);
+        ArrayList<TLRPC.User> usersArr = new ArrayList<>(UserHydration.fetchUncached(account, senderIds));
+        for (int a = 0; a < senderIds.size(); a++) {
+            long senderId = senderIds.get(a);
             if (!containsUser(usersArr, senderId) && !hasCachedUser(senderId)) {
                 TLRPC.TL_user fallback = new TLRPC.TL_user();
                 fallback.id = senderId;

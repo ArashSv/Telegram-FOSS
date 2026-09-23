@@ -19,9 +19,36 @@ import java.util.HashMap;
  * and are kept as provenance: TL_auth_sendCode = 0xa677244f,
  * TL_auth_signUp = 0x80eee427, TL_auth_signIn = 0x8d52a951,
  * TL_messages_getDialogs = 0xa0f4cb4f, TL_messages_getHistory = 0x4423e6c5,
- * TL_messages_sendMessage = 0x983f9745, TL_messages_readHistory = 0xe306d3a,
+ * TL_messages_sendMessage = 0x983f9745, TL_messages_readHistory = 0xe306d3a1,
  * TL_messages_deleteMessages = 0xe58e95d2, TL_users_getUsers = 0xd91a548,
  * TL_updates_getState = 0xedd4882a, TL_updates_getDifference = 0x25939651.
+ *
+ * <p><b>Response-class contract</b> (T12 lesson — the single most important
+ * invariant of this package): the tree consumes routed responses with
+ * hard casts, and a wrong class is a ClassCastException on the stageQueue —
+ * for deleteMessages it even became a launch crash loop, because the request
+ * is persisted as a pending task that only that callback clears. Every route
+ * below therefore names its consuming call site; a response class may only
+ * change together with that call site:
+ * <ul>
+ *   <li>ROUTE_DIALOGS → TL_messages_dialogs; consumer MessagesController
+ *       getDialogs callback (hard cast, ~:10881);</li>
+ *   <li>ROUTE_HISTORY → TL_messages_messages; consumer MessagesController
+ *       getHistory callback (hard cast, ~:10196);</li>
+ *   <li>ROUTE_SEND → TL_updates with one TL_updateNewMessage; consumer
+ *       SendMessagesHelper (~:6420, hard cast);</li>
+ *   <li>ROUTE_READ → TL_messages_affectedHistory (schema type of
+ *       messages.readHistory); consumer MessagesController.completeReadTask
+ *       (~:12920, instanceof-guarded — ignores it);</li>
+ *   <li>ROUTE_DELETE → TL_messages_affectedMessages (schema type of
+ *       messages.deleteMessages); consumer MessagesController.deleteMessages
+ *       callback (~:8262, HARD cast + pending-task clear);</li>
+ *   <li>ROUTE_USERS_GET → Vector of TL_user; consumer MessagesController
+ *       users_getUsers callback (hard cast);</li>
+ *   <li>ROUTE_STATE / ROUTE_DIFFERENCE → zeroed stubs (pts machinery stays
+ *       pinned; getState cannot be error-denied — loadCurrentState retries
+ *       forever on non-401 errors).</li>
+ * </ul>
  */
 public final class RestRouter {
 
