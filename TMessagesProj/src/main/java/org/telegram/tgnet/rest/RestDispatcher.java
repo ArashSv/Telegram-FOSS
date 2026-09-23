@@ -1,7 +1,11 @@
 package org.telegram.tgnet.rest;
 
+import android.widget.Toast;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
@@ -218,8 +222,35 @@ public final class RestDispatcher {
             throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable peer for send");
         }
         long chatId = requireChatId(account, peer);
-        int replyToId = req.reply_to instanceof TLRPC.TL_inputReplyToMessage
-                ? ((TLRPC.TL_inputReplyToMessage) req.reply_to).reply_to_msg_id : 0;
+        // Xo (T9): reply probe — the server round-trip is verified PASS
+        // (scripts/t8_reply_test.py), so this visible probe tells us in one test
+        // whether the funnel ever receives the reply, and with which id.
+        // TEMPORARY — remove once the reply bug is root-caused.
+        int probeReplyToId = 0;
+        String probeReplyClass = null;
+        if (req.reply_to instanceof TLRPC.TL_inputReplyToMessage) {
+            probeReplyToId = ((TLRPC.TL_inputReplyToMessage) req.reply_to).reply_to_msg_id;
+            probeReplyClass = "TL_inputReplyToMessage";
+        } else if (req.reply_to != null) {
+            probeReplyClass = req.reply_to.getClass().getSimpleName();
+        }
+        final int fProbeId = probeReplyToId;
+        final String fProbeClass = probeReplyClass;
+        AndroidUtilities.runOnUIThread(() -> {
+            try {
+                if (fProbeId > 0) {
+                    Toast.makeText(ApplicationLoader.applicationContext, "Xo: reply to #" + fProbeId, Toast.LENGTH_SHORT).show();
+                } else if (fProbeClass != null) {
+                    Toast.makeText(ApplicationLoader.applicationContext, "Xo: reply unextracted (" + fProbeClass + ")", Toast.LENGTH_LONG).show();
+                }
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+        });
+        FileLog.d("RestDispatcher: send reply_to=" + probeReplyToId + " class=" + fProbeClass);
+        // defensive: a local/negative reply id must never reach the server (the
+        // backend rejects reply_to_id < 1 with a 400 that fails the WHOLE send)
+        int replyToId = probeReplyToId > 0 ? probeReplyToId : 0;
 
         JSONObject sent = RestGateway.getInstance(account).send(chatId, req.message, replyToId);
         JSONObject msgJson = sent.optJSONObject("message");
