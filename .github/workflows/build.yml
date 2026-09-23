@@ -45,6 +45,23 @@ jobs:
           java-version: '11'
           cache: gradle
 
+      # T8-CI root-cause fix for 35-40 min builds: the dependency cache above
+      # (setup-java) uses a STATIC key hashed from the build files, and
+      # actions/cache never overwrites an existing key - so a build cache that
+      # rode along there would be frozen at whatever existed on first save
+      # (empty). This SEPARATE rolling key always misses -> always re-saves the
+      # latest execution cache (javac/aapt2/dex task outputs). Gradle keys
+      # every cache entry by content hash, so stale entries are inert.
+      - name: Restore Gradle build cache (rolling execution cache)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches/build-cache-1
+            ~/.gradle/caches/transforms-3
+          key: gradle-buildcache-${{ github.run_id }}
+          restore-keys: |
+            gradle-buildcache-
+
       - name: Free runner disk (preinstalled NDKs are useless for our pin)
         run: |
           echo "Before:"; df -h / | tail -1
@@ -87,8 +104,10 @@ jobs:
 
       - name: Build assembleAfatDebug
         run: |
+          # --build-cache: explicit twin of org.gradle.caching=true (gradle.properties)
           ./gradlew :TMessagesProj_App:assembleAfatDebug \
             -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" \
+            --build-cache \
             --stacktrace
 
       - name: Upload APK artifact
