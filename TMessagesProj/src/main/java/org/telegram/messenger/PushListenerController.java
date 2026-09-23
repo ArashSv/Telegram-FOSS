@@ -246,12 +246,11 @@ public class PushListenerController {
                             return;
                         }
                         case "SESSION_REVOKE": {
-                            AndroidUtilities.runOnUIThread(() -> {
-                                if (UserConfig.getInstance(accountFinal).getClientUserId() != 0) {
-                                    UserConfig.getInstance(accountFinal).clearConfig();
-                                    MessagesController.getInstance(accountFinal).performLogout(0);
-                                }
-                            });
+                            // Xo (T10): automatic session destruction DISABLED.
+                            // Per product decision, tokens die ONLY when the user
+                            // presses Log Out. This push path previously ran
+                            // clearConfig() + performLogout on its own.
+                            FileLog.d("PushListenerController: SESSION_REVOKE push ignored (T10, manual logout only)");
                             countDownLatch.countDown();
                             return;
                         }
@@ -1513,7 +1512,7 @@ public class PushListenerController {
 
         @Override
         public boolean hasServices() {
-        	return false;/*
+                return false;/*
             if (hasServices == null) {
                 try {
                     int resultCode = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(ApplicationLoader.applicationContext);
