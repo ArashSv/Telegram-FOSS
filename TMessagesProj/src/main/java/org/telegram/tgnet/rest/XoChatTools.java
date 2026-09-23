@@ -8,6 +8,7 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.Utilities;
 import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayList;
@@ -36,6 +37,9 @@ import java.util.concurrent.Executors;
  * <p>Threading: blocking REST on a private executor, callbacks on the UI thread.
  */
 public final class XoChatTools {
+
+    /** T9: first message of a freshly created chat — makes the dialog surface on both sides. */
+    private static final String SEED_TEXT = "Chat created — say hi!";
 
     public interface Result {
         /** @param dialogId Telegram-space dialog id (= peer user id for private chats) */
@@ -91,17 +95,64 @@ public final class XoChatTools {
                 single.put(chatJson);
                 RestChatIndex.ScanResult scan = RestChatIndex.getInstance(account).scanChats(single);
 
+                long chatId = chatJson.optLong("id", 0);
+                long dialogId = peer.id;
+                TLRPC.TL_message seedMessage = null;
+                if (isNewChat && chatId > 0) {
+                    // T9: a brand-new chat has NO last_message, and a dialog without
+                    // one does not surface in the legacy list (the user's own dot
+                    // message was what finally made it appear). Send a seed message
+                    // and apply it through the SAME path the send flow uses — the
+                    // dialog then appears on BOTH sides instantly, without any
+                    // logout/re-login. The peer gets it via the message_new poll
+                    // event.
+                    try {
+                        JSONObject sent = gateway.send(chatId, SEED_TEXT, 0);
+                        JSONObject msgJson = sent.optJSONObject("message");
+                        if (msgJson != null) {
+                            seedMessage = TlJsonMapper.parseMessage(msgJson, dialogId, false, peer.id, selfId);
+                            RestChatIndex.getInstance(account).rememberMessages(chatId,
+                                    new ArrayList<>(java.util.Collections.singletonList(seedMessage)));
+                        }
+                    } catch (Exception e) {
+                        FileLog.e("XoChatTools: seed message failed (chat still created)", e);
+                    }
+                }
+
                 ArrayList<TLRPC.User> usersToPut = new ArrayList<>();
                 usersToPut.add(peer);
                 ArrayList<TLRPC.Chat> chatsToPut = new ArrayList<>(scan.chats);
 
+                final TLRPC.TL_message fSeed = seedMessage;
                 AndroidUtilities.runOnUIThread(() -> {
                     try {
                         MessagesController messagesController = MessagesController.getInstance(account);
                         messagesController.putUsers(usersToPut, false);
                         messagesController.putChats(chatsToPut, false);
-                        // full page reload (the backend serves one page) — surfaces the dialog
-                        messagesController.loadDialogs(0, 0, 100, false);
+                        if (fSeed != null) {
+                            // apply the seed through the canonical update path —
+                            // same as a message arriving from the other device:
+                            // creates the dialog, updates the list, stores it
+                            TLRPC.TL_updates updates = new TLRPC.TL_updates();
+                            TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
+                            update.message = fSeed;
+                            update.pts = 0;
+                            update.pts_count = 0;
+                            updates.updates.add(update);
+                            updates.date = (int) (System.currentTimeMillis() / 1000L);
+                            updates.seq = 0;
+                            ArrayList<TLRPC.User> usersArr = new ArrayList<>(usersToPut);
+                            Utilities.stageQueue.postRunnable(() -> {
+                                try {
+                                    messagesController.processUpdateArray(updates.updates, usersArr, chatsToPut, false, (int) (System.currentTimeMillis() / 1000L));
+                                } catch (Exception e) {
+                                    FileLog.e("XoChatTools: seed apply failed", e);
+                                }
+                            });
+                        } else {
+                            // no seed (existing chat): best-effort full page reload
+                            messagesController.loadDialogs(0, 0, 100, false);
+                        }
                     } catch (Exception e) {
                         FileLog.e("XoChatTools: post-create UI refresh failed", e);
                     }
