@@ -1548,6 +1548,18 @@ public class FileLoadOperation {
                 }
                 File cacheFileTempLocal = cacheFileTempFinal;
                 if (cacheFileTempLocal != null) {
+                    // REST fork (T29): last line of defense before ANY success
+                    // callback fires. The assembled temp must match the server's
+                    // attested size and sha256 for this file; a mismatch (transport
+                    // hole, mangled body, bookkeeping bug) fails the operation
+                    // instead of renaming a corrupt file into the cache. Unknown
+                    // declarations and checker failures keep upstream behavior.
+                    if (!verifyRestFileIntegrity(cacheFileTempLocal)) {
+                        //noinspection ResultOfMethodCallIgnored
+                        cacheFileTempLocal.delete();
+                        Utilities.stageQueue.postRunnable(() -> onFail(true, 0));
+                        return;
+                    }
                     if (ungzip) {
                         try {
                             GZIPInputStream gzipInputStream = new GZIPInputStream(new FileInputStream(cacheFileTempLocal));
@@ -1666,6 +1678,64 @@ public class FileLoadOperation {
             delegate.didPreFinishLoading(FileLoadOperation.this, cacheFileFinal);
         }
 
+    }
+
+    /**
+     * REST fork (T29): server-attested integrity gate for finished downloads.
+     * Resolves the operation's location to a backend file and compares the
+     * assembled temp against the DECLARED size and sha256 (the values the
+     * backend computed at finalize and shipped with the message). Returns
+     * false only on a real MISMATCH — a file that must not be renamed into
+     * the cache as a successful download. Unknown declarations, non-REST
+     * locations and any checker failure return true (upstream behavior).
+     */
+    private boolean verifyRestFileIntegrity(File file) {
+        try {
+            if (webLocation != null || location == null) {
+                return true;
+            }
+            org.telegram.tgnet.rest.RestFileBridge bridge =
+                    org.telegram.tgnet.rest.RestFileBridge.getInstance(currentAccount);
+            long backendId = bridge.resolveBackendFileId(location);
+            if (backendId <= 0) {
+                return true;
+            }
+            long declaredSize = org.telegram.tgnet.rest.RestFileBridge.declaredSizeFor(backendId);
+            long actualSize = file.length();
+            if (declaredSize > 0 && actualSize != declaredSize) {
+                FileLog.e("REST integrity: size mismatch for file " + backendId
+                        + " — have " + actualSize + "B, server declared " + declaredSize + "B; refusing to finish");
+                return false;
+            }
+            if (totalBytesCount > 0 && actualSize != totalBytesCount) {
+                FileLog.e("REST integrity: size mismatch for file " + backendId
+                        + " — have " + actualSize + "B, message declared " + totalBytesCount + "B; refusing to finish");
+                return false;
+            }
+            String declaredSha = org.telegram.tgnet.rest.RestFileBridge.declaredShaFor(backendId);
+            if (declaredSha == null || declaredSha.length() == 0) {
+                return true;
+            }
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+                byte[] buffer = new byte[1024 * 1024];
+                int read;
+                while ((read = in.read(buffer)) > 0) {
+                    digest.update(buffer, 0, read);
+                }
+            }
+            String actualSha = Utilities.bytesToHex(digest.digest());
+            if (!declaredSha.equalsIgnoreCase(actualSha)) {
+                FileLog.e("REST integrity: sha256 mismatch for file " + backendId
+                        + " — assembled download is corrupt; refusing to finish");
+                return false;
+            }
+            return true;
+        } catch (Throwable t) {
+            // the checker itself must never take a legitimate download down
+            FileLog.e("REST integrity: checker failed, finishing anyway", t);
+            return true;
+        }
     }
 
     private void delayRequestInfo(RequestInfo requestInfo) {
@@ -1797,6 +1867,17 @@ public class FileLoadOperation {
                     bytes = null;
                 }
                 if (bytes == null || bytes.limit() == 0) {
+                    // REST fork (T29): an empty body can never legitimately
+                    // satisfy a request issued below EOF — treating it as
+                    // "finished" used to rename a truncated temp file as a
+                    // SUCCESSFUL download (field shape: corrupt video, 0 s).
+                    // Finish here only when the bytes we already hold cover
+                    // the declared file; otherwise fail loudly and let the
+                    // user retry — silence is worse than a visible failure.
+                    if (totalBytesCount > 0 && downloadedBytes < totalBytesCount) {
+                        onFail(false, 0);
+                        return false;
+                    }
                     onFinishLoadingFile(true, FINISH_CODE_DEFAULT, false);
                     return false;
                 }

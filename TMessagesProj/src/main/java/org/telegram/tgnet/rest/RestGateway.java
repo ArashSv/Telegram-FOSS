@@ -308,6 +308,28 @@ public final class RestGateway {
         return response.optLong("size", -1);
     }
 
+    /**
+     * T29: part upload WITH content attestation — the backend v1.3 echoes
+     * sha256 of the bytes it actually stored (after &len= truncation), so the
+     * dispatcher can detect a request body that arrived cut or byte-mangled
+     * but length-consistent (the one corruption class the size echo cannot
+     * see). Returns the raw envelope; callers read "size" and "sha256".
+     */
+    public JSONObject fileChunkAttested(long backendFileId, int index, byte[] bytes, int realLen) {
+        String q = "?file_id=" + backendFileId + "&index=" + index;
+        if (realLen > 0 && realLen < bytes.length) {
+            q += "&len=" + realLen;
+        }
+        final String query = q;
+        JSONObject response = fileRequestRetry("files/chunk.php",
+                () -> authenticatedBinaryPost(
+                        "files/chunk.php" + query, bytes));
+        if (!response.optBoolean("ok", false)) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "chunk answer without ok");
+        }
+        return response;
+    }
+
     public long fileChunk(long backendFileId, int index, byte[] bytes) {
         return fileChunk(backendFileId, index, bytes, 0);
     }
@@ -354,12 +376,21 @@ public final class RestGateway {
     }
 
     /**
-     * GET /files/download.php?file_id= with a Range header — raw bytes of one
-     * chunk (the tree asks 32..512 KB at a time; a short tail chunk closes the
-     * file). Typed errors: NOT_FOUND, INVALID_RANGE (= tree's OFFSET_INVALID),
-     * transport failures surface as {@link XoTransportException}.
+     * T29: ranged binary GET with DECLARED-LENGTH enforcement. Beyond the
+     * Content-Length promise (XoHttp), the answer must carry EXACTLY
+     * {@code expectedBytes} — the byte count the dispatcher derived from the
+     * SERVER-attested file size (clamped at the true EOF). A body that is
+     * short or long is a corrupted transfer (proxy cut, rewritten headers,
+     * chunked-encoding games): it is retried like any transport failure and —
+     * after the retries exhaust — fails LOUDLY. A short chunk is never
+     * delivered to the tree, so FileLoadOperation can never mistake a hole for
+     * a finished file (the field shape: "completed" videos, 0 s, corrupt).
+     * Typed errors: NOT_FOUND, INVALID_RANGE; transport failures surface as
+     * {@link XoTransportException}.
+     * {@code expectedBytes < 0} keeps the legacy Content-Length-only contract
+     * (file size unknown).
      */
-    public byte[] fileDownloadRange(long backendFileId, long startInclusive, long endInclusive) {
+    public byte[] fileDownloadRange(long backendFileId, long startInclusive, long endInclusive, long expectedBytes) {
         return fileRequestRetry("files/download.php", () -> {
             RestAuthStore.TokenSet tokens = requireTokens("files/download.php");
             try {
@@ -367,6 +398,10 @@ public final class RestGateway {
                         BASE_URL + "files/download.php?file_id=" + backendFileId,
                         tokens.accessToken, startInclusive, endInclusive);
                 if (response.code == 200 || response.code == 206) {
+                    if (expectedBytes >= 0 && response.data.length != expectedBytes) {
+                        throw new XoTransportException("download range " + startInclusive + "-" + endInclusive
+                                + " delivered " + response.data.length + "B, declared " + expectedBytes + "B");
+                    }
                     return response.data;
                 }
                 if (response.code == 416) {
