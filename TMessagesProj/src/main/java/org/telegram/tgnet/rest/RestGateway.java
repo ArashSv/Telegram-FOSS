@@ -456,6 +456,68 @@ public final class RestGateway {
         return authenticatedRequest("POST", "messages/send.php", body);
     }
 
+    // ------------------------------------------------------------------ T32: groups + avatars + profile (backend v1.5.0)
+
+    /**
+     * POST /chats/create.php {type:"group", title, member_ids} — group
+     * creation. Response {chat, created}; the caller wraps the chat json into
+     * the TL_messages_invitedUsers contract the tree's createChat expects.
+     */
+    public JSONObject createGroupChat(String title, long[] memberIds) {
+        JSONObject body = put(new JSONObject(), "type", "group");
+        put(body, "title", title);
+        if (memberIds != null && memberIds.length > 0) {
+            JSONArray ids = new JSONArray();
+            for (long id : memberIds) {
+                ids.put(id);
+            }
+            try {
+                body.put("member_ids", ids);
+            } catch (JSONException e) {
+                throw new IllegalStateException("static JSON build failed for member_ids", e);
+            }
+        }
+        return authenticatedRequest("POST", "chats/create.php", body);
+    }
+
+    /** POST /chats/add-member.php {chat_id, user_id} — creator/admin only on the backend. */
+    public JSONObject addChatMember(long chatId, long userId) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        putNumber(body, "user_id", userId);
+        return authenticatedRequest("POST", "chats/add-member.php", body);
+    }
+
+    /** POST /chats/edit.php {chat_id, title} — group rename (creator/admin). */
+    public JSONObject editChatTitle(long chatId, String title) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        put(body, "title", title);
+        return authenticatedRequest("POST", "chats/edit.php", body);
+    }
+
+    /** POST /chats/set-photo.php {chat_id, file_id} — group avatar (creator/admin). */
+    public JSONObject setChatPhoto(long chatId, long fileId) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        putNumber(body, "file_id", fileId);
+        return authenticatedRequest("POST", "chats/set-photo.php", body);
+    }
+
+    /** POST /users/set-photo.php {file_id} — own avatar from an uploaded image. */
+    public JSONObject setUserPhoto(long fileId) {
+        JSONObject body = putNumber(new JSONObject(), "file_id", fileId);
+        return authenticatedRequest("POST", "users/set-photo.php", body);
+    }
+
+    /** POST /users/delete-photo.php {} — clear the own avatar. */
+    public JSONObject deleteUserPhoto() {
+        return authenticatedRequest("POST", "users/delete-photo.php", new JSONObject());
+    }
+
+    /** POST /users/edit.php {display_name} — display name change. */
+    public JSONObject updateProfile(String displayName) {
+        JSONObject body = put(new JSONObject(), "display_name", displayName);
+        return authenticatedRequest("POST", "users/edit.php", body);
+    }
+
     // ------------------------------------------------------------------ request core
 
     private JSONObject unauthenticatedRequest(String method, String path, JSONObject body) {

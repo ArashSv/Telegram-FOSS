@@ -6,6 +6,7 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MessagesController;
+import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
@@ -207,6 +208,10 @@ public final class UpdatePoller {
                 case "chat_new":
                     handleChatNew(update.optJSONObject("chat"), chatsArr);
                     break;
+                case "user_updated":
+                    // T32: profile (name/avatar) changes apply directly — see handleUserUpdated
+                    handleUserUpdated(update.optJSONObject("user"));
+                    break;
                 default:
                     break;
             }
@@ -315,6 +320,38 @@ public final class UpdatePoller {
                     FileLog.e("UpdatePoller: chat_new dialogs reload failed", e);
                 }
             });
+        }
+    }
+
+    /**
+     * T32: a user's name/avatar changed. Applies DIRECTLY (putUser + interface
+     * masks) instead of riding the processUpdateArray batch — user updates can
+     * arrive alone in a page, and the tlUpdates-only early-return would then
+     * swallow them. Own changes are skipped: the acting device already applied
+     * them locally.
+     */
+    private void handleUserUpdated(JSONObject userJson) {
+        if (userJson == null) {
+            return;
+        }
+        try {
+            long userId = userJson.getLong("id");
+            if (userId == UserConfig.getInstance(account).clientUserId) {
+                return;
+            }
+            TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+            AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    MessagesController.getInstance(account).putUser(user, false);
+                    NotificationCenter.getInstance(account).postNotificationName(
+                            NotificationCenter.updateInterfaces,
+                            MessagesController.UPDATE_MASK_AVATAR | MessagesController.UPDATE_MASK_NAME);
+                } catch (Exception e) {
+                    FileLog.e("UpdatePoller: user_updated putUser failed", e);
+                }
+            });
+        } catch (Exception e) {
+            FileLog.e("UpdatePoller: user_updated parse failed", e);
         }
     }
 

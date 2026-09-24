@@ -84,6 +84,15 @@ public final class RestRouter {
     public static final int ROUTE_FILE_PART_BIG = 13;   // TL_upload_saveBigFilePart -> same (parts > 1 MB files)
     public static final int ROUTE_SEND_MEDIA = 14;      // TL_messages_sendMedia -> finalize + POST /messages/send.php
 
+    // T32 — group lifecycle + avatars + profile (backend v1.5.0)
+    public static final int ROUTE_CREATE_CHAT = 15;          // TL_messages_createChat -> POST /chats/create.php {group}
+    public static final int ROUTE_ADD_CHAT_USER = 16;        // TL_messages_addChatUser -> POST /chats/add-member.php
+    public static final int ROUTE_EDIT_CHAT_TITLE = 17;      // TL_messages_editChatTitle -> POST /chats/edit.php
+    public static final int ROUTE_EDIT_CHAT_PHOTO = 18;      // TL_messages_editChatPhoto -> POST /chats/set-photo.php
+    public static final int ROUTE_UPLOAD_PROFILE_PHOTO = 19; // TL_photos_uploadProfilePhoto -> POST /users/set-photo.php
+    public static final int ROUTE_DELETE_PHOTOS = 20;        // TL_photos_deletePhotos -> POST /users/delete-photo.php
+    public static final int ROUTE_UPDATE_PROFILE = 21;       // TL_account_updateProfile -> POST /users/edit.php
+
     // constructor ints (TLRPC.java, this tree): TL_upload_getFile = 0xbe5335be,
     // TL_upload_saveFilePart = 0xb304a621, TL_upload_saveBigFilePart = 0xde7b673d,
     // TL_messages_sendMedia = 0x7852834e
@@ -106,6 +115,14 @@ public final class RestRouter {
         ROUTES.put(TLRPC.TL_upload_saveFilePart.class, ROUTE_FILE_PART);
         ROUTES.put(TLRPC.TL_upload_saveBigFilePart.class, ROUTE_FILE_PART_BIG);
         ROUTES.put(TLRPC.TL_messages_sendMedia.class, ROUTE_SEND_MEDIA);
+        // T32 — group lifecycle + avatars + profile
+        ROUTES.put(TLRPC.TL_messages_createChat.class, ROUTE_CREATE_CHAT);
+        ROUTES.put(TLRPC.TL_messages_addChatUser.class, ROUTE_ADD_CHAT_USER);
+        ROUTES.put(TLRPC.TL_messages_editChatTitle.class, ROUTE_EDIT_CHAT_TITLE);
+        ROUTES.put(TLRPC.TL_messages_editChatPhoto.class, ROUTE_EDIT_CHAT_PHOTO);
+        ROUTES.put(TLRPC.TL_photos_uploadProfilePhoto.class, ROUTE_UPLOAD_PROFILE_PHOTO);
+        ROUTES.put(TLRPC.TL_photos_deletePhotos.class, ROUTE_DELETE_PHOTOS);
+        ROUTES.put(TLRPC.TL_account_updateProfile.class, ROUTE_UPDATE_PROFILE);
     }
 
     private RestRouter() {

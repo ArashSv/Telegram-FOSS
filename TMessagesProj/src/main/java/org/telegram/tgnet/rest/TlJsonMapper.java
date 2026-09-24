@@ -64,6 +64,23 @@ public final class TlJsonMapper {
             user.flags |= 1024;
             user.self = true;
         }
+        // T32: the avatar surface json ({small,big} crop file ids) — the ONLY
+        // place a user's profile photo crosses JSON->TL. null keeps the
+        // field-proven initials-fallback path (getForUser null-checks photo).
+        JSONObject photoJson = object.optJSONObject("photo");
+        if (photoJson != null) {
+            TLRPC.TL_userProfilePhoto photo = parseUserProfilePhoto(photoJson);
+            if (photo != null) {
+                user.photo = photo;
+                user.flags |= 32; // photo present — serialize contract
+            }
+        }
+        // T32: ImageLocation.getForUser refuses access_hash == 0 (guard before
+        // the photo check), so avatars would never render. The backend has no
+        // hash concept; plant a stable non-zero value and keep it flag-coherent
+        // (bit 0) so the MessagesStorage round-trip preserves it.
+        user.access_hash = 1;
+        user.flags |= 1;
         // null status NPEs in legacy UI paths (UserObject.isOnline and friends);
         // every MTProto-parsed user carries one, so we do too
         user.status = new TLRPC.TL_userStatusEmpty();
@@ -106,8 +123,115 @@ public final class TlJsonMapper {
             result.creator = true;
             result.flags |= 1;
         }
-        result.photo = new TLRPC.TL_chatPhotoEmpty();
+        // T32: group avatar surface — same {small,big} json as users.
+        JSONObject photoJson = chat.optJSONObject("photo");
+        TLRPC.TL_chatPhoto chatPhoto = photoJson != null ? parseChatPhoto(photoJson) : null;
+        result.photo = chatPhoto != null ? chatPhoto : new TLRPC.TL_chatPhotoEmpty();
         return result;
+    }
+
+    // ------------------------------------------------------------------ T32: avatar surfaces
+
+    /**
+     * Avatar location factory: {@code volume_id = -cropFileId, local_id = 'a'/'c'}.
+     * The download route decodes |volume_id| to the CROP file id and the
+     * letters are deliberately NOT 's'/'m' (those mean "thumb of the parent"
+     * in the dispatcher — an avatar crop is a full file of its own).
+     * Storage reload note: TL_userProfilePhoto/TL_chatPhoto reconstruct both
+     * slots from photo_id (volume_id = -photo_id), so photo_id is planted with
+     * the BIG crop id — after a reload both slots resolve to a real file.
+     */
+    private static TLRPC.TL_fileLocationToBeDeprecated avatarLocation(long cropFileId, char letter) {
+        TLRPC.TL_fileLocationToBeDeprecated location = new TLRPC.TL_fileLocationToBeDeprecated();
+        location.volume_id = -cropFileId; // download route decodes |volume_id|
+        location.local_id = letter;
+        location.dc_id = VIRTUAL_DC;
+        return location;
+    }
+
+    /**
+     * photo json (AvatarService contract: {small:{file_id,...},big:{...}}) to a
+     * filled TL_userProfilePhoto; null when the json is degenerate (caller
+     * keeps its empty/absent path).
+     */
+    public static TLRPC.TL_userProfilePhoto parseUserProfilePhoto(JSONObject photoJson) {
+        if (photoJson == null) {
+            return null;
+        }
+        JSONObject small = photoJson.optJSONObject("small");
+        JSONObject big = photoJson.optJSONObject("big");
+        long smallId = small != null ? small.optLong("file_id", 0) : 0;
+        long bigId = big != null ? big.optLong("file_id", 0) : 0;
+        if (smallId <= 0 || bigId <= 0) {
+            return null;
+        }
+        TLRPC.TL_userProfilePhoto photo = new TLRPC.TL_userProfilePhoto();
+        photo.photo_id = bigId; // reload-stable: see avatarLocation javadoc
+        photo.photo_small = avatarLocation(smallId, 'a');
+        photo.photo_big = avatarLocation(bigId, 'c');
+        return photo;
+    }
+
+    /** Group-avatar variant of {@link #parseUserProfilePhoto}. */
+    public static TLRPC.TL_chatPhoto parseChatPhoto(JSONObject photoJson) {
+        if (photoJson == null) {
+            return null;
+        }
+        JSONObject small = photoJson.optJSONObject("small");
+        JSONObject big = photoJson.optJSONObject("big");
+        long smallId = small != null ? small.optLong("file_id", 0) : 0;
+        long bigId = big != null ? big.optLong("file_id", 0) : 0;
+        if (smallId <= 0 || bigId <= 0) {
+            return null;
+        }
+        TLRPC.TL_chatPhoto photo = new TLRPC.TL_chatPhoto();
+        photo.photo_id = bigId; // reload-stable: see avatarLocation javadoc
+        photo.photo_small = avatarLocation(smallId, 'a');
+        photo.photo_big = avatarLocation(bigId, 'c');
+        return photo;
+    }
+
+    /**
+     * TL_photo for the TL_photos_uploadProfilePhoto response: sizes must let
+     * ProfileActivity pick "closest to 150" (the small crop) and "closest to
+     * 800" (the big crop), with locations the tree copies into its fresh
+     * TL_userProfilePhoto. The consumer ALSO renames the local crop file into
+     * the small slot's cache path, so the avatar renders without a download.
+     */
+    public static TLRPC.TL_photo avatarPhoto(JSONObject photoJson, int dateSeconds) {
+        if (photoJson == null) {
+            return null;
+        }
+        JSONObject small = photoJson.optJSONObject("small");
+        JSONObject big = photoJson.optJSONObject("big");
+        long smallId = small != null ? small.optLong("file_id", 0) : 0;
+        long bigId = big != null ? big.optLong("file_id", 0) : 0;
+        if (smallId <= 0 || bigId <= 0) {
+            return null;
+        }
+        int smallBytes = small != null ? small.optInt("size", 0) : 0;
+        int bigBytes = big != null ? big.optInt("size", 0) : 0;
+        TLRPC.TL_photo photo = new TLRPC.TL_photo();
+        photo.id = bigId;
+        photo.access_hash = 0;
+        photo.file_reference = new byte[0];
+        photo.date = dateSeconds;
+        photo.dc_id = VIRTUAL_DC;
+        TLRPC.TL_photoSize smallSize = new TLRPC.TL_photoSize();
+        smallSize.type = "a";
+        smallSize.w = small != null ? Math.max(1, small.optInt("width", 160)) : 160;
+        smallSize.h = small != null ? Math.max(1, small.optInt("height", 160)) : 160;
+        smallSize.size = Math.max(0, smallBytes);
+        smallSize.location = avatarLocation(smallId, 'a');
+        photo.sizes.add(smallSize);
+        TLRPC.TL_photoSize bigSize = new TLRPC.TL_photoSize();
+        bigSize.type = "c";
+        bigSize.w = big != null ? Math.max(1, big.optInt("width", 640)) : 640;
+        bigSize.h = big != null ? Math.max(1, big.optInt("height", 640)) : 640;
+        bigSize.size = Math.max(0, bigBytes);
+        bigSize.location = avatarLocation(bigId, 'c');
+        photo.sizes.add(bigSize);
+        return photo;
     }
 
     /**
