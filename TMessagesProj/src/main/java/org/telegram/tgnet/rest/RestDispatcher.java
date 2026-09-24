@@ -448,13 +448,29 @@ public final class RestDispatcher {
         // field-verified (SIZE_MISMATCH finalize: expected 154623, actual
         // 153624). One idempotent re-send (REPLACE semantics); a second
         // mismatch fails the part LOUDLY instead of storing silence.
-        long stored = RestGateway.getInstance(account).fileChunk(backendId, part, body, realLen);
-        if (stored >= 0 && stored != data.length) {
-            FileLog.w("RestDispatcher: part " + part + " stored " + stored + " of " + data.length + "B, re-sending");
-            stored = RestGateway.getInstance(account).fileChunk(backendId, part, body, realLen);
+        // T29: the backend v1.3 also echoes the sha256 of the stored bytes —
+        // the content-level twin of the size check, catching bodies that
+        // arrived the right length but byte-mangled (WAF rewriting). The
+        // check is skipped when the backend predates the field.
+        String sentSha = sha256Hex(data);
+        JSONObject storedEnvelope = RestGateway.getInstance(account).fileChunkAttested(backendId, part, body, realLen);
+        long stored = storedEnvelope.optLong("size", -1);
+        String storedSha = storedEnvelope.isNull("sha256") ? null : storedEnvelope.optString("sha256", null);
+        boolean bad = (stored >= 0 && stored != data.length)
+                || (storedSha != null && !storedSha.equalsIgnoreCase(sentSha));
+        if (bad) {
+            FileLog.w("RestDispatcher: part " + part + " mismatch (stored " + stored + " of " + data.length
+                    + "B, sha " + (storedSha == null ? "n/a" : "differ") + "), re-sending");
+            storedEnvelope = RestGateway.getInstance(account).fileChunkAttested(backendId, part, body, realLen);
+            stored = storedEnvelope.optLong("size", -1);
+            storedSha = storedEnvelope.isNull("sha256") ? null : storedEnvelope.optString("sha256", null);
             if (stored >= 0 && stored != data.length) {
                 throw new XoApiException(502, "PART_SIZE_MISMATCH",
                         "server stored " + stored + " of " + data.length + " bytes for part " + part);
+            }
+            if (storedSha != null && !storedSha.equalsIgnoreCase(sentSha)) {
+                throw new XoApiException(502, "PART_HASH_MISMATCH",
+                        "stored bytes do not match the sent part " + part + " (sha)");
             }
         }
         // the declared finalize size counts what the server VERIFIED it holds
@@ -463,6 +479,11 @@ public final class RestDispatcher {
             FileLog.d("RestDispatcher: part " + part + " (" + written + "B) treeId=" + treeUploadId + " -> file " + backendId);
         }
         return new TLRPC.TL_boolTrue();
+    }
+
+    /** T29: lowercase hex sha256 of a byte range (part-level upload attestation). */
+    private static String sha256Hex(byte[] data) {
+        return Utilities.bytesToHex(Utilities.computeSHA256(data, 0, data.length));
     }
 
     /**
@@ -474,7 +495,8 @@ public final class RestDispatcher {
      * channel; a short tail chunk closes the download).
      */
     private static TLObject handleFileGet(int account, TLRPC.TL_upload_getFile req) {
-        long backendId = RestFileBridge.getInstance(account).resolveBackendFileId(req.location);
+        RestFileBridge bridge = RestFileBridge.getInstance(account);
+        long backendId = bridge.resolveBackendFileId(req.location);
         if (backendId <= 0) {
             throw new XoApiException(400, "FILE_ID_INVALID", "unsupported file location");
         }
@@ -483,7 +505,25 @@ public final class RestDispatcher {
         }
         long limit = Math.max(1, Math.min(req.limit, 1024 * 1024)); // tree asks 32..512 KB
         long end = req.offset + limit - 1;
-        byte[] data = RestGateway.getInstance(account).fileDownloadRange(backendId, req.offset, end);
+        // T29: the server-attested size turns every range into a VERIFIED
+        // contract. Clamp the tail at the true EOF (the tree asks chunk-sized
+        // windows without knowing where the file ends), reject past-EOF
+        // offsets up front (a 416 round-trip can never succeed), and pass the
+        // exact expected byte count down — the gateway then refuses any body
+        // that does not match it, so a cut/rewritten response is retried as a
+        // transport failure and a short chunk can never reach the tree's
+        // assembly (the field shape: silently truncated "completed" videos).
+        long declaredSize = RestFileBridge.declaredSizeFor(backendId);
+        long expectedBytes = -1;
+        if (declaredSize > 0) {
+            if (req.offset >= declaredSize) {
+                throw new XoApiException(416, "INVALID_RANGE",
+                        "offset " + req.offset + " beyond declared file size " + declaredSize);
+            }
+            end = Math.min(end, declaredSize - 1);
+            expectedBytes = end - req.offset + 1;
+        }
+        byte[] data = RestGateway.getInstance(account).fileDownloadRange(backendId, req.offset, end, expectedBytes);
         if (data.length > limit) {
             // T28: a 206 never carries more than the requested range (the only
             // legit tail is SHORTER at EOF). A longer body means an intermediary
@@ -587,12 +627,17 @@ public final class RestDispatcher {
             // part count patches any streaming-extended estimate (v1.1b). T14:
             // declare the exact streamed byte total (corruption cross-check).
             long declaredBytes = bridge.uploadedBytesFor(treeUploadId);
-            bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes);
+            JSONObject finalizeEnvelope = bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes);
+            // T29: the finalize answer is the server's final {size, sha256}
+            // attestation for the new file — feed the download-integrity index
+            // so this client's own later downloads of it verify too.
+            RestFileBridge.noteFileMetaFromJson(finalizeEnvelope == null ? null : finalizeEnvelope.optJSONObject("file"));
             if (thumbTreeId != 0) {
                 try {
                     JSONObject thumbEnvelope = bridge.finalizeUpload(thumbTreeId, 1, "image/jpeg", null, null, null, null, bridge.uploadedBytesFor(thumbTreeId));
                     JSONObject thumbJson = thumbEnvelope != null ? thumbEnvelope.optJSONObject("file") : null;
                     thumbBackendId = thumbJson != null ? thumbJson.optLong("file_id", 0) : 0;
+                    RestFileBridge.noteFileMetaFromJson(thumbJson);
                 } catch (Exception e) {
                     // a thumb must never fail the send; fall back to the mapping
                     FileLog.w("RestDispatcher: thumb finalize failed, continuing without link");

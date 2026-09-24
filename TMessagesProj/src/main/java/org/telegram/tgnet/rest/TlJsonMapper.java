@@ -263,6 +263,13 @@ public final class TlJsonMapper {
         int duration = mediaJson.optInt("duration", 0);
         long thumbFileId = mediaJson.optLong("thumb_file_id", 0);
 
+        // T29: the media json IS the server's attestation of the file's size and
+        // sha256 — feed the download-integrity index so every later range
+        // request for this file is clamped at the true EOF and the assembled
+        // download is verified against these exact values before "success".
+        RestFileBridge.noteFileMeta(fileId, size,
+                mediaJson.isNull("sha256") ? null : mediaJson.optString("sha256", null));
+
         if ("image".equals(kind) && width > 0 && height > 0) {
             return photoMedia(fileId, size, width, height, thumbFileId, messageDate);
         }

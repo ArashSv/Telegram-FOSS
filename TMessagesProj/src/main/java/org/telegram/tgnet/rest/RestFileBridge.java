@@ -8,6 +8,8 @@ import org.telegram.messenger.FileLog;
 import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.TLRPC;
 
+import java.util.LinkedHashMap;
+
 import org.json.JSONObject;
 
 /**
@@ -66,6 +68,89 @@ public final class RestFileBridge {
             }
         }
         return bridge;
+    }
+
+    // ------------------------------------------------------------------
+    // T29 download-integrity index (process-wide, NOT per account — backend
+    // file ids are server-global, unlike the per-account tree upload ids the
+    // instance maps own). backendId -> {declared size, declared sha256} as the
+    // SERVER attested them (files table via the message media json, metadata
+    // calls, or finalize responses). Two consumers:
+    //   1. RestDispatcher.handleFileGet — clamps every range at the true EOF
+    //      and demands EXACTLY the declared range length back (a body that is
+    //      one byte short is a transport failure, never a deliverable chunk);
+    //   2. FileLoadOperation.onFinishLoadingFile — refuses to rename a temp
+    //      file whose size/sha256 does not match the server declaration, so a
+    //      truncated/mangled download can never present itself as successful
+    //      (the field shape: "completed" videos, 0s duration, corrupt).
+    // ------------------------------------------------------------------
+    private static final int META_CACHE_MAX = 2048;
+    private static final LinkedHashMap<Long, String[]> metaCache = new LinkedHashMap<Long, String[]>(64, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(java.util.Map.Entry<Long, String[]> eldest) {
+            return size() > META_CACHE_MAX;
+        }
+    };
+
+    /**
+     * Records the server-attested {size, sha256} of a backend file. Idempotent;
+     * a later record for the same id wins (files are immutable once ready, so
+     * both records agree).
+     */
+    public static void noteFileMeta(long backendId, long size, String sha256) {
+        if (backendId <= 0 || (size <= 0 && (sha256 == null || sha256.length() == 0))) {
+            return;
+        }
+        synchronized (metaCache) {
+            metaCache.put(backendId, new String[]{Long.toString(size), sha256 == null ? "" : sha256});
+        }
+    }
+
+    /** Declared file size for a backend id (0 = unknown — callers degrade to Content-Length-only checks). */
+    public static long declaredSizeFor(long backendId) {
+        if (backendId <= 0) {
+            return 0;
+        }
+        synchronized (metaCache) {
+            String[] meta = metaCache.get(backendId);
+            return meta == null ? 0L : parseLongSafe(meta[0]);
+        }
+    }
+
+    /** Declared sha256 for a backend id (null = unknown — finish verification is skipped). */
+    public static String declaredShaFor(long backendId) {
+        if (backendId <= 0) {
+            return null;
+        }
+        synchronized (metaCache) {
+            String[] meta = metaCache.get(backendId);
+            return meta == null || meta[1].length() == 0 ? null : meta[1];
+        }
+    }
+
+    private static long parseLongSafe(String s) {
+        if (s == null || s.length() == 0) {
+            return 0;
+        }
+        try {
+            return Long.parseLong(s);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /** Records {size, sha256} from a files/get.php-style file JSON envelope (null-safe). */
+    public static void noteFileMetaFromJson(org.json.JSONObject fileJson) {
+        if (fileJson == null) {
+            return;
+        }
+        long id = fileJson.optLong("file_id", 0);
+        long size = fileJson.optLong("size", 0);
+        String sha = fileJson.optString("sha256", null);
+        if (fileJson.isNull("sha256")) {
+            sha = null;
+        }
+        noteFileMeta(id, size, sha);
     }
 
     private final int account;
@@ -263,7 +348,10 @@ public final class RestFileBridge {
     /**
      * Thumb file id for a parent file, cached in memory (0 = none/failure).
      * One tiny JSON metadata call per parent file per process — thumbs are
-     * then streamed straight from their own file id.
+     * then streamed straight from their own file id. T29: the metadata answers
+     * also feed the download-integrity index (parent AND thumb), so every
+     * range against either file is clamped and verified against the server
+     * declaration even when the message mapper path never saw the size.
      */
     public long thumbFileIdFor(long parentFileId) {
         synchronized (thumbCache) {
@@ -278,6 +366,16 @@ public final class RestFileBridge {
                     .optJSONObject("file");
             if (file != null) {
                 thumbId = file.optLong("thumb_file_id", 0);
+                noteFileMetaFromJson(file);
+                if (thumbId > 0 && thumbId != parentFileId) {
+                    try {
+                        noteFileMetaFromJson(RestGateway.getInstance(account)
+                                .fileMetadata(thumbId)
+                                .optJSONObject("file"));
+                    } catch (Exception e) {
+                        FileLog.w("RestFileBridge: thumb meta lookup failed for " + thumbId);
+                    }
+                }
             }
         } catch (Exception e) {
             FileLog.w("RestFileBridge: thumb metadata lookup failed for file " + parentFileId + ", streaming full file");
