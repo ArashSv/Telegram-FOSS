@@ -347,7 +347,9 @@ public final class UpdatePoller {
                     // T33: persist too — without this the db row lagged behind
                     // memory until the next dialogs/history save, so a changed
                     // username/bio would revert after a process restart.
-                    ArrayList<TLRPC.TL_user> single = new ArrayList<>();
+                    // NOTE: putUsersAndChats takes List<User> — generics are
+                    // invariant, so the list is declared User, not TL_user.
+                    ArrayList<TLRPC.User> single = new ArrayList<>();
                     single.add(user);
                     MessagesStorage.getInstance(account).putUsersAndChats(single, null, false, true);
                     NotificationCenter.getInstance(account).postNotificationName(
