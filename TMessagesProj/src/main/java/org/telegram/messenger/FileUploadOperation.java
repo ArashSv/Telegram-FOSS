@@ -369,6 +369,19 @@ public class FileUploadOperation {
                             date = 0;
                         }
                         if (date != 0) {
+                            // REST fork (T28): a persisted resume offset that is not an
+                            // exact part boundary (legacy builds stored partNum+bytes) or
+                            // beyond the file cannot be trusted — resuming from it shifts
+                            // every later part (stored-blob corruption, CHUNKS_MISSING and
+                            // SIZE_MISMATCH at finalize were all field-verified). Restart
+                            // cleanly instead; the backend GC reclaims the orphan.
+                            if (uploadedSize > 0 && (uploadedSize % uploadChunkSize != 0 || uploadedSize >= totalFileSize)) {
+                                if (BuildVars.LOGS_ENABLED) {
+                                    FileLog.d("debug_uploading: discard unsafe resume offset " + uploadedSize + " chunk " + uploadChunkSize);
+                                }
+                                rewrite = true;
+                                uploadedSize = 0;
+                            }
                             if (uploadedSize > 0) {
                                 readBytesCount = uploadedSize;
                                 currentPartNum = (int) (uploadedSize / uploadChunkSize);
@@ -569,7 +582,12 @@ public class FileUploadOperation {
         currentPartNum++;
         currentUploadRequetsCount++;
         final int requestNumFinal = requestNum++;
-        final long currentRequestBytesOffset = currentRequestPartNum + currentRequestBytes;
+        // REST fork (T28): this MUST be the byte offset AFTER the part —
+        // (partNum * chunkSize) + bytes — because it is persisted as the resume
+        // offset (fileKey + "_uploaded") and read back as one (readBytesCount /
+        // currentPartNum). partNum + bytes was only ever correct for part 0;
+        // every later save poisoned the resume state.
+        final long currentRequestBytesOffset = (long) currentRequestPartNum * uploadChunkSize + currentRequestBytes;
         final int requestSize = finalRequest.getObjectSize() + 4;
         final int currentOperationGuid = operationGuid;
 

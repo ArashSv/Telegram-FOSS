@@ -288,8 +288,12 @@ public final class RestGateway {
      * and small thumbnails), so the dispatcher pads sub-32 KB bodies to 32 KB
      * and the backend truncates back to {@code len} before storing. 0 = no
      * padding (body is exact).
+     *
+     * @return the byte count the server actually stored (backend v1.2.2+);
+     *         -1 when the backend predates the field — the caller then skips
+     *         the part-level integrity check.
      */
-    public void fileChunk(long backendFileId, int index, byte[] bytes, int realLen) {
+    public long fileChunk(long backendFileId, int index, byte[] bytes, int realLen) {
         String q = "?file_id=" + backendFileId + "&index=" + index;
         if (realLen > 0 && realLen < bytes.length) {
             q += "&len=" + realLen;
@@ -301,10 +305,11 @@ public final class RestGateway {
         if (!response.optBoolean("ok", false)) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "chunk answer without ok");
         }
+        return response.optLong("size", -1);
     }
 
-    public void fileChunk(long backendFileId, int index, byte[] bytes) {
-        fileChunk(backendFileId, index, bytes, 0);
+    public long fileChunk(long backendFileId, int index, byte[] bytes) {
+        return fileChunk(backendFileId, index, bytes, 0);
     }
 
     /**

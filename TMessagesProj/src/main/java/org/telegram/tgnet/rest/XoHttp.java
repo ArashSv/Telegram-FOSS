@@ -136,16 +136,45 @@ final class XoHttp {
         if (bearerToken != null && bearerToken.length() > 0) {
             conn.setRequestProperty("Authorization", "Bearer " + bearerToken);
         }
-        if (rangeStart >= 0 && rangeStart <= rangeEnd) {
+        boolean ranged = rangeStart >= 0 && rangeStart <= rangeEnd;
+        if (ranged) {
             conn.setRequestProperty("Range", "bytes=" + rangeStart + "-" + rangeEnd);
         }
         conn.connect();
         int code = conn.getResponseCode();
+        if (ranged && code == 200) {
+            // T28: the host/proxy stripped or ignored the Range header — the body
+            // would be the WHOLE file. Writing it at offset > 0 silently corrupts
+            // the tree's assembly (field-verified truncation shapes). Fail as a
+            // transport error so the idempotent retry layer re-asks for the range;
+            // a persistent offender surfaces as a typed error, never as silence.
+            try {
+                InputStream drain = conn.getInputStream();
+                if (drain != null) {
+                    drain.close();
+                }
+            } catch (Exception ignore) {
+            }
+            throw new IOException("range request answered with full-file 200 (header stripped), offset " + rangeStart);
+        }
+        long promised = code < 400 ? conn.getContentLengthLong() : -1;
+        String encoding = conn.getHeaderField("Content-Encoding");
+        boolean verifyLength = promised > 0 && (encoding == null || encoding.length() == 0);
         InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
-        return new BinaryResponse(code, readBytes(in));
+        return new BinaryResponse(code, readBytes(in, verifyLength ? promised : -1));
     }
 
-    private static byte[] readBytes(InputStream in) throws IOException {
+    /**
+     * T28: {@code expectedBytes} > 0 enforces the server's Content-Length
+     * promise. HttpURLConnection does NOT throw when a connection closes
+     * before the promised body arrived — in.read() just returns -1 — so a
+     * mid-stream truncation used to surface as a silently SHORT body. On this
+     * host those truncations are REAL (live-probed: 512 KB range responses cut
+     * mid-body under load) and a short chunk written into FileLoadOperation's
+     * file channel = a hole in a "successfully downloaded" video. A truncation
+     * now throws IOException -> XoTransportException -> idempotent retry.
+     */
+    private static byte[] readBytes(InputStream in, long expectedBytes) throws IOException {
         if (in == null) {
             return new byte[0];
         }
@@ -155,7 +184,11 @@ final class XoHttp {
             int read;
             while ((read = in.read(chunk)) > 0) {
                 buffer.write(chunk, 0, read);
-                if (buffer.size() > MAX_BINARY_RESPONSE_BYTES) {
+                if (expectedBytes > 0) {
+                    if (buffer.size() > expectedBytes) {
+                        throw new IOException("binary response longer than the promised Content-Length");
+                    }
+                } else if (buffer.size() > MAX_BINARY_RESPONSE_BYTES) {
                     throw new IOException("binary response exceeds " + MAX_BINARY_RESPONSE_BYTES + " bytes");
                 }
             }
@@ -164,6 +197,9 @@ final class XoHttp {
                 in.close();
             } catch (Exception ignore) {
             }
+        }
+        if (expectedBytes > 0 && buffer.size() < expectedBytes) {
+            throw new IOException("binary response truncated: expected " + expectedBytes + " bytes, got " + buffer.size());
         }
         return buffer.toByteArray();
     }

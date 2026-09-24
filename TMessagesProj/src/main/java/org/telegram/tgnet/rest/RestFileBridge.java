@@ -235,7 +235,10 @@ public final class RestFileBridge {
             // FileLoadOperation then builds TL_inputPhotoFileLocation
             parentId = ((TLRPC.TL_inputPhotoFileLocation) location).id;
             String thumbSize = ((TLRPC.TL_inputPhotoFileLocation) location).thumb_size;
-            thumbRequest = TlJsonMapper.PHOTO_SIZE_THUMB.equals(thumbSize);
+            // T28: 'm' is the chat-bubble size — same thumb bytes as 's' (see
+            // TlJsonMapper.PHOTO_SIZE_BUBBLE); only 'x' (full) streams the file.
+            thumbRequest = TlJsonMapper.PHOTO_SIZE_THUMB.equals(thumbSize)
+                    || TlJsonMapper.PHOTO_SIZE_BUBBLE.equals(thumbSize);
         } else if (location instanceof TLRPC.TL_inputFileLocation) {
             // legacy path for ImageLocations without a parent object
             long volumeId = ((TLRPC.TL_inputFileLocation) location).volume_id;

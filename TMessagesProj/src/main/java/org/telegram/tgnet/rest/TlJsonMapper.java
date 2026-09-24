@@ -173,6 +173,18 @@ public final class TlJsonMapper {
     /** PhotoSize type letters this mapper plants; shared with the download-route resolver. */
     public static final String PHOTO_SIZE_FULL = "x";
     public static final String PHOTO_SIZE_THUMB = "s";
+    /**
+     * T28: the chat BUBBLE size. It points at the SAME small thumb bytes as
+     * {@link #PHOTO_SIZE_THUMB} but carries nominal dims capped at
+     * {@link #BUBBLE_MAX_SIDE} so the tree's "smallest size that fits the view"
+     * picker selects it for message bubbles. Before this letter existed, the
+     * only entry big enough for a bubble was PHOTO_SIZE_FULL — every photo
+     * bubble downloaded the FULL original (the "thumbnails are way too heavy"
+     * field report). Full-screen still picks PHOTO_SIZE_FULL.
+     */
+    public static final String PHOTO_SIZE_BUBBLE = "m";
+    /** Nominal long-side cap for the bubble size (720p-class hint). */
+    private static final int BUBBLE_MAX_SIDE = 720;
 
     /**
      * Virtual datacenter id planted on every synthetic Photo, Document and
@@ -272,6 +284,13 @@ public final class TlJsonMapper {
         if (thumbFileId > 0) {
             int[] dims = thumbDims(width, height);
             photo.sizes.add(photoSize(PHOTO_SIZE_THUMB, dims[0], dims[1], 0, fileId));
+            // T28: bubble-size entry backed by the SAME thumb bytes — see the
+            // PHOTO_SIZE_BUBBLE javadoc. Without it the bubble picker falls
+            // through to the full original.
+            double bubbleScale = Math.min(1.0, BUBBLE_MAX_SIDE / (double) Math.max(1, Math.max(width, height)));
+            photo.sizes.add(photoSize(PHOTO_SIZE_BUBBLE,
+                    Math.max(1, (int) Math.round(width * bubbleScale)),
+                    Math.max(1, (int) Math.round(height * bubbleScale)), 0, fileId));
         }
         photo.sizes.add(photoSize(PHOTO_SIZE_FULL, width, height, (int) Math.min(size, Integer.MAX_VALUE), fileId));
         media.photo = photo;
