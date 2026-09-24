@@ -435,15 +435,30 @@ public final class RestDispatcher {
         // after the progress bar hits 100%). Pad sub-32 KB bodies to a
         // normal-looking 32 KB part and declare the real length via &len= —
         // the backend truncates before storing, so the blob stays exact.
+        byte[] body = data;
+        int realLen = 0;
         if (data.length < 32 * 1024) {
-            byte[] padded = new byte[32 * 1024];
-            System.arraycopy(data, 0, padded, 0, data.length);
-            RestGateway.getInstance(account).fileChunk(backendId, part, padded, data.length);
-            RestFileBridge.getInstance(account).noteUploadBytes(treeUploadId, data.length);
-        } else {
-            RestGateway.getInstance(account).fileChunk(backendId, part, data);
-            RestFileBridge.getInstance(account).noteUploadBytes(treeUploadId, written);
+            body = new byte[32 * 1024];
+            System.arraycopy(data, 0, body, 0, data.length);
+            realLen = data.length;
         }
+        // T28: the backend echoes the byte count it actually stored
+        // (v1.2.2+). A mismatch means the request body was cut or mangled
+        // in flight while the transport layer still returned a response —
+        // field-verified (SIZE_MISMATCH finalize: expected 154623, actual
+        // 153624). One idempotent re-send (REPLACE semantics); a second
+        // mismatch fails the part LOUDLY instead of storing silence.
+        long stored = RestGateway.getInstance(account).fileChunk(backendId, part, body, realLen);
+        if (stored >= 0 && stored != data.length) {
+            FileLog.w("RestDispatcher: part " + part + " stored " + stored + " of " + data.length + "B, re-sending");
+            stored = RestGateway.getInstance(account).fileChunk(backendId, part, body, realLen);
+            if (stored >= 0 && stored != data.length) {
+                throw new XoApiException(502, "PART_SIZE_MISMATCH",
+                        "server stored " + stored + " of " + data.length + " bytes for part " + part);
+            }
+        }
+        // the declared finalize size counts what the server VERIFIED it holds
+        RestFileBridge.getInstance(account).noteUploadBytes(treeUploadId, data.length);
         if (BuildVars.LOGS_ENABLED) {
             FileLog.d("RestDispatcher: part " + part + " (" + written + "B) treeId=" + treeUploadId + " -> file " + backendId);
         }
@@ -469,6 +484,15 @@ public final class RestDispatcher {
         long limit = Math.max(1, Math.min(req.limit, 1024 * 1024)); // tree asks 32..512 KB
         long end = req.offset + limit - 1;
         byte[] data = RestGateway.getInstance(account).fileDownloadRange(backendId, req.offset, end);
+        if (data.length > limit) {
+            // T28: a 206 never carries more than the requested range (the only
+            // legit tail is SHORTER at EOF). A longer body means an intermediary
+            // answered something else (e.g. a full-file 200 that slipped past
+            // the transport guard) — writing it at this offset would corrupt
+            // the assembly. Reject loudly; the tree retries/fails visibly.
+            throw new XoApiException(502, "RANGE_OVERFLOW",
+                    "response body " + data.length + "B exceeds the requested " + limit + "B");
+        }
         TLRPC.TL_upload_file result = new TLRPC.TL_upload_file();
         result.type = new TLRPC.TL_storage_fileUnknown();
         result.mtime = (int) (System.currentTimeMillis() / 1000L);

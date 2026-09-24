@@ -2045,7 +2045,14 @@ public class FileLoadOperation {
                     startDownloadRequest(requestInfo.connectionType);
                 }
             } else if (error.text.contains("OFFSET_INVALID")) {
-                if (downloadedBytes % currentDownloadChunkSize == 0) {
+                // REST fork (T28): finishing is only legitimate when the bytes we
+                // hold actually cover the declared file. A mid-file OFFSET_INVALID
+                // (stored blob shorter than the message's declared size) used to
+                // be "finished" silently at a chunk boundary -> a truncated video
+                // saved as a successful download (field report: won't open
+                // anywhere). Refuse to finish short.
+                if (downloadedBytes % currentDownloadChunkSize == 0
+                        && (totalBytesCount <= 0 || downloadedBytes >= totalBytesCount)) {
                     try {
                         onFinishLoadingFile(true, FINISH_CODE_DEFAULT, false);
                     } catch (Exception e) {
