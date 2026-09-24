@@ -168,6 +168,27 @@ public final class RestDispatcher {
                 case RestRouter.ROUTE_SEND_MEDIA:
                     response = handleSendMedia(account, (TLRPC.TL_messages_sendMedia) object);
                     break;
+                case RestRouter.ROUTE_CREATE_CHAT:
+                    response = handleCreateChat(account, (TLRPC.TL_messages_createChat) object);
+                    break;
+                case RestRouter.ROUTE_ADD_CHAT_USER:
+                    response = handleAddChatUser(account, (TLRPC.TL_messages_addChatUser) object);
+                    break;
+                case RestRouter.ROUTE_EDIT_CHAT_TITLE:
+                    response = handleEditChatTitle(account, (TLRPC.TL_messages_editChatTitle) object);
+                    break;
+                case RestRouter.ROUTE_EDIT_CHAT_PHOTO:
+                    response = handleEditChatPhoto(account, (TLRPC.TL_messages_editChatPhoto) object);
+                    break;
+                case RestRouter.ROUTE_UPLOAD_PROFILE_PHOTO:
+                    response = handleUploadProfilePhoto(account, (TLRPC.TL_photos_uploadProfilePhoto) object);
+                    break;
+                case RestRouter.ROUTE_DELETE_PHOTOS:
+                    response = handleDeletePhotos(account, (TLRPC.TL_photos_deletePhotos) object);
+                    break;
+                case RestRouter.ROUTE_UPDATE_PROFILE:
+                    response = handleUpdateProfile(account, (TLRPC.TL_account_updateProfile) object);
+                    break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
                     break;
@@ -719,6 +740,219 @@ public final class RestDispatcher {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed users/get answer: " + e.getMessage());
         }
         return vector;
+    }
+
+    // ------------------------------------------------------------------ T32: groups + avatars + profile
+
+    /**
+     * TL_messages_createChat — group creation (GroupCreateFinalActivity →
+     * MessagesController.createChat:13154). The consumer hard-checks
+     * {@code instanceof TL_messages_invitedUsers} then processes its updates,
+     * posts chatDidCreated with {@code chats.get(0).id} — so the updates MUST
+     * carry the created chat mapped through parseGroupChat. Avatar upload
+     * (inputPhoto) is applied by the SAME flow right after creation, via
+     * changeChatAvatar → TL_messages_editChatPhoto (GroupCreateFinalActivity:921).
+     */
+    private static TLObject handleCreateChat(int account, TLRPC.TL_messages_createChat req) {
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        long[] memberIds = new long[req.users.size()];
+        for (int a = 0; a < memberIds.length; a++) {
+            TLRPC.InputUser input = req.users.get(a);
+            if (input instanceof TLRPC.TL_inputUserSelf) {
+                memberIds[a] = selfId;
+            } else if (input instanceof TLRPC.TL_inputUser) {
+                memberIds[a] = ((TLRPC.TL_inputUser) input).user_id;
+            } else {
+                memberIds[a] = 0;
+            }
+        }
+        JSONObject created = RestGateway.getInstance(account).createGroupChat(req.title, memberIds);
+        JSONObject chatJson = created.optJSONObject("chat");
+        if (chatJson == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "create chat response lacks the chat object");
+        }
+        TLRPC.TL_chat chat = mapGroupChat(chatJson);
+        // keep the index warm so later sends address this chat without a rescan
+        RestChatIndex.getInstance(account).putGroup(chat);
+        return invitedUsers(updatesWithChats(chat));
+    }
+
+    /**
+     * TL_messages_addChatUser — invite to a basic group (MessagesController
+     * :13726). Same invitedUsers contract as createChat; the added user's own
+     * client discovers the chat via chat_new on its next sync poll.
+     */
+    private static TLObject handleAddChatUser(int account, TLRPC.TL_messages_addChatUser req) {
+        long userId = req.user_id instanceof TLRPC.TL_inputUser
+                ? ((TLRPC.TL_inputUser) req.user_id).user_id
+                : 0;
+        if (userId <= 0) {
+            throw new XoApiException(400, "USER_ID_INVALID", "unsupported input user");
+        }
+        JSONObject added = RestGateway.getInstance(account).addChatMember(req.chat_id, userId);
+        JSONObject chatJson = added.optJSONObject("chat");
+        if (chatJson == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "add-member response lacks the chat object");
+        }
+        return invitedUsers(updatesWithChats(mapGroupChat(chatJson)));
+    }
+
+    /**
+     * TL_messages_editChatTitle — group rename (ChatEditActivity →
+     * changeChatTitle:14018). The consumer casts the response straight to
+     * TL_updates and processUpdates applies the chats list — putChats replaces
+     * the whole chat object (title included). Emits chat_new to every member
+     * on the backend so their next poll re-fetches the chat.
+     */
+    private static TLObject handleEditChatTitle(int account, TLRPC.TL_messages_editChatTitle req) {
+        JSONObject edited = RestGateway.getInstance(account).editChatTitle(req.chat_id, req.title);
+        JSONObject chatJson = edited.optJSONObject("chat");
+        if (chatJson == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "chats/edit response lacks the chat object");
+        }
+        return updatesWithChats(mapGroupChat(chatJson));
+    }
+
+    /**
+     * TL_messages_editChatPhoto — group avatar (ChatEditActivity and
+     * GroupCreateFinalActivity's post-creation apply). The uploaded crop
+     * source went through this dispatcher's file routes but was never
+     * finalized (avatars have no sendMedia), so finalize FIRST — the same
+     * single-metadata-injection point handleSendMedia uses — then set-photo.
+     * Response: TL_updates with the updated chat (photo included) so
+     * processUpdates' putChats applies it. The backend also emits chat_new to
+     * every member, so their dialogs reload with the new avatar.
+     */
+    private static TLObject handleEditChatPhoto(int account, TLRPC.TL_messages_editChatPhoto req) {
+        long backendFileId = finalizeAvatarSource(account, req.photo);
+        JSONObject applied = RestGateway.getInstance(account).setChatPhoto(req.chat_id, backendFileId);
+        JSONObject chatJson = applied.optJSONObject("chat");
+        if (chatJson == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "chats/set-photo response lacks the chat object");
+        }
+        return updatesWithChats(mapGroupChat(chatJson));
+    }
+
+    /**
+     * TL_photos_uploadProfilePhoto — own avatar (ProfileActivity/ChatEditActivity
+     * didUploadPhoto). Response contract is TL_photos_photo: ProfileActivity
+     * picks the closest-to-150 and closest-to-800 sizes and builds its fresh
+     * TL_userProfilePhoto from THEIR locations. Video/emoji avatars are not
+     * supported by the v1.5 backend — rejected as a typed error the UI shows.
+     */
+    private static TLObject handleUploadProfilePhoto(int account, TLRPC.TL_photos_uploadProfilePhoto req) {
+        if (req.video != null || req.video_emoji_markup != null) {
+            throw new XoApiException(400, "AVATAR_VIDEO_UNSUPPORTED", "video avatars are not supported yet");
+        }
+        if (!(req.file instanceof TLRPC.TL_inputFile)) {
+            throw new XoApiException(400, "FILE_ID_INVALID", "avatar upload carries no file");
+        }
+        long backendFileId = finalizeAvatarSource(account, req.file);
+        JSONObject applied = RestGateway.getInstance(account).setUserPhoto(backendFileId);
+        JSONObject userJson = applied.optJSONObject("user");
+        JSONObject photoJson = userJson != null ? userJson.optJSONObject("photo") : null;
+        TLRPC.TL_photo photo = TlJsonMapper.avatarPhoto(photoJson, nowSeconds());
+        if (photo == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "set-photo response lacks the avatar surfaces");
+        }
+        TLRPC.TL_photos_photo result = new TLRPC.TL_photos_photo();
+        result.photo = photo;
+        return result;
+    }
+
+    /**
+     * TL_photos_deletePhotos — avatar removal (MessagesController:7794). The
+     * response is ignored by the call site; the backend clears the current
+     * avatar and purges its crops.
+     */
+    private static TLObject handleDeletePhotos(int account, TLRPC.TL_photos_deletePhotos req) {
+        RestGateway.getInstance(account).deleteUserPhoto();
+        return new TLRPC.Vector();
+    }
+
+    /**
+     * TL_account_updateProfile — display name change (ChangeNameActivity:180,
+     * response ignored there). The backend stores one display_name; first +
+     * last compose into it. Returns the refreshed TL_user (schema-faithful).
+     */
+    private static TLObject handleUpdateProfile(int account, TLRPC.TL_account_updateProfile req) {
+        String first = (req.flags & 1) != 0 ? req.first_name : null;
+        String last = (req.flags & 2) != 0 ? req.last_name : null;
+        String display = ((first == null ? "" : first)
+                + (first != null && first.length() > 0 && last != null && last.length() > 0 ? " " : "")
+                + (last == null ? "" : last)).trim();
+        if (display.length() == 0) {
+            throw new XoApiException(400, "NAME_INVALID", "profile update carries no usable name");
+        }
+        JSONObject edited = RestGateway.getInstance(account).updateProfile(display);
+        JSONObject userJson = edited.optJSONObject("user");
+        if (userJson == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "users/edit response lacks the user object");
+        }
+        try {
+            return TlJsonMapper.parseUser(userJson, false);
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed edited user: " + e.getMessage());
+        }
+    }
+
+    /** chat json → TL_chat, with the mapper's malformed-answer contract. */
+    private static TLRPC.TL_chat mapGroupChat(JSONObject chatJson) {
+        try {
+            return TlJsonMapper.parseGroupChat(chatJson);
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed chat json: " + e.getMessage());
+        }
+    }
+
+    /** TL_updates carrying only a chats list (processUpdates applies chats verbatim). */
+    private static TLRPC.TL_updates updatesWithChats(TLRPC.TL_chat chat) {
+        TLRPC.TL_updates updates = new TLRPC.TL_updates();
+        updates.chats.add(chat);
+        updates.date = nowSeconds();
+        updates.seq = 0;
+        return updates;
+    }
+
+    /** TL_messages_invitedUsers wrapper — the createChat/addChatUser response class. */
+    private static TLRPC.TL_messages_invitedUsers invitedUsers(TLRPC.TL_updates updates) {
+        TLRPC.TL_messages_invitedUsers invited = new TLRPC.TL_messages_invitedUsers();
+        invited.updates = updates;
+        return invited;
+    }
+
+    /**
+     * Shared finalize for avatar sources (own avatar + group avatar): the
+     * crop source went through the file-part routes, so the bridge mapping
+     * exists — finalize it exactly like sendMedia does, feed the attestation
+     * index, and return the backend file id.
+     */
+    private static long finalizeAvatarSource(int account, Object input) {
+        long treeUploadId;
+        int parts;
+        if (input instanceof TLRPC.TL_inputChatUploadedPhoto) {
+            TLRPC.InputFile file = ((TLRPC.TL_inputChatUploadedPhoto) input).file;
+            if (!(file instanceof TLRPC.TL_inputFile)) {
+                throw new XoApiException(400, "MEDIA_INVALID", "unsupported chat photo input");
+            }
+            treeUploadId = file.id;
+            parts = ((TLRPC.TL_inputFile) file).parts;
+        } else if (input instanceof TLRPC.TL_inputFile) {
+            treeUploadId = ((TLRPC.TL_inputFile) input).id;
+            parts = ((TLRPC.TL_inputFile) input).parts;
+        } else {
+            throw new XoApiException(400, "MEDIA_INVALID", "avatar removal/emoji variants are not supported");
+        }
+        RestFileBridge bridge = RestFileBridge.getInstance(account);
+        long declaredBytes = bridge.uploadedBytesFor(treeUploadId);
+        JSONObject envelope = bridge.finalizeUpload(treeUploadId, Math.max(1, parts), "image/jpeg", null,
+                null, null, null, declaredBytes);
+        RestFileBridge.noteFileMetaFromJson(envelope == null ? null : envelope.optJSONObject("file"));
+        long backendFileId = bridge.backendFileIdFor(treeUploadId);
+        if (backendFileId == 0) {
+            throw new XoApiException(400, "FILE_ID_INVALID", "avatar upload was never routed through this client");
+        }
+        return backendFileId;
     }
 
     private static TLObject stubState() {
