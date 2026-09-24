@@ -343,6 +343,12 @@ public final class UpdatePoller {
             AndroidUtilities.runOnUIThread(() -> {
                 try {
                     MessagesController.getInstance(account).putUser(user, false);
+                    // T33: persist too — without this the db row lagged behind
+                    // memory until the next dialogs/history save, so a changed
+                    // username/bio would revert after a process restart.
+                    ArrayList<TLRPC.TL_user> single = new ArrayList<>();
+                    single.add(user);
+                    MessagesStorage.getInstance(account).putUsersAndChats(single, null, false, true);
                     NotificationCenter.getInstance(account).postNotificationName(
                             NotificationCenter.updateInterfaces,
                             MessagesController.UPDATE_MASK_AVATAR | MessagesController.UPDATE_MASK_NAME);

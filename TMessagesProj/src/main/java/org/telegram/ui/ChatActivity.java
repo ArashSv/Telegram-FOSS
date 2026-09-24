@@ -398,7 +398,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
     private HashtagHistoryView hashtagHistoryView;
 
     private HintView2 savedMessagesHint;
-	private HintView2 savedMessagesSearchHint;
+        private HintView2 savedMessagesSearchHint;
     private HintView2 savedMessagesTagHint;
     private HintView2 groupEmojiPackHint;
     private HintView2 botMessageHint;
@@ -8310,14 +8310,14 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                 savedMessagesHint.setJoint(0.5f, 0);
             }
             savedMessagesHint.setCloseButton(true);
-			savedMessagesHint.setOnHiddenListener(() -> {
+                        savedMessagesHint.setOnHiddenListener(() -> {
                 if (searchContainer == null || searchContainer.getVisibility() != View.VISIBLE) {
                     if (savedMessagesSearchHint != null) {
                         savedMessagesSearchHint.show();
                     }
                 }
-			});
-			savedMessagesHint.setDuration(-1);
+                        });
+                        savedMessagesHint.setDuration(-1);
             savedMessagesHint.setPadding(dp(8), 0, dp(8), 0);
             contentView.addView(savedMessagesHint, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 120, Gravity.TOP | Gravity.FILL_HORIZONTAL, 0, -8, 0, 0));
 
@@ -8330,8 +8330,8 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                     .setCloseButton(true)
                     .setJointPx(1, -dp(56))
                     .setRounding(8);
-			savedMessagesSearchHint.setText(LocaleController.getString(R.string.SavedTagSearchTooltipHint));
-			contentView.addView(savedMessagesSearchHint, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 120, Gravity.TOP | Gravity.FILL_HORIZONTAL, 16, -8, 16, 0));
+                        savedMessagesSearchHint.setText(LocaleController.getString(R.string.SavedTagSearchTooltipHint));
+                        contentView.addView(savedMessagesSearchHint, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 120, Gravity.TOP | Gravity.FILL_HORIZONTAL, 16, -8, 16, 0));
 
             if (getUserConfig().isPremium()) {
                 savedMessagesTagHint = new HintView2(context, HintView2.DIRECTION_BOTTOM)
@@ -31172,11 +31172,11 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             fragment.finishFragment();
             createUndoView();
             if (undoView != null) {
-				if (dids.size() == 1) {
+                                if (dids.size() == 1) {
                     if (!BulletinFactory.of(ChatActivity.this).showForwardedBulletinWithTag(dids.get(0).dialogId, fmessages.size())) {
                         undoView.showWithAction(dids.get(0).dialogId, UndoView.ACTION_FWD_MESSAGES, fmessages.size());
                     }
-				} else {
+                                } else {
                     undoView.showWithAction(0, UndoView.ACTION_FWD_MESSAGES, fmessages.size(), dids.size(), null, null);
                 }
             }
@@ -32704,7 +32704,11 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                         shakeContent();
                     }
                 } else if (str.startsWith("@")) {
-                    getMessagesController().openByUserName(username, ChatActivity.this, 0, makeProgressForLink(cell, url));
+                    // T33: a tapped @username opens the user's CHAT page directly
+                    // (openChatOrProfileWith type 2) — never creates a chat; the
+                    // backend materializes the private chat lazily and the v1.6
+                    // dialog filter keeps it invisible until a message exists.
+                    getMessagesController().openByUserName(username, ChatActivity.this, 2, makeProgressForLink(cell, url));
                 } else {
                     processExternalUrl(0, str, url, cell, false, false);
                 }
@@ -32909,7 +32913,8 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         } else if (url instanceof URLSpanUserMention) {
             TLRPC.User user = getMessagesController().getUser(Utilities.parseLong(((URLSpanUserMention) url).getURL()));
             if (user != null) {
-                MessagesController.openChatOrProfileWith(user, null, ChatActivity.this, 0, false);
+                // T33: type 2 = the user's chat page (not the profile sheet)
+                MessagesController.openChatOrProfileWith(user, null, ChatActivity.this, 2, false);
             }
             if (longPress && cell != null) {
                 cell.resetPressedLink(-1);
@@ -34548,7 +34553,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             searchingUserMessages = null;
             searchingChatMessages = null;
             searchingHashtag = null;
-			searchItem.setSearchFieldHint(isSupportedTags() ? LocaleController.getString("SavedTagSearchHint", R.string.SavedTagSearchHint) : LocaleController.getString("Search", R.string.Search));
+                        searchItem.setSearchFieldHint(isSupportedTags() ? LocaleController.getString("SavedTagSearchHint", R.string.SavedTagSearchHint) : LocaleController.getString("Search", R.string.Search));
             searchItem.setSearchFieldCaption(null);
             AndroidUtilities.updateViewVisibilityAnimated(avatarContainer, true, 0.95f, true);
             if (editTextItem != null && editTextItem.getTag() != null) {
@@ -34783,7 +34788,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                     searchingForUser = false;
                     searchItem.setSearchFieldText("", true);
                 }
-				searchItem.setSearchFieldHint(isSupportedTags() ? LocaleController.getString("SavedTagSearchHint", R.string.SavedTagSearchHint) : LocaleController.getString("Search", R.string.Search));
+                                searchItem.setSearchFieldHint(isSupportedTags() ? LocaleController.getString("SavedTagSearchHint", R.string.SavedTagSearchHint) : LocaleController.getString("Search", R.string.Search));
                 searchCalendarButton.setVisibility(View.VISIBLE);
                 if (searchUserButton != null) {
                     searchUserButton.setVisibility(View.VISIBLE);
@@ -34811,9 +34816,9 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         return searchItemListener;
     }
 
-	private boolean isSupportedTags() {
-		return getUserConfig().getClientUserId() == getDialogId() && !getMessagesController().getSavedMessagesController().unsupported && getUserConfig().isPremium();
-	}
+        private boolean isSupportedTags() {
+                return getUserConfig().getClientUserId() == getDialogId() && !getMessagesController().getSavedMessagesController().unsupported && getUserConfig().isPremium();
+        }
 
     private ChatMessageCellDelegate chatMessageCellDelegate;
     private ChatMessageCellDelegate getChatMessageCellDelegate() {
@@ -35619,11 +35624,11 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                         return;
                     }
 
-					Rect backgroundPaddings = new Rect();
-					Drawable shadowDrawable2 = ContextCompat.getDrawable(getParentActivity(), R.drawable.popup_fixed_alert).mutate();
-					shadowDrawable2.setColorFilter(new PorterDuffColorFilter(getThemedColor(Theme.key_actionBarDefaultSubmenuBackground), PorterDuff.Mode.MULTIPLY));
-					shadowDrawable2.getPadding(backgroundPaddings);
-					scrimPopupContainerLayout.setBackground(shadowDrawable2);
+                                        Rect backgroundPaddings = new Rect();
+                                        Drawable shadowDrawable2 = ContextCompat.getDrawable(getParentActivity(), R.drawable.popup_fixed_alert).mutate();
+                                        shadowDrawable2.setColorFilter(new PorterDuffColorFilter(getThemedColor(Theme.key_actionBarDefaultSubmenuBackground), PorterDuff.Mode.MULTIPLY));
+                                        shadowDrawable2.getPadding(backgroundPaddings);
+                                        scrimPopupContainerLayout.setBackground(shadowDrawable2);
 
                     MessageObject messageObject = cell.getMessageObject();
                     float bottom = cell.reactionsLayoutInBubble.y + button.y + AndroidUtilities.dp(28);
@@ -35631,8 +35636,8 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                     int[] loc = new int[2];
                     cell.getLocationInWindow(loc);
                     boolean forceBottom = false;
-					final boolean tags = getUserConfig().getClientUserId() == getDialogId() && !getMessagesController().getSavedMessagesController().unsupported;
-					if (tags) {
+                                        final boolean tags = getUserConfig().getClientUserId() == getDialogId() && !getMessagesController().getSavedMessagesController().unsupported;
+                                        if (tags) {
                         MessagesController.getGlobalMainSettings().edit().putInt("savedsearchtaghint", 1).apply();
 
                         ActionBarPopupWindow.ActionBarPopupWindowLayout popupLayout = new ActionBarPopupWindow.ActionBarPopupWindowLayout(getParentActivity(), 0, getResourceProvider(), 0);
@@ -35659,44 +35664,44 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                             });
                             popupLayout.addView(filterByTag);
                         }
-						ActionBarMenuSubItem removeTag = new ActionBarMenuSubItem(getParentActivity(), false, false);
-						removeTag.setTextAndIcon(LocaleController.getString(R.string.SavedTagRemoveTag), R.drawable.menu_tag_delete);
-						removeTag.setMinimumWidth(160);
-						removeTag.setOnClickListener(view -> {
-							pressedReaction(cell, reaction);
-						});
-						removeTag.setColors(Theme.getColor(Theme.key_color_red), Theme.getColor(Theme.key_color_red));
-						popupLayout.addView(removeTag);
-						scrimPopupContainerLayout.addView(popupLayout);
-					} else if (messageObject != null && messageObject.messageOwner != null && messageObject.messageOwner.reactions != null && messageObject.messageOwner.reactions.can_see_list || dialog_id >= 0) {
-						scrimPopupContainerLayout.addView(new ReactedUsersListView(getParentActivity(), themeDelegate, currentAccount, cell.getPrimaryMessageObject(), reaction, false, false)
-								.setOnCustomEmojiSelectedListener((reactedUsersListView1, customEmojiStickerSets) -> {
-									EmojiPacksAlert alert = new EmojiPacksAlert(ChatActivity.this, getParentActivity(), themeDelegate, customEmojiStickerSets) {
-										@Override
-										public void dismiss() {
-											super.dismiss();
-											dimBehindView(false);
-										}
-									};
-									alert.setCalcMandatoryInsets(isKeyboardVisible());
-									alert.setDimBehind(false);
-									closeMenu(false);
-									showDialog(alert);
-								})
-								.setOnProfileSelectedListener((view1, userId, messagePeerReaction) -> {
-									Bundle args = new Bundle();
-									if (userId > 0) {
-										args.putLong("user_id", userId);
-									} else {
-										args.putLong("chat_id", -userId);
-									}
-									args.putInt("report_reaction_message_id", cell.getMessageObject().getId());
-									args.putLong("report_reaction_from_dialog_id", dialog_id);
-									ProfileActivity fragment = new ProfileActivity(args);
-									presentFragment(fragment);
-									closeMenu();
-								}), LayoutHelper.createFrame(240, LayoutHelper.WRAP_CONTENT));
-					} else if (reaction.reaction instanceof TLRPC.TL_reactionCustomEmoji) {
+                                                ActionBarMenuSubItem removeTag = new ActionBarMenuSubItem(getParentActivity(), false, false);
+                                                removeTag.setTextAndIcon(LocaleController.getString(R.string.SavedTagRemoveTag), R.drawable.menu_tag_delete);
+                                                removeTag.setMinimumWidth(160);
+                                                removeTag.setOnClickListener(view -> {
+                                                        pressedReaction(cell, reaction);
+                                                });
+                                                removeTag.setColors(Theme.getColor(Theme.key_color_red), Theme.getColor(Theme.key_color_red));
+                                                popupLayout.addView(removeTag);
+                                                scrimPopupContainerLayout.addView(popupLayout);
+                                        } else if (messageObject != null && messageObject.messageOwner != null && messageObject.messageOwner.reactions != null && messageObject.messageOwner.reactions.can_see_list || dialog_id >= 0) {
+                                                scrimPopupContainerLayout.addView(new ReactedUsersListView(getParentActivity(), themeDelegate, currentAccount, cell.getPrimaryMessageObject(), reaction, false, false)
+                                                                .setOnCustomEmojiSelectedListener((reactedUsersListView1, customEmojiStickerSets) -> {
+                                                                        EmojiPacksAlert alert = new EmojiPacksAlert(ChatActivity.this, getParentActivity(), themeDelegate, customEmojiStickerSets) {
+                                                                                @Override
+                                                                                public void dismiss() {
+                                                                                        super.dismiss();
+                                                                                        dimBehindView(false);
+                                                                                }
+                                                                        };
+                                                                        alert.setCalcMandatoryInsets(isKeyboardVisible());
+                                                                        alert.setDimBehind(false);
+                                                                        closeMenu(false);
+                                                                        showDialog(alert);
+                                                                })
+                                                                .setOnProfileSelectedListener((view1, userId, messagePeerReaction) -> {
+                                                                        Bundle args = new Bundle();
+                                                                        if (userId > 0) {
+                                                                                args.putLong("user_id", userId);
+                                                                        } else {
+                                                                                args.putLong("chat_id", -userId);
+                                                                        }
+                                                                        args.putInt("report_reaction_message_id", cell.getMessageObject().getId());
+                                                                        args.putLong("report_reaction_from_dialog_id", dialog_id);
+                                                                        ProfileActivity fragment = new ProfileActivity(args);
+                                                                        presentFragment(fragment);
+                                                                        closeMenu();
+                                                                }), LayoutHelper.createFrame(240, LayoutHelper.WRAP_CONTENT));
+                                        } else if (reaction.reaction instanceof TLRPC.TL_reactionCustomEmoji) {
                         TLRPC.TL_reactionCustomEmoji customEmoji = (TLRPC.TL_reactionCustomEmoji) reaction.reaction;
                         TLRPC.InputStickerSet inputStickerSet = AnimatedEmojiDrawable.getDocumentFetcher(currentAccount).findStickerSet(customEmoji.document_id);
                         if (inputStickerSet != null) {
