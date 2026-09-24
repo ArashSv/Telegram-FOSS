@@ -91,11 +91,19 @@ public final class RestFileBridge {
             return size() > META_CACHE_MAX;
         }
     };
+    /** T31: persistent attestation store — the in-memory index dies with the
+     *  process, and messages loaded from the local DB never feed it; without
+     *  persistence every restart ran downloads UNATTESTED (declared length 0),
+     *  the exact hole the field corruption walked through. backendId ->
+     *  "size:sha256". ids are server-global, one file per install. */
+    private static final android.content.SharedPreferences metaPrefs =
+            ApplicationLoader.applicationContext.getSharedPreferences("xofilemeta", android.content.Context.MODE_PRIVATE);
+    private static final int META_PREFS_MAX = 4096;
 
     /**
      * Records the server-attested {size, sha256} of a backend file. Idempotent;
      * a later record for the same id wins (files are immutable once ready, so
-     * both records agree).
+     * both records agree). Persisted so restarts keep the attestation.
      */
     public static void noteFileMeta(long backendId, long size, String sha256) {
         if (backendId <= 0 || (size <= 0 && (sha256 == null || sha256.length() == 0))) {
@@ -103,6 +111,56 @@ public final class RestFileBridge {
         }
         synchronized (metaCache) {
             metaCache.put(backendId, new String[]{Long.toString(size), sha256 == null ? "" : sha256});
+        }
+        if (sha256 != null && sha256.length() > 0) {
+            synchronized (metaPrefs) {
+                android.content.SharedPreferences.Editor e = metaPrefs.edit()
+                        .putString("att_" + backendId, size + ":" + sha256);
+                if (metaPrefs.getAll().size() > META_PREFS_MAX) {
+                    e.clear(); // crude amortized bound; attestations rebuild lazily
+                }
+                e.apply();
+            }
+        }
+    }
+
+    /**
+     * T31: the download path's single attestation entry point. Memory →
+     * persistent store → ONE blocking files/get cold-fetch. Runs on dispatcher
+     * worker threads only (NEVER the stage queue — FileLoadOperation's finish
+     * gate re-reads the warm in-memory index, which every chunk of a healthy
+     * download has populated by then). Returns the attested size (0 = unknown).*/
+    public static long attestedSize(int account, long backendId) {
+        attest(account, backendId);
+        return declaredSizeFor(backendId);
+    }
+
+    public static void attest(int account, long backendId) {
+        if (backendId <= 0) {
+            return;
+        }
+        synchronized (metaCache) {
+            if (metaCache.containsKey(backendId)) {
+                return;
+            }
+        }
+        String saved = metaPrefs.getString("att_" + backendId, null);
+        if (saved != null) {
+            int sep = saved.indexOf(':');
+            if (sep > 0) {
+                noteFileMeta(backendId, parseLongSafe(saved.substring(0, sep)), saved.substring(sep + 1));
+                return;
+            }
+        }
+        try {
+            JSONObject file = RestGateway.getInstance(account)
+                    .fileMetadata(backendId)
+                    .optJSONObject("file");
+            if (file != null) {
+                noteFileMetaFromJson(file);
+            }
+        } catch (Exception e) {
+            FileLog.w("RestFileBridge: attestation cold-fetch failed for file " + backendId);
         }
     }
 

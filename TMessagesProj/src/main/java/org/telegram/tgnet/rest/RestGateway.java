@@ -376,44 +376,21 @@ public final class RestGateway {
     }
 
     /**
-     * T29: ranged binary GET with DECLARED-LENGTH enforcement. Beyond the
-     * Content-Length promise (XoHttp), the answer must carry EXACTLY
-     * {@code expectedBytes} — the byte count the dispatcher derived from the
-     * SERVER-attested file size (clamped at the true EOF). A body that is
-     * short or long is a corrupted transfer (proxy cut, rewritten headers,
-     * chunked-encoding games): it is retried like any transport failure and —
-     * after the retries exhaust — fails LOUDLY. A short chunk is never
-     * delivered to the tree, so FileLoadOperation can never mistake a hole for
-     * a finished file (the field shape: "completed" videos, 0 s, corrupt).
-     * Typed errors: NOT_FOUND, INVALID_RANGE; transport failures surface as
-     * {@link XoTransportException}.
-     * {@code expectedBytes < 0} keeps the legacy Content-Length-only contract
-     * (file size unknown).
+     * T31: ONE authed binary window request, for {@link XoFileTransport} (the
+     * download path's single owner). Auth + refresh stay here; length and
+     * content verification live in the transport. No retry loop here — the
+     * transport retries each window on a fresh connection with the same
+     * idempotent semantics this class applies to JSON routes.
      */
-    public byte[] fileDownloadRange(long backendFileId, long startInclusive, long endInclusive, long expectedBytes) {
-        return fileRequestRetry("files/download.php", () -> {
-            RestAuthStore.TokenSet tokens = requireTokens("files/download.php");
-            try {
-                XoHttp.BinaryResponse response = XoHttp.binaryRequest(
-                        BASE_URL + "files/download.php?file_id=" + backendFileId,
-                        tokens.accessToken, startInclusive, endInclusive);
-                if (response.code == 200 || response.code == 206) {
-                    if (expectedBytes >= 0 && response.data.length != expectedBytes) {
-                        throw new XoTransportException("download range " + startInclusive + "-" + endInclusive
-                                + " delivered " + response.data.length + "B, declared " + expectedBytes + "B");
-                    }
-                    return response.data;
-                }
-                if (response.code == 416) {
-                    throw new XoApiException(416, "INVALID_RANGE", "requested range beyond EOF");
-                }
-                throw new XoApiException(response.code, response.code == 404 ? "NOT_FOUND" : "SERVER_ERROR",
-                        "download http " + response.code);
-            } catch (IOException e) {
-                FileLog.e("RestGateway: transport failure on file download", e);
-                throw new XoTransportException("file download failed: " + e.getMessage(), e);
-            }
-        });
+    public XoHttp.BinaryResponse binaryWindow(long backendFileId, long startInclusive, long endInclusive) {
+        RestAuthStore.TokenSet tokens = requireTokens("files/download.php");
+        try {
+            return XoHttp.binaryRequest(BASE_URL + "files/download.php?file_id=" + backendFileId,
+                    tokens.accessToken, startInclusive, endInclusive);
+        } catch (IOException e) {
+            FileLog.e("RestGateway: transport failure on file window", e);
+            throw new XoTransportException("file window failed: " + e.getMessage(), e);
+        }
     }
 
     /**
