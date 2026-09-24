@@ -493,6 +493,15 @@ public final class RestDispatcher {
      * with bytes positioned at 0 and limit == byte count (FileLoadOperation
      * ~:2542 instanceof-tests it and writes bytes.buffer straight into its file
      * channel; a short tail chunk closes the download).
+     *
+     * <p>T31: the byte delivery itself is delegated to {@link XoFileTransport}
+     * — the single owner of media transfer. It attests the file (memory →
+     * persistent store → one metadata cold-fetch), clamps the window at the
+     * attested EOF, splits large asks into ≤256 KB sub-windows, and verifies
+     * every sub-window on three axes (declared length, per-window sha256 echo,
+     * Content-Length promise) with fresh-connection retries. A short or
+     * mangled body can never again reach the tree's assembly — it retries, or
+     * fails LOUDLY here.
      */
     private static TLObject handleFileGet(int account, TLRPC.TL_upload_getFile req) {
         RestFileBridge bridge = RestFileBridge.getInstance(account);
@@ -505,25 +514,7 @@ public final class RestDispatcher {
         }
         long limit = Math.max(1, Math.min(req.limit, 1024 * 1024)); // tree asks 32..512 KB
         long end = req.offset + limit - 1;
-        // T29: the server-attested size turns every range into a VERIFIED
-        // contract. Clamp the tail at the true EOF (the tree asks chunk-sized
-        // windows without knowing where the file ends), reject past-EOF
-        // offsets up front (a 416 round-trip can never succeed), and pass the
-        // exact expected byte count down — the gateway then refuses any body
-        // that does not match it, so a cut/rewritten response is retried as a
-        // transport failure and a short chunk can never reach the tree's
-        // assembly (the field shape: silently truncated "completed" videos).
-        long declaredSize = RestFileBridge.declaredSizeFor(backendId);
-        long expectedBytes = -1;
-        if (declaredSize > 0) {
-            if (req.offset >= declaredSize) {
-                throw new XoApiException(416, "INVALID_RANGE",
-                        "offset " + req.offset + " beyond declared file size " + declaredSize);
-            }
-            end = Math.min(end, declaredSize - 1);
-            expectedBytes = end - req.offset + 1;
-        }
-        byte[] data = RestGateway.getInstance(account).fileDownloadRange(backendId, req.offset, end, expectedBytes);
+        byte[] data = XoFileTransport.getInstance(account).downloadRange(backendId, req.offset, end);
         if (data.length > limit) {
             // T28: a 206 never carries more than the requested range (the only
             // legit tail is SHORTER at EOF). A longer body means an intermediary

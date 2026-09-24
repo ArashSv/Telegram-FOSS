@@ -57,10 +57,18 @@ final class XoHttp {
     static final class BinaryResponse {
         final int code;
         final byte[] data;
+        /** T31: the backend's sha256 of EXACTLY the served window
+         *  (X-Range-Sha256), or null when the server predates the header. */
+        final String rangeSha256;
 
         BinaryResponse(int code, byte[] data) {
+            this(code, data, null);
+        }
+
+        BinaryResponse(int code, byte[] data, String sha) {
             this.code = code;
             this.data = data;
+            this.rangeSha256 = sha;
         }
     }
 
@@ -133,6 +141,10 @@ final class XoHttp {
         conn.setReadTimeout(READ_TIMEOUT_MS);
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Accept", "application/octet-stream");
+        // T31: identity — the platform must not negotiate gzip for raw windows
+        // (a transparently re-encoded body would break the length AND the
+        // content attestation contract for byte-exact range delivery).
+        conn.setRequestProperty("Accept-Encoding", "identity");
         if (bearerToken != null && bearerToken.length() > 0) {
             conn.setRequestProperty("Authorization", "Bearer " + bearerToken);
         }
@@ -157,11 +169,13 @@ final class XoHttp {
             }
             throw new IOException("range request answered with full-file 200 (header stripped), offset " + rangeStart);
         }
+        String rangeSha = code < 400 ? conn.getHeaderField("X-Range-Sha256") : null;
         long promised = code < 400 ? conn.getContentLengthLong() : -1;
         String encoding = conn.getHeaderField("Content-Encoding");
         boolean verifyLength = promised > 0 && (encoding == null || encoding.length() == 0);
         InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
-        return new BinaryResponse(code, readBytes(in, verifyLength ? promised : -1));
+        return new BinaryResponse(code, readBytes(in, verifyLength ? promised : -1),
+                rangeSha == null || rangeSha.length() == 0 ? null : rangeSha);
     }
 
     /**

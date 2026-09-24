@@ -97,17 +97,18 @@ public class FileUploadOperation {
         isEncrypted = encrypted;
         estimatedSize = estimated;
         currentType = type;
-        // REST fork (T14): the deferred-first-part streaming mode is disabled.
-        // With uploadFirstPartLater=true the first 1024 bytes are held back and
-        // re-sent as part 0 only via the nextPartFirst dance, which on this
-        // build NEVER fires before the upload finishes: every compressed-video
-        // upload reached the server WITHOUT part 0 (server DB forensics:
-        // chunk indices start at 1), so finalize saw received < declared parts
-        // and the send failed after the progress bar hit 100%. The availableSize
-        // gate (checkNewDataAvailable) already protects against reading bytes
-        // the transcoder has not written yet, so streaming uploads are safe
-        // with parts starting at index 0. Encrypted chats are not used here.
-        uploadFirstPartLater = false;
+        // REST fork (T31): upstream's deferred-first-part mode is RESTORED, and
+        // it is not optional. For transcoded videos (estimatedSize != 0) the
+        // muxer writes the mp4 progressively and PATCHES the header at finish —
+        // InterleaveChunkMdat ships an mdat box with a 16-byte placeholder size
+        // (MP4Builder.java) until the final rewrite. Uploading the first 1024
+        // bytes before the muxer closes therefore ships an UNPLAYABLE header
+        // (field-verified: server blobs with mdat@32+16, "0 seconds" videos —
+        // the t14 shortcut caused exactly that). Upstream holds part 0 back
+        // until every other part has been read, i.e. after the patch. The t14
+        // complaint ("part 0 never arrived") was a notification race at EOF —
+        // closed deterministically in startUploadRequest's EOF path below.
+        uploadFirstPartLater = estimated != 0 && !isEncrypted;
     }
 
     public long getTotalFileSize() {
@@ -495,33 +496,73 @@ public class FileUploadOperation {
                 currentRequestBytes = stream.read(readBuffer);
             }
             if (currentRequestBytes == -1) {
-                // REST fork (T14): a streaming upload (transcoded video) whose
-                // final size is an exact multiple of the chunk size ends with a
-                // read() == -1 and NO short tail, so isLastPart is never set on
-                // any request and the old code simply returned -> the upload
-                // never finished (progress stuck at 100%, then a stuck/failed
-                // send). When every byte is consumed and no request is in
-                // flight, finish exactly like the response path does.
-                if (state == 1 && !isLastPart && estimatedSize == 0
-                        && readBytesCount >= totalFileSize && currentUploadRequetsCount == 0) {
-                    state = 3;
-                    TLRPC.InputFile result;
-                    if (isBigFile) {
-                        result = new TLRPC.TL_inputFileBig();
-                    } else {
-                        result = new TLRPC.TL_inputFile();
-                        result.md5_checksum = "";
+                // REST fork (T31): EOF. In deferred-first-part mode (transcoded
+                // videos) the muxer has finished writing by definition — the
+                // mp4 header is patched NOW. If the short-tail/notification
+                // race skipped the nextPartFirst switch, part 0 would never be
+                // delivered (the t14 field failure: CHUNKS_MISSING, parts
+                // start at index 1). Emit it HERE, deterministically, as the
+                // final part. The availableSize gate cannot have read it
+                // earlier: reading only ever ran below the written watermark,
+                // and the header patch happens before the writer closes.
+                if (state == 1 && !isLastPart && uploadFirstPartLater && currentUploadRequetsCount == 0) {
+                    nextPartFirst = true;
+                    uploadFirstPartLater = false;
+                    try {
+                        stream.seek(0);
+                        currentRequestBytes = isBigFile ? stream.read(readBuffer) : stream.read(readBuffer, 0, 1024);
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                        state = 4;
+                        delegate.didFailedUploadingFile(this);
+                        cleanup();
+                        return;
                     }
-                    result.parts = currentPartNum;
-                    result.id = currentFileId;
-                    result.name = uploadingFilePath.substring(uploadingFilePath.lastIndexOf("/") + 1);
-                    if (BuildVars.LOGS_ENABLED) {
-                        FileLog.d("debug_uploading: EOF finish, parts=" + currentPartNum + " file=" + uploadingFilePath);
+                    if (currentRequestBytes <= 0) {
+                        // degenerate (empty file) — finish without part 0
+                        state = 3;
+                        TLRPC.InputFile emptyResult;
+                        if (isBigFile) {
+                            emptyResult = new TLRPC.TL_inputFileBig();
+                        } else {
+                            emptyResult = new TLRPC.TL_inputFile();
+                            emptyResult.md5_checksum = "";
+                        }
+                        emptyResult.parts = currentPartNum;
+                        emptyResult.id = currentFileId;
+                        emptyResult.name = uploadingFilePath.substring(uploadingFilePath.lastIndexOf("/") + 1);
+                        delegate.didFinishUploadingFile(FileUploadOperation.this, emptyResult, null, null, null);
+                        cleanup();
+                        return;
                     }
-                    delegate.didFinishUploadingFile(FileUploadOperation.this, result, null, null, null);
-                    cleanup();
+                    currentPartNum = 0;
+                    isLastPart = true;
+                    // fall through: the code below builds and sends this final part-0 request
+                } else {
+                    // REST fork (T14): a NON-deferred upload whose final size is
+                    // an exact multiple of the chunk size ends with read()==-1
+                    // and no short tail — finish exactly like the response path.
+                    if (state == 1 && !isLastPart && estimatedSize == 0
+                            && readBytesCount >= totalFileSize && currentUploadRequetsCount == 0) {
+                        state = 3;
+                        TLRPC.InputFile result;
+                        if (isBigFile) {
+                            result = new TLRPC.TL_inputFileBig();
+                        } else {
+                            result = new TLRPC.TL_inputFile();
+                            result.md5_checksum = "";
+                        }
+                        result.parts = currentPartNum;
+                        result.id = currentFileId;
+                        result.name = uploadingFilePath.substring(uploadingFilePath.lastIndexOf("/") + 1);
+                        if (BuildVars.LOGS_ENABLED) {
+                            FileLog.d("debug_uploading: EOF finish, parts=" + currentPartNum + " file=" + uploadingFilePath);
+                        }
+                        delegate.didFinishUploadingFile(FileUploadOperation.this, result, null, null, null);
+                        cleanup();
+                    }
+                    return;
                 }
-                return;
             }
             int toAdd = 0;
             if (isEncrypted && currentRequestBytes % 16 != 0) {
