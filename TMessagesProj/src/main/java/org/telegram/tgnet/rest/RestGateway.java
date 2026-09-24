@@ -512,9 +512,40 @@ public final class RestGateway {
         return authenticatedRequest("POST", "users/delete-photo.php", new JSONObject());
     }
 
-    /** POST /users/edit.php {display_name} — display name change. */
-    public JSONObject updateProfile(String displayName) {
-        JSONObject body = put(new JSONObject(), "display_name", displayName);
+    // ------------------------------------------------------------------ T33: usernames + bio + deep links
+
+    /**
+     * GET /users/username-check.php?username=… — live availability state
+     * (always 200: available/reason is UI state, not an error surface).
+     */
+    public JSONObject usernameCheck(String username) {
+        return authenticatedRequest("GET", "users/username-check.php?username=" + android.net.Uri.encode(username), null);
+    }
+
+    /** POST /users/username-set.php {username} — empty string clears (backend contract). */
+    public JSONObject usernameSet(String username) {
+        JSONObject body = put(new JSONObject(), "username", username);
+        return authenticatedRequest("POST", "users/username-set.php", body);
+    }
+
+    /** GET /users/resolve.php?username=… — @username deep-link resolution. */
+    public JSONObject resolveUsername(String username) {
+        return authenticatedRequest("GET", "users/resolve.php?username=" + android.net.Uri.encode(username), null);
+    }
+
+    /**
+     * POST /users/edit.php {display_name?, bio?} — null omits the field so the
+     * backend's "at least one of" contract stays truthful for bio-only edits
+     * (ChangeBioActivity) and name-only edits (ChangeNameActivity).
+     */
+    public JSONObject updateProfile(String displayName, String bio) {
+        JSONObject body = new JSONObject();
+        if (displayName != null) {
+            put(body, "display_name", displayName);
+        }
+        if (bio != null) {
+            put(body, "bio", bio);
+        }
         return authenticatedRequest("POST", "users/edit.php", body);
     }
 

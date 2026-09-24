@@ -50,10 +50,16 @@ public final class TlJsonMapper {
         user.first_name = displayName;
         user.flags |= 2; // first_name present
 
-        String username = object.optString("username", null);
-        if (username != null && username.length() > 0) {
-            user.username = username;
-            user.flags |= 8;
+        Object usernameObj = object.opt("username");
+        // T33: explicit JSON null must NOT become the string "null" (the
+        // optString trap — org.json's NULL sentinel toString()s to "null"),
+        // which would pollute objectsByUsernames with a "null" key.
+        if (usernameObj instanceof String) {
+            String username = (String) usernameObj;
+            if (username.length() > 0) {
+                user.username = username;
+                user.flags |= 8;
+            }
         }
         String phone = object.optString("phone", null); // self shape only
         if (phone != null && phone.length() > 0) {
@@ -289,7 +295,60 @@ public final class TlJsonMapper {
         message.media = parseMedia(mediaJson, message.date);
         message.flags |= 512;
         message.dialog_id = dialogId;
+
+        // T33: the REST pipeline carries no message entities, so @mentions were
+        // never tappable. Detect Telegram-style handles client-side and plant
+        // TL_messageEntityMention entries (offsets/lengths are UTF-16 code
+        // units — Java String indexes already are). The HAS_ENTITIES flag bit
+        // must ride along or MessagesStorage round-trips silently drop the
+        // list — same lesson as the T11 reply-header flag.
+        ArrayList<TLRPC.TL_messageEntityMention> mentions = detectMentions(message.message);
+        if (!mentions.isEmpty()) {
+            message.entities.addAll(mentions);
+            message.flags |= 128;
+        }
         return message;
+    }
+
+    /** Telegram-style handle: '@' + 5..32 of [A-Za-z0-9_], boundary-checked. */
+    private static final java.util.regex.Pattern MENTION_PATTERN =
+            java.util.regex.Pattern.compile("@[A-Za-z0-9_]{5,32}");
+
+    /**
+     * Client-side @mention detection over UTF-16 offsets.
+     *
+     * Boundary rules keep e-mail fragments ("a@user_x") and sub-strings
+     * ("x@user_y") out; a greedy over-match past the real handle (a 33+ char
+     * token) is rejected by the trailing-boundary check, matching Telegram's
+     * no-mention-at-all behavior for impossible handles.
+     */
+    public static ArrayList<TLRPC.TL_messageEntityMention> detectMentions(String text) {
+        ArrayList<TLRPC.TL_messageEntityMention> out = new ArrayList<>();
+        if (text == null || text.length() < 6 || text.indexOf('@') < 0) {
+            return out;
+        }
+        java.util.regex.Matcher matcher = MENTION_PATTERN.matcher(text);
+        while (matcher.find()) {
+            int start = matcher.start();
+            int end = matcher.end();
+            if (start > 0) {
+                char prev = text.charAt(start - 1);
+                if (prev == '@' || prev == '_' || Character.isLetterOrDigit(prev)) {
+                    continue;
+                }
+            }
+            if (end < text.length()) {
+                char next = text.charAt(end);
+                if (next == '_' || Character.isLetterOrDigit(next)) {
+                    continue;
+                }
+            }
+            TLRPC.TL_messageEntityMention entity = new TLRPC.TL_messageEntityMention();
+            entity.offset = start;
+            entity.length = end - start;
+            out.add(entity);
+        }
+        return out;
     }
 
     // ------------------------------------------------------------------ media (T8d)

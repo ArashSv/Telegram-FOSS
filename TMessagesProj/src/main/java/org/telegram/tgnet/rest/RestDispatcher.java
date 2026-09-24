@@ -189,6 +189,18 @@ public final class RestDispatcher {
                 case RestRouter.ROUTE_UPDATE_PROFILE:
                     response = handleUpdateProfile(account, (TLRPC.TL_account_updateProfile) object);
                     break;
+                case RestRouter.ROUTE_CHECK_USERNAME:
+                    response = handleCheckUsername(account, (TLRPC.TL_account_checkUsername) object);
+                    break;
+                case RestRouter.ROUTE_UPDATE_USERNAME:
+                    response = handleUpdateUsername(account, (TLRPC.TL_account_updateUsername) object);
+                    break;
+                case RestRouter.ROUTE_RESOLVE_USERNAME:
+                    response = handleResolveUsername(account, (TLRPC.TL_contacts_resolveUsername) object);
+                    break;
+                case RestRouter.ROUTE_GET_FULL_USER:
+                    response = handleGetFullUser(account, (TLRPC.TL_users_getFullUser) object);
+                    break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
                     break;
@@ -871,20 +883,32 @@ public final class RestDispatcher {
     }
 
     /**
-     * TL_account_updateProfile — display name change (ChangeNameActivity:180,
-     * response ignored there). The backend stores one display_name; first +
-     * last compose into it. Returns the refreshed TL_user (schema-faithful).
+     * TL_account_updateProfile — name and/or bio (ChangeNameActivity:180 sends
+     * name only; ChangeBioActivity / UserInfoActivity add the about flag 4).
+     * The backend takes display_name OR bio (at least one). Returns the
+     * refreshed TL_user (schema-faithful); ChangeBioActivity additionally
+     * patches its local userFull.about from the edited text it already has.
      */
     private static TLObject handleUpdateProfile(int account, TLRPC.TL_account_updateProfile req) {
-        String first = (req.flags & 1) != 0 ? req.first_name : null;
-        String last = (req.flags & 2) != 0 ? req.last_name : null;
-        String display = ((first == null ? "" : first)
-                + (first != null && first.length() > 0 && last != null && last.length() > 0 ? " " : "")
-                + (last == null ? "" : last)).trim();
-        if (display.length() == 0) {
-            throw new XoApiException(400, "NAME_INVALID", "profile update carries no usable name");
+        boolean hasName = (req.flags & 1) != 0 || (req.flags & 2) != 0;
+        boolean hasAbout = (req.flags & 4) != 0;
+        if (!hasName && !hasAbout) {
+            throw new XoApiException(400, "NAME_INVALID", "profile update carries no usable field");
         }
-        JSONObject edited = RestGateway.getInstance(account).updateProfile(display);
+        String display = null;
+        if (hasName) {
+            String first = (req.flags & 1) != 0 ? req.first_name : null;
+            String last = (req.flags & 2) != 0 ? req.last_name : null;
+            display = ((first == null ? "" : first)
+                    + (first != null && first.length() > 0 && last != null && last.length() > 0 ? " " : "")
+                    + (last == null ? "" : last)).trim();
+            if (display.length() == 0) {
+                throw new XoApiException(400, "NAME_INVALID", "profile update carries no usable name");
+            }
+        }
+        // about="" (flag set, empty text) is the canonical CLEAR — pass it through
+        String bio = hasAbout ? (req.about == null ? "" : req.about) : null;
+        JSONObject edited = RestGateway.getInstance(account).updateProfile(display, bio);
         JSONObject userJson = edited.optJSONObject("user");
         if (userJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "users/edit response lacks the user object");
@@ -893,6 +917,139 @@ public final class RestDispatcher {
             return TlJsonMapper.parseUser(userJson, false);
         } catch (Exception e) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed edited user: " + e.getMessage());
+        }
+    }
+
+    // ------------------------------------------------------------------ T33: usernames + bio + deep links
+
+    /** trim + drop one leading '@' (mirrors the backend's normalizeUsername). */
+    private static String stripAt(String name) {
+        if (name == null) {
+            return null;
+        }
+        String trimmed = name.trim();
+        if (trimmed.startsWith("@")) {
+            trimmed = trimmed.substring(1).trim();
+        }
+        return trimmed;
+    }
+
+    /**
+     * TL_account_checkUsername — the live check behind ChangeUsernameActivity's
+     * 300 ms debounce. The upstream UI renders exactly three states:
+     * TL_boolTrue = available (green), TL_error USERNAME_INVALID = red
+     * ("too short" when length == 4), everything else = "in use" (red).
+     * The backend encodes rule violations as reason codes; only invalid-shape
+     * reasons surface as USERNAME_INVALID — occupied (and unknown codes) fall
+     * to TL_boolFalse so the UI shows the standard in-use state.
+     */
+    private static TLObject handleCheckUsername(int account, TLRPC.TL_account_checkUsername req) {
+        String name = stripAt(req.username);
+        if (name == null || name.length() == 0) {
+            return new TLRPC.TL_boolFalse();
+        }
+        JSONObject answer = RestGateway.getInstance(account).usernameCheck(name);
+        if (answer.optBoolean("available", false)) {
+            return new TLRPC.TL_boolTrue();
+        }
+        String reason = answer.optString("reason", "USERNAME_OCCUPIED");
+        if ("USERNAME_TOO_SHORT".equals(reason)
+                || "USERNAME_TOO_LONG".equals(reason)
+                || "USERNAME_INVALID".equals(reason)
+                || "USERNAME_INVALID_START".equals(reason)
+                || "USERNAME_RESERVED".equals(reason)) {
+            throw new XoApiException(400, "USERNAME_INVALID", reason);
+        }
+        return new TLRPC.TL_boolFalse();
+    }
+
+    /**
+     * TL_account_updateUsername — set (or clear, empty string). Response is
+     * the refreshed TL_user; ChangeUsernameActivity applies the canonical
+     * trio (putUsers + putUsersAndChats + saveConfig) and finishes.
+     */
+    private static TLObject handleUpdateUsername(int account, TLRPC.TL_account_updateUsername req) {
+        String name = stripAt(req.username);
+        JSONObject answer = RestGateway.getInstance(account).usernameSet(name == null ? "" : name);
+        JSONObject userJson = answer.optJSONObject("user");
+        if (userJson == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "username-set response lacks the user object");
+        }
+        try {
+            return TlJsonMapper.parseUser(userJson, false);
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed username-set user: " + e.getMessage());
+        }
+    }
+
+    /**
+     * TL_contacts_resolveUsername — @username deep links
+     * (ChatActivity mention taps → MessagesController.openByUserName →
+     * UserNameResolver, which hard-casts the response to
+     * TL_contacts_resolvedPeer, persists the user, and opens by peer id).
+     */
+    private static TLObject handleResolveUsername(int account, TLRPC.TL_contacts_resolveUsername req) {
+        String name = stripAt(req.username);
+        if (name == null || name.length() == 0) {
+            throw new XoApiException(400, "USERNAME_INVALID", "empty username");
+        }
+        JSONObject answer = RestGateway.getInstance(account).resolveUsername(name);
+        JSONObject userJson = answer.optJSONObject("user");
+        if (userJson == null) {
+            throw new XoApiException(400, "USERNAME_NOT_FOUND", "no user with this username");
+        }
+        try {
+            TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+            TLRPC.TL_contacts_resolvedPeer resolved = new TLRPC.TL_contacts_resolvedPeer();
+            TLRPC.TL_peerUser peer = new TLRPC.TL_peerUser();
+            peer.user_id = user.id;
+            resolved.peer = peer;
+            resolved.users.add(user);
+            return resolved;
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed resolved user: " + e.getMessage());
+        }
+    }
+
+    /**
+     * TL_users_getFullUser — ProfileActivity's full-user load (unrouted dead
+     * path until now: the bio row of OTHER users never had data). Our users
+     * json carries bio directly, so the container synthesizes a minimal
+     * TL_userFull with the about flag coherent (flag 2 only when non-empty).
+     */
+    private static TLObject handleGetFullUser(int account, TLRPC.TL_users_getFullUser req) {
+        long userId = req.id instanceof TLRPC.TL_inputUser
+                ? ((TLRPC.TL_inputUser) req.id).user_id
+                : 0;
+        if (userId <= 0) {
+            throw new XoApiException(400, "USER_ID_INVALID", "unsupported input user");
+        }
+        JSONArray usersJson = RestGateway.getInstance(account).usersGet(new long[]{userId});
+        if (usersJson == null || usersJson.length() == 0) {
+            throw new XoApiException(400, "USER_ID_INVALID", "user not found");
+        }
+        try {
+            JSONObject userJson = usersJson.getJSONObject(0);
+            TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+            TLRPC.TL_userFull full = new TLRPC.TL_userFull();
+            // UserFull carries NO user_id: the consumer keys on full_user.id
+            // (loadFullUser does getUser(res.full_user.id); updateUserInfo
+            // persists under info.user.id or info.id). id IS the user id here.
+            full.id = user.id;
+            Object bioObj = userJson.opt("bio");
+            if (bioObj instanceof String) {
+                String about = (String) bioObj;
+                if (about.length() > 0) {
+                    full.flags |= 2;
+                    full.about = about;
+                }
+            }
+            TLRPC.TL_users_userFull container = new TLRPC.TL_users_userFull();
+            container.full_user = full;
+            container.users.add(user);
+            return container;
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed full user: " + e.getMessage());
         }
     }
 

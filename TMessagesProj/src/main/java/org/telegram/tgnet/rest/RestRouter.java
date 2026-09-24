@@ -93,6 +93,12 @@ public final class RestRouter {
     public static final int ROUTE_DELETE_PHOTOS = 20;        // TL_photos_deletePhotos -> POST /users/delete-photo.php
     public static final int ROUTE_UPDATE_PROFILE = 21;       // TL_account_updateProfile -> POST /users/edit.php
 
+    // T33 — usernames + bio + @username deep links (backend v1.6.0)
+    public static final int ROUTE_CHECK_USERNAME = 22;    // TL_account_checkUsername -> GET /users/username-check.php
+    public static final int ROUTE_UPDATE_USERNAME = 23;   // TL_account_updateUsername -> POST /users/username-set.php
+    public static final int ROUTE_RESOLVE_USERNAME = 24;  // TL_contacts_resolveUsername -> GET /users/resolve.php
+    public static final int ROUTE_GET_FULL_USER = 25;     // TL_users_getFullUser -> GET /users/get.php (bio rides the json)
+
     // constructor ints (TLRPC.java, this tree): TL_upload_getFile = 0xbe5335be,
     // TL_upload_saveFilePart = 0xb304a621, TL_upload_saveBigFilePart = 0xde7b673d,
     // TL_messages_sendMedia = 0x7852834e
@@ -123,6 +129,11 @@ public final class RestRouter {
         ROUTES.put(TLRPC.TL_photos_uploadProfilePhoto.class, ROUTE_UPLOAD_PROFILE_PHOTO);
         ROUTES.put(TLRPC.TL_photos_deletePhotos.class, ROUTE_DELETE_PHOTOS);
         ROUTES.put(TLRPC.TL_account_updateProfile.class, ROUTE_UPDATE_PROFILE);
+        // T33 — usernames + bio + deep links
+        ROUTES.put(TLRPC.TL_account_checkUsername.class, ROUTE_CHECK_USERNAME);
+        ROUTES.put(TLRPC.TL_account_updateUsername.class, ROUTE_UPDATE_USERNAME);
+        ROUTES.put(TLRPC.TL_contacts_resolveUsername.class, ROUTE_RESOLVE_USERNAME);
+        ROUTES.put(TLRPC.TL_users_getFullUser.class, ROUTE_GET_FULL_USER);
     }
 
     private RestRouter() {
