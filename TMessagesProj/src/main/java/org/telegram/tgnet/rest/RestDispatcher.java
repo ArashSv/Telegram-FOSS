@@ -1467,8 +1467,9 @@ public final class RestDispatcher {
         if (ids.length > 0) {
             RestGateway.getInstance(account).contactsDelete(ids);
             try {
-                JSONObject answer = RestGateway.getInstance(account).usersGet(ids);
-                JSONArray usersJson = answer.optJSONArray("users");
+                // usersGet answers the users ARRAY directly ({users:[…]} is
+                // unwrapped by the gateway — see UserHydration.fetchUncached).
+                JSONArray usersJson = RestGateway.getInstance(account).usersGet(ids);
                 if (usersJson != null) {
                     for (int i = 0; i < usersJson.length(); i++) {
                         updates.users.add(TlJsonMapper.parseUser(usersJson.getJSONObject(i), false));

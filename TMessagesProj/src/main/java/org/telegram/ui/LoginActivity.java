@@ -2878,6 +2878,13 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             }
 
             TLRPC.TL_codeSettings settings = new TLRPC.TL_codeSettings();
+            // T37: the call permissions are removed from the product, so the
+            // call-gated auth surfaces (flashcall / missed-call) are disabled;
+            // SMS and Telegram-code delivery remain the only channels.
+            boolean simcardAvailable = AndroidUtilities.isSimAvailable();
+            boolean allowCall = false;
+            boolean allowCancelCall = false;
+            boolean allowReadCallLog = false;
             settings.allow_flashcall = simcardAvailable && allowCall && allowCancelCall && allowReadCallLog;
             settings.allow_missed_call = simcardAvailable && allowCall;
             settings.allow_app_hash = settings.allow_firebase = PushListenerController.GooglePushListenerServiceProvider.INSTANCE.hasServices();
