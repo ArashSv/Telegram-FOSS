@@ -5853,6 +5853,23 @@ public class MessagesController extends BaseController implements NotificationCe
         if (user == null) {
             return false;
         }
+        // T38 fork guard: a degraded self user (public-shaped — self flag lost —
+        // or phone-less) arriving through a generic response vector (contacts
+        // list/import users, member snapshots, hydration batches) must never
+        // wholesale-replace the current self user: that wiped the account's
+        // phone and self flag, and the profile showed "Unknown" / the drawer
+        // "@username" until the next process-wide self-heal. Route it through
+        // the XoSelf merge funnel instead (merge, never replace; the phone can
+        // only be kept). Complete self users (login, XoSelf.apply itself) are
+        // untouched and keep the upstream wholesale semantics.
+        if (!fromCache && user instanceof TLRPC.TL_user && !org.telegram.tgnet.rest.XoSelf.isMerging()
+                && org.telegram.tgnet.rest.XoSelf.isDegradedSelfUser(user, getUserConfig().getClientUserId())) {
+            TLRPC.TL_user merged = org.telegram.tgnet.rest.XoSelf.mergeIncoming(currentAccount, (TLRPC.TL_user) user);
+            if (merged == null) {
+                return false;
+            }
+            user = merged;
+        }
         fromCache = fromCache && user.id / 1000 != 333 && user.id != 777000;
         TLRPC.User oldUser = users.get(user.id);
         if (oldUser == user && !force) {

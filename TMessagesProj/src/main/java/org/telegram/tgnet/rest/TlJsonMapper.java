@@ -358,6 +358,15 @@ public final class TlJsonMapper {
             message.flags |= 8; // MESSAGE_FLAG_HAS_REPLY
         }
 
+        // T38/13: edited_at -> edit_date (flag 32768, MESSAGE_FLAG_HAS_EDIT_DATE).
+        // Without the flag bit the serialization round-trip drops it and the
+        // chat never shows the "(edited)" marker.
+        long editedAt = msg.optLong("edited_at", 0L);
+        if (editedAt > 0) {
+            message.edit_date = (int) editedAt;
+            message.flags |= 32768;
+        }
+
         // media must never be null (legacy UI paths deref it) and must stay
         // coherent with the flag bit so storage round-trips survive
         JSONObject mediaJson = msg.optJSONObject("media");

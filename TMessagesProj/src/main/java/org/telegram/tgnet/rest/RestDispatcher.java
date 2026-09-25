@@ -219,6 +219,9 @@ public final class RestDispatcher {
                 case RestRouter.ROUTE_CONTACTS_DELETE:
                     response = handleContactsDelete(account, (TLRPC.TL_contacts_deleteContacts) object);
                     break;
+                case RestRouter.ROUTE_EDIT_MESSAGE:
+                    response = handleEditMessage(account, (TLRPC.TL_messages_editMessage) object);
+                    break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
                     break;
@@ -1319,6 +1322,7 @@ public final class RestDispatcher {
      */
     private static TLObject handleContactsGet(int account, TLRPC.TL_contacts_getContacts req) {
         JSONObject answer = RestGateway.getInstance(account).contactsGet();
+        long selfId = UserConfig.getInstance(account).clientUserId;
         try {
             TLRPC.TL_contacts_contacts result = new TLRPC.TL_contacts_contacts();
             JSONArray arr = answer.optJSONArray("contacts");
@@ -1329,6 +1333,13 @@ public final class RestDispatcher {
                         continue;
                     }
                     TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+                    if (user.id == selfId) {
+                        // T38: the viewer's own user must never ride a contact
+                        // vector — putUsers would wholesale-replace the self
+                        // user (phone gone, self flag gone). The backend refuses
+                        // to emit such rows since v2.0; this is defense in depth.
+                        continue;
+                    }
                     TLRPC.TL_contact contact = new TLRPC.TL_contact();
                     contact.user_id = user.id;
                     result.contacts.add(contact);
@@ -1343,62 +1354,105 @@ public final class RestDispatcher {
     }
 
     /**
-     * TL_contacts_importContacts — device-phonebook batch sync
-     * (performSyncPhoneBook, batches of 500) AND the New-contact sheet
-     * (NewContactBottomSheet:666, single entry). Both consumers HARD cast to
-     * TL_contacts_importedContacts. The backend stores every entry (registered
-     * or not — the Telegram address-book semantics) and answers the registered
-     * matches: matches → imported + users, unregistered numbers stay stored
-     * and NOT in retry_contacts (retry would make the client drop them from
-     * its phone-book cache — they must remain as invite-able entries).
+     * TL_contacts_importContacts — TWO distinct producers share this route:
+     *
+     *   1. The New-contact sheet (NewContactBottomSheet:666, ONE entry,
+     *      client_id left 0) — a DELIBERATE add typed by the user. It goes to
+     *      contacts/save.php (phone path): upsert + tombstone clear + resolve.
+     *      This is what makes re-adding a deleted number possible: the device
+     *      book sync must respect tombstones, a deliberate re-add clears them
+     *      (the v1.9 design — contacts/save.php is the un-tombstone door).
+     *   2. The device-phonebook batch sync (performSyncPhoneBook, up to 500
+     *      entries, client_id = the device row id — never 0) → contacts/
+     *      import.php: upsert everything except tombstoned numbers and the
+     *      caller's own number; answer only the registered matches.
+     *
+     * T38 discriminator: client_id == 0 ⟺ the sheet (the only producer that
+     * never sets it). Both consumers hard cast to TL_contacts_importedContacts.
      */
     private static TLObject handleContactsImport(int account, TLRPC.TL_contacts_importContacts req) {
         if (req.contacts.isEmpty()) {
             throw new XoApiException(400, "CONTACTS_EMPTY", "import carries no contacts");
         }
-        JSONObject[] entries = new JSONObject[req.contacts.size()];
-        for (int i = 0; i < req.contacts.size(); i++) {
-            TLRPC.TL_inputPhoneContact input = req.contacts.get(i);
-            String first = input.first_name != null ? input.first_name.trim() : "";
-            String last = input.last_name != null ? input.last_name.trim() : "";
-            String name = (first + (first.length() > 0 && last.length() > 0 ? " " : "") + last).trim();
-            if (name.length() == 0) {
-                name = "Contact";
-            }
-            String phone = input.phone != null && input.phone.length() > 0 ? input.phone : ("+" + input.client_id);
-            JSONObject entry = new JSONObject();
-            try {
-                entry.put("phone", phone);
-                entry.put("name", name);
-            } catch (Exception e) {
-                throw new XoApiException(400, "CONTACT_NAME_INVALID", "malformed import entry");
-            }
-            entries[i] = entry;
-        }
-        JSONObject answer = RestGateway.getInstance(account).contactsImport(entries);
+        long selfId = UserConfig.getInstance(account).clientUserId;
         try {
-            TLRPC.TL_contacts_importedContacts result = new TLRPC.TL_contacts_importedContacts();
-            JSONArray importedJson = answer.optJSONArray("imported");
-            if (importedJson != null) {
-                for (int i = 0; i < importedJson.length(); i++) {
-                    long backendUserId = importedJson.getJSONObject(i).optLong("user_id");
-                    if (backendUserId <= 0) {
-                        continue;
-                    }
-                    TLRPC.TL_importedContact imported = new TLRPC.TL_importedContact();
-                    imported.user_id = backendUserId;
-                    // client_id: the tree keys phone-book entries by it; we
-                    // match positionally — the first N imported entries align
-                    // with the request order per the backend contract.
-                    imported.client_id = i < req.contacts.size() ? req.contacts.get(i).client_id : 0;
-                    result.imported.add(imported);
+            // Partition the producers: deliberate single adds (the sheet —
+            // client_id 0) go to contacts/save.php one by one (upsert +
+            // tombstone clear + resolve); the device-phonebook entries go to
+            // contacts/import.php in ONE batch (the book contract: upsert
+            // everything except tombstones and the caller's own number).
+            ArrayList<TLRPC.TL_inputPhoneContact> deliberate = new ArrayList<>();
+            ArrayList<TLRPC.TL_inputPhoneContact> book = new ArrayList<>();
+            for (int i = 0; i < req.contacts.size(); i++) {
+                TLRPC.TL_inputPhoneContact input = req.contacts.get(i);
+                if (input.client_id == 0) {
+                    deliberate.add(input);
+                } else {
+                    book.add(input);
                 }
             }
-            JSONArray usersJson = answer.optJSONArray("users");
-            if (usersJson != null) {
-                for (int i = 0; i < usersJson.length(); i++) {
-                    result.users.add(TlJsonMapper.parseUser(usersJson.getJSONObject(i), false));
+
+            JSONArray usersJson = new JSONArray();
+            JSONArray importedJson = new JSONArray(); // {"user_id": n} entries
+
+            if (!book.isEmpty()) {
+                JSONObject[] entries = new JSONObject[book.size()];
+                for (int i = 0; i < book.size(); i++) {
+                    TLRPC.TL_inputPhoneContact input = book.get(i);
+                    entries[i] = new JSONObject();
+                    entries[i].put("phone", input.phone != null && input.phone.length() > 0 ? input.phone : ("+" + input.client_id));
+                    String first = input.first_name != null ? input.first_name.trim() : "";
+                    String last = input.last_name != null ? input.last_name.trim() : "";
+                    String name = (first + (first.length() > 0 && last.length() > 0 ? " " : "") + last).trim();
+                    entries[i].put("name", name.length() > 0 ? name : "Contact");
                 }
+                JSONObject answer = RestGateway.getInstance(account).contactsImport(entries);
+                JSONArray batch = answer.optJSONArray("imported");
+                if (batch != null) {
+                    for (int k = 0; k < batch.length(); k++) {
+                        importedJson.put(batch.getJSONObject(k));
+                    }
+                }
+                appendNonSelfUsers(answer.optJSONArray("users"), selfId, usersJson);
+            }
+
+            for (int i = 0; i < deliberate.size(); i++) {
+                TLRPC.TL_inputPhoneContact input = deliberate.get(i);
+                String first = input.first_name != null ? input.first_name.trim() : "";
+                String last = input.last_name != null ? input.last_name.trim() : "";
+                String name = (first + (first.length() > 0 && last.length() > 0 ? " " : "") + last).trim();
+                if (name.length() == 0) {
+                    name = "Contact";
+                }
+                String phone = input.phone != null && input.phone.length() > 0 ? input.phone : ("+" + input.client_id);
+                // DELIBERATE add: the save contract (upsert + un-tombstone +
+                // resolve). save.php answers {contact, user?, saved_count}.
+                JSONObject answer = RestGateway.getInstance(account).contactsSave(null, phone, name);
+                JSONObject userJson = answer.optJSONObject("user");
+                if (userJson != null && userJson.optLong("id", 0) != selfId) {
+                    usersJson.put(userJson);
+                    JSONObject importedEntry = new JSONObject();
+                    importedEntry.put("user_id", userJson.optLong("id", 0));
+                    importedJson.put(importedEntry);
+                }
+            }
+
+            TLRPC.TL_contacts_importedContacts result = new TLRPC.TL_contacts_importedContacts();
+            for (int i = 0; i < importedJson.length(); i++) {
+                long backendUserId = importedJson.getJSONObject(i).optLong("user_id");
+                if (backendUserId <= 0) {
+                    continue;
+                }
+                TLRPC.TL_importedContact imported = new TLRPC.TL_importedContact();
+                imported.user_id = backendUserId;
+                // client_id: the tree keys phone-book entries by it; we
+                // match positionally — the first N imported entries align
+                // with the request order per the backend contract.
+                imported.client_id = i < req.contacts.size() ? req.contacts.get(i).client_id : 0;
+                result.imported.add(imported);
+            }
+            for (int i = 0; i < usersJson.length(); i++) {
+                result.users.add(TlJsonMapper.parseUser(usersJson.getJSONObject(i), false));
             }
             return result;
         } catch (XoApiException e) {
@@ -1406,6 +1460,78 @@ public final class RestDispatcher {
         } catch (Exception e) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed contacts/import answer: " + e.getMessage());
         }
+    }
+
+    /** T38: append user jsons to {@code out}, never letting the SELF user ride the vector. */
+    private static void appendNonSelfUsers(JSONArray usersJson, long selfId, JSONArray out) throws Exception {
+        if (usersJson == null) {
+            return;
+        }
+        for (int i = 0; i < usersJson.length(); i++) {
+            JSONObject userJson = usersJson.getJSONObject(i);
+            if (userJson.optLong("id", 0) == selfId) {
+                continue;
+            }
+            out.put(userJson);
+        }
+    }
+
+    /**
+     * TL_messages_editMessage — text AND caption edits (T38/13; the route
+     * gap was the whole "Can't edit this message" class: the client's edit
+     * UI, the canEditMessage gate and SendMessagesHelper all work, the
+     * request just had no route — default-deny answered XO_NOT_ROUTED).
+     *
+     * The consumer is SendMessagesHelper.editMessage: the response must be a
+     * TL_updates — we fabricate ONE TL_updateEditMessage carrying the fresh
+     * backend message so processUpdates updates cache + storage + UI in the
+     * canonical path (and the "(edited)" label rides edit_date).
+     *
+     * Flag handling: 2048 (message) is the text/caption path — the ONLY
+     * content our REST model edits (a media message's caption IS its content
+     * column). 16384 (media) is accepted and IGNORED on purpose: upstream
+     * re-wraps the EXISTING photo/document when editing a caption, so the
+     * media payload is redundant here — the backend keeps the stored media.
+     * Entities/no_webpage/schedule have no REST equivalent (mentions are
+     * client-detected at parse time).
+     */
+    private static TLObject handleEditMessage(int account, TLRPC.TL_messages_editMessage req) {
+        if ((req.flags & 2048) == 0 || req.message == null || req.message.length() == 0) {
+            throw new XoApiException(400, "MESSAGE_EMPTY", "edit carries no new content");
+        }
+        PeerRef peer = resolvePeer(account, req.peer);
+        if (peer == null) {
+            throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable peer for edit");
+        }
+        long chatId = requireChatId(account, peer);
+        if (req.id <= 0) {
+            throw new XoApiException(400, "MESSAGE_ID_INVALID", "invalid message id");
+        }
+        JSONObject answer = RestGateway.getInstance(account).messagesEdit(chatId, req.id, req.message);
+        JSONObject msgJson = answer.optJSONObject("message");
+        if (msgJson == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "edit response lacks the message object");
+        }
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        TLRPC.TL_message message;
+        try {
+            message = TlJsonMapper.parseMessage(msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+        } catch (org.json.JSONException e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed edited message: " + e.getMessage());
+        }
+        RestChatIndex.getInstance(account).rememberMessages(chatId, java.util.Collections.singletonList(message));
+
+        TLRPC.TL_updates updates = new TLRPC.TL_updates();
+        TLRPC.TL_updateEditMessage edit = new TLRPC.TL_updateEditMessage();
+        edit.message = message;
+        edit.pts = 0;
+        edit.pts_count = 0;
+        updates.updates.add(edit);
+        updates.date = nowSeconds();
+        updates.seq = 0;
+        updates.users.addAll(hydrateSenders(account, java.util.Collections.singletonList(message)));
+        updates.chats.addAll(peer.groupChats());
+        return updates;
     }
 
     /**
@@ -1590,11 +1716,18 @@ public final class RestDispatcher {
     /**
      * Maps a TL InputPeer to the dialog id it addresses (user id / -chat id),
      * keeping the group Chat cache warm. Returns null for unsupported peers
-     * (channels, self chat, empty).
+     * (channels, empty). TL_inputPeerSelf IS supported since T38/15 — it
+     * addresses the Saved Messages self-chat.
      */
     private static PeerRef resolvePeer(int account, TLRPC.InputPeer peer) {
         if (peer instanceof TLRPC.TL_inputPeerUser) {
             long userId = ((TLRPC.TL_inputPeerUser) peer).user_id;
+            return new PeerRef(account, userId, false, userId);
+        }
+        if (peer instanceof TLRPC.TL_inputPeerSelf) {
+            // T38/15: the Saved-MESSAGES self-chat — getInputPeer(clientUserId)
+            // is TL_inputPeerSelf; the dialog id IS the own user id.
+            long userId = UserConfig.getInstance(account).clientUserId;
             return new PeerRef(account, userId, false, userId);
         }
         if (peer instanceof TLRPC.TL_inputPeerChat) {
