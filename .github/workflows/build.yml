@@ -3,6 +3,42 @@ name: Build APK
 # Telegram-FOSS specific CI (fork base pins: Gradle 7.2 / AGP 7.0.3 / JDK 11 /
 # compileSdk 33 / buildTools 33.0.0 / NDK 21.4.7075529 / cmake 3.10.2).
 # Do NOT reuse generic Telegram-Android (DrKLO) workflows here.
+#
+# ── T35 reliability redesign (why the steps are ordered the way they are) ──
+#
+# Runs #37/#39/#40 all burned a FULL ~35-minute native build (libvpx+ffmpeg+
+# boringssl) only to fail in the last minute on a Java compile error, and #40
+# additionally lost one attempt to a runner shutdown ("received a shutdown
+# signal") that had nothing to do with the code. Root-cause fixes, in order:
+#
+#  1. FAST-FAIL JAVA GATE — compile :TMessagesProj_App:compileAfatDebugJavaWithJavac
+#     (app + library module Java) BEFORE the native prebuilt builds. javac does
+#     not depend on the native tasks, so a Java error now fails the run in
+#     ~5 minutes instead of ~40. (Also enforced locally by the preflight audit
+#     battery — CI is the second gate, not the only one.)
+#
+#  2. NATIVE PREBUILTS CACHE — the libvpx/ffmpeg/boringssl outputs depend ONLY
+#     on (a) the three build scripts + two patch scripts + the patch files and
+#     (b) the checked-out submodule SHAs. Both are hashed into the cache key,
+#     so unchanged toolchain sources skip the entire native build. The cached
+#     paths include boringssl/include/openssl/aes.h because patch_boringssl.sh
+#     MODIFIES that tracked header (adds AES_ige_encrypt) and the app-level
+#     CMake compiles jni.c against it — a pristine checkout on a cache hit
+#     would break the C build without it.
+#
+#  3. INFRA-FLAKE AUTO-RETRY — a `retry` job re-runs the failed build job via
+#     `gh run rerun --failed` (max 2 attempts total). Catches runner shutdowns
+#     / spot evictions that javac can never prevent.
+#
+#  4. ONE DAEMON POLICY — the JVM memory policy lives ONLY in
+#     gradle.properties (the per-step -Dorg.gradle.jvmargs override used to
+#     fork a second, differently-configured daemon per invocation).
+#
+# github.token needs contents:write for Releases and actions:write for the
+# self-rerun retry job.
+permissions:
+  contents: write
+  actions: write
 
 on:
   push:
@@ -18,10 +54,6 @@ on:
         default: 'arm64'
         type: choice
         options: [arm64, all]
-
-# github.token needs contents:write to create Releases and upload the APK.
-permissions:
-  contents: write
 
 concurrency:
   group: build-${{ github.ref }}
@@ -62,6 +94,33 @@ jobs:
           restore-keys: |
             gradle-buildcache-
 
+      - name: Compute native prebuilts cache key (submodule SHAs + build/patch scripts)
+        id: natkey
+        run: |
+          SUBS=$(git submodule status | awk '{print $1"="$2}' | sort | sha256sum | cut -d' ' -f1 | cut -c1-16)
+          SCRIPTS=$(cat TMessagesProj/jni/build_libvpx_clang.sh \
+                        TMessagesProj/jni/build_ffmpeg_clang.sh \
+                        TMessagesProj/jni/build_boringssl.sh \
+                        TMessagesProj/jni/patch_ffmpeg.sh \
+                        TMessagesProj/jni/patch_boringssl.sh \
+                        TMessagesProj/jni/patches/ffmpeg/*.patch \
+                        TMessagesProj/jni/patches/boringssl/*.patch 2>/dev/null | sha256sum | cut -d' ' -f1 | cut -c1-16)
+          echo "key=native-arm64-${SUBS}-${SCRIPTS}" >> "$GITHUB_OUTPUT"
+          echo "native cache key: native-arm64-${SUBS}-${SCRIPTS}"
+
+      # Restored AFTER checkout (overlays the submodule dirs). A hit means the
+      # exact same sources + scripts produced these artifacts on a prior run.
+      - name: Restore native prebuilts (libvpx/ffmpeg/boringssl outputs)
+        id: nativecache
+        uses: actions/cache@v4
+        with:
+          path: |
+            TMessagesProj/jni/libvpx/build
+            TMessagesProj/jni/ffmpeg/build
+            TMessagesProj/jni/boringssl/build
+            TMessagesProj/jni/boringssl/include/openssl/aes.h
+          key: ${{ steps.natkey.outputs.key }}
+
       - name: Free runner disk (preinstalled NDKs are useless for our pin)
         run: |
           echo "Before:"; df -h / | tail -1
@@ -74,6 +133,18 @@ jobs:
           export JAVA_HOME="${JAVA_HOME_21_X64:-${JAVA_HOME_17_X64:-$JAVA_HOME}}"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;21.4.7075529" > /dev/null
+
+      # ── T35 fast-fail gate ────────────────────────────────────────────────
+      # Compiles ALL Java (library + app module) with the real classpath.
+      # Depends on NO native task, so it runs before the (possibly 30-minute)
+      # prebuilt builds. Every javac regression in #36/#37/#39/#40 would have
+      # died HERE in minutes. The full assemble below reuses the outputs via
+      # the build cache — the gate is nearly free.
+      - name: "Fast-fail Java gate (compile app+library, no native)"
+        run: |
+          ./gradlew :TMessagesProj_App:compileAfatDebugJavaWithJavac \
+            --build-cache \
+            --stacktrace
 
       # API_KEYS is intentionally NOT written here anymore (T1): gradle now
       # falls back to inert placeholders when the file is absent, so CI builds
@@ -90,6 +161,7 @@ jobs:
           echo "lib module:"; grep -c 'abiFilters "arm64-v8a"' TMessagesProj/build.gradle
 
       - name: "Build native prebuilts (libvpx, ffmpeg, boringssl for arm64)"
+        if: steps.nativecache.outputs.cache-hit != 'true'
         run: |
           # Per upstream README: NDK + Ninja required; order matters
           sudo apt-get install -y ninja-build > /dev/null
@@ -104,9 +176,9 @@ jobs:
 
       - name: Build assembleAfatDebug
         run: |
-          # --build-cache: explicit twin of org.gradle.caching=true (gradle.properties)
+          # --build-cache: explicit twin of org.gradle.caching=true (gradle.properties).
+          # Memory policy comes from gradle.properties (single daemon config).
           ./gradlew :TMessagesProj_App:assembleAfatDebug \
-            -Dorg.gradle.jvmargs="-Xmx4g -XX:MaxMetaspaceSize=1g" \
             --build-cache \
             --stacktrace
 
@@ -143,3 +215,19 @@ jobs:
               --prerelease \
               -R "$GITHUB_REPOSITORY"
           fi
+
+  # ── T35 infra-flake guard ────────────────────────────────────────────────
+  # Run#40 lost its first attempt to a runner shutdown signal (infra), not
+  # code. This job re-runs the failed build job up to twice (run_attempt < 3)
+  # so transient runner deaths self-heal without a human watching the queue.
+  retry:
+    needs: [build]
+    if: failure() && github.run_attempt < 3
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-run the failed build job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Build job failed (attempt ${{ github.run_attempt }}) — re-running failed jobs"
+          gh run rerun ${{ github.run_id }} --failed -R "$GITHUB_REPOSITORY"

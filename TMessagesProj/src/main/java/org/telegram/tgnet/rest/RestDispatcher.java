@@ -1389,13 +1389,19 @@ public final class RestDispatcher {
             throw new XoApiException(400, "CONTACT_NAME_INVALID", "contact name is empty");
         }
         JSONObject answer = RestGateway.getInstance(account).contactsSave(userId, null, name);
-        TLRPC.TL_updates updates = new TLRPC.TL_updates();
-        updates.date = nowSeconds();
-        JSONObject userJson = answer.optJSONObject("user");
-        if (userJson != null) {
-            updates.users.add(TlJsonMapper.parseUser(userJson, false));
+        try {
+            TLRPC.TL_updates updates = new TLRPC.TL_updates();
+            updates.date = nowSeconds();
+            JSONObject userJson = answer.optJSONObject("user");
+            if (userJson != null) {
+                updates.users.add(TlJsonMapper.parseUser(userJson, false));
+            }
+            return updates;
+        } catch (XoApiException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed contacts/save answer: " + e.getMessage());
         }
-        return updates;
     }
 
     /**
