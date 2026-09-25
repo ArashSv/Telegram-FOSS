@@ -1854,9 +1854,12 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             if (chatInfo == null) {
                 chatInfo = getMessagesController().getChatFull(chatId);
             }
-            if (ChatObject.isChannel(currentChat)) {
-                getMessagesController().loadFullChat(chatId, classGuid, true);
-            } else if (chatInfo == null) {
+            // T36: force-load for basic groups TOO (upstream only did channels).
+            // The backend is the single source of truth — reopening the profile
+            // must refresh member list/count from chats/members.php, never
+            // replay a stale local cache (the disappearing-member root).
+            getMessagesController().loadFullChat(chatId, classGuid, true);
+            if (!ChatObject.isChannel(currentChat) && chatInfo == null) {
                 chatInfo = getMessagesStorage().loadChatInfo(chatId, false, null, false, false);
             }
 
@@ -2264,28 +2267,24 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                         TopicCreateFragment fragment = TopicCreateFragment.create(chatId, topicId);
                         presentFragment(fragment);
                     } else {
-                        if (chatId != 0 && currentChat != null && !ChatObject.isChannel(currentChat)) {
-                            // T35: basic groups get the native editor (name/about/
-                            // avatar against our backend) — ChatEditActivity's
-                            // flow is channel-shaped (convert/mega-group rows).
-                            Bundle args = new Bundle();
+                        // T36: the Telegram editor again for EVERY chat — the
+                        // t35 XoGroupEditActivity detour is gone. The basic-group
+                        // save path inside ChatEditActivity is root-fixed for the
+                        // REST backend (native title/about/avatar save, no
+                        // megagroup conversion).
+                        Bundle args = new Bundle();
+                        if (chatId != 0) {
                             args.putLong("chat_id", chatId);
-                            presentFragment(new XoGroupEditActivity(args));
-                        } else {
-                            Bundle args = new Bundle();
-                            if (chatId != 0) {
-                                args.putLong("chat_id", chatId);
-                            } else if (isBot) {
-                                args.putLong("user_id", userId);
-                            }
-                            ChatEditActivity fragment = new ChatEditActivity(args);
-                            if (chatInfo != null) {
-                                fragment.setInfo(chatInfo);
-                            } else {
-                                fragment.setInfo(userInfo);
-                            }
-                            presentFragment(fragment);
+                        } else if (isBot) {
+                            args.putLong("user_id", userId);
                         }
+                        ChatEditActivity fragment = new ChatEditActivity(args);
+                        if (chatInfo != null) {
+                            fragment.setInfo(chatInfo);
+                        } else {
+                            fragment.setInfo(userInfo);
+                        }
+                        presentFragment(fragment);
                     }
                 } else if (id == edit_profile) {
                     presentFragment(new UserInfoActivity());

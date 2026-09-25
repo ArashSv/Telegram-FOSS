@@ -155,9 +155,44 @@ public final class TlJsonMapper {
         result.participants_count = chat.optInt("members_count", 0);
         result.date = (int) chat.optLong("created_at", System.currentTimeMillis() / 1000L);
         result.version = 0;
-        if ("creator".equals(chat.optString("role", null))) {
+        String role = chat.optString("role", null);
+        if ("creator".equals(role)) {
             result.creator = true;
             result.flags |= 1;
+        }
+        // T36 chat-permission fix: a bare modern TL_chat with null
+        // default_banned_rights evaluates as "no right at all" in
+        // ChatObject.canUserDoAction for EVERYONE except the creator — that is
+        // where the "only admins can chat" state came from. The real server
+        // always ships permissive defaults for basic groups: sending is open
+        // (backend v1.8 has no send guard), management stays restricted to
+        // creator/admin exactly like assertChatAdmin on the backend. Flag bits
+        // are planted so the rights survive the MessagesStorage round-trip.
+        TLRPC.TL_chatBannedRights defaults = new TLRPC.TL_chatBannedRights();
+        defaults.view_messages = false;                      // allowed
+        defaults.send_messages = false;                      // allowed
+        defaults.send_media = false;                         // allowed
+        defaults.send_stickers = false;                      // allowed
+        defaults.send_gifs = false;                          // allowed
+        defaults.send_polls = false;                         // allowed
+        defaults.embed_links = false;                        // allowed
+        defaults.change_info = true;                         // creator/admin only
+        defaults.invite_users = true;                        // creator/admin only
+        defaults.pin_messages = true;                        // creator/admin only
+        defaults.until_date = 0;
+        defaults.flags = 1024 | 32768 | 131072;              // change_info|invite_users|pin_messages
+        result.default_banned_rights = defaults;
+        result.flags |= 262144;                              // chat.flags bit for default_banned_rights
+        // Promoted admins keep the manage UI the backend already authorizes
+        // (edit.php / set-photo.php / add-member.php all allow creator+admin).
+        if ("admin".equals(role)) {
+            TLRPC.TL_chatAdminRights rights = new TLRPC.TL_chatAdminRights();
+            rights.change_info = true;
+            rights.invite_users = true;
+            rights.pin_messages = true;
+            rights.flags = 1 | 32 | 128;                     // change_info|invite_users|pin_messages
+            result.admin_rights = rights;
+            result.flags |= 16384;                           // chat.flags bit for admin_rights
         }
         // T32: group avatar surface — same {small,big} json as users.
         JSONObject photoJson = chat.optJSONObject("photo");

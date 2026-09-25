@@ -918,7 +918,11 @@ public class ChatEditActivity extends BaseFragment implements ImageUpdater.Image
                 });
             }
 
-            if (!isChannel && ChatObject.canBlockUsers(currentChat) && (ChatObject.isChannel(currentChat) || currentChat.creator)) {
+            // T36: the Chat-History toggle is a megagroup/channel feature — the
+            // REST backend has no hidden-history state, and upstream only used
+            // the basic-group variant of this row to drive the convert-to-mega
+            // flow that this product doesn't have. Restricted to megagroups.
+            if (ChatObject.isMegagroup(currentChat) && ChatObject.canBlockUsers(currentChat)) {
                 historyCell = new TextCell(context);
                 historyCell.setBackgroundDrawable(Theme.getSelectorDrawable(true));
                 typeEditContainer.addView(historyCell, LayoutHelper.createLinear(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -991,7 +995,9 @@ public class ChatEditActivity extends BaseFragment implements ImageUpdater.Image
                     signMessages = !signMessages;
                     ((TextCell) v).setChecked(signMessages);
                 });
-            } else if (currentChat.creator) {
+            } else if (currentChat.creator && ChatObject.isChannel(currentChat)) {
+                // T36: Topics (forum) is a channel/megagroup tier — hidden for
+                // basic groups (no conversion exists in this backend).
                 forumsCell = new TextCell(context, 23, false, true, null);
                 forumsCell.setBackgroundDrawable(Theme.getSelectorDrawable(true));
                 forumsCell.setTextAndCheckAndIcon(getString("ChannelTopics", R.string.ChannelTopics), forum, R.drawable.msg_topics, false);
@@ -1127,12 +1133,19 @@ public class ChatEditActivity extends BaseFragment implements ImageUpdater.Image
                 });
             }
 
-            infoContainer.addView(reactionsCell, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
-
-            if (!isChannel && !currentChat.gigagroup) {
+            // T36 row gating for basic groups: reactions / blocked users /
+            // invite links have NO backend endpoints yet — exposing their rows
+            // would only resurface the "XO not routed" class of errors. They
+            // stay available for channel-tier chats (none exist in this product
+            // today, but the shape stays faithful to upstream).
+            boolean channelTier = ChatObject.isChannel(currentChat);
+            if (channelTier) {
+                infoContainer.addView(reactionsCell, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
+            }
+            if (channelTier && !currentChat.gigagroup) {
                 infoContainer.addView(blockCell, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
             }
-            if (!isChannel) {
+            if (channelTier && !isChannel) {
                 infoContainer.addView(inviteLinksCell, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
             }
             infoContainer.addView(adminCell, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
@@ -1624,30 +1637,20 @@ public class ChatEditActivity extends BaseFragment implements ImageUpdater.Image
             progressDialog.show();
             return;
         }
-        if (!ChatObject.isChannel(currentChat) && (!historyHidden || forum)) {
-            getMessagesController().convertToMegaGroup(getParentActivity(), chatId, this, param -> {
-                if (param == 0) {
-                    donePressed = false;
-                    return;
-                }
-                chatId = param;
-                currentChat = getMessagesController().getChat(param);
-                donePressed = false;
-                if (info != null) {
-                    info.hidden_prehistory = true;
-                }
-                processDone();
-            });
-            return;
-        }
-
+        // T36: upstream converts EVERY basic group to a megagroup on first edit
+        // (the branch below) — that mutation has no REST endpoint and no
+        // conversion tier exists in this backend; it was the origin of the
+        // "XO not routed" group-save failure. Basic groups now save natively:
+        // title/about -> chats/edit.php (routes 17/27), avatar ->
+        // chats/set-photo.php (route 18) via the changeChatTitle /
+        // updateChatAbout / changeChatAvatar paths that follow.
         if (info != null) {
+            // channel-tier only (hidden-history is not a basic-group concept here)
             if (ChatObject.isChannel(currentChat) && info.hidden_prehistory != historyHidden) {
                 info.hidden_prehistory = historyHidden;
                 getMessagesController().toggleChannelInvitesHistory(chatId, historyHidden);
             }
         }
-
         if (imageUpdater.isUploadingImage()) {
             createAfterUpload = true;
             progressDialog = new AlertDialog(getParentActivity(), AlertDialog.ALERT_TYPE_SPINNER);

@@ -824,7 +824,30 @@ public final class RestDispatcher {
         if (chatJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "add-member response lacks the chat object");
         }
-        return invitedUsers(updatesWithChats(mapGroupChat(chatJson)));
+        // T36: backend v1.8.1 answers the post-insert authoritative membership
+        // snapshot ({members, count} — members.php shape). We fabricate the
+        // TL-native membership update (TL_updateChatParticipants) from it, so
+        // processUpdates applies the PERSISTED state — chatFull participants in
+        // storage + chatInfoDidLoad — instead of leaving the member list to
+        // ChatUsersActivity's UI-local optimism (the disappearing-member root).
+        JSONArray membersJson = added.optJSONArray("members");
+        try {
+            TLRPC.TL_updates updates = updatesWithChats(mapGroupChat(chatJson));
+            if (membersJson != null) {
+                updates.updates.add(wrapParticipants(chatParticipantsFromMembers(membersJson, req.chat_id)));
+                for (int i = 0; i < membersJson.length(); i++) {
+                    JSONObject userJson = membersJson.getJSONObject(i).optJSONObject("user");
+                    if (userJson != null) {
+                        updates.users.add(TlJsonMapper.parseUser(userJson, false));
+                    }
+                }
+            }
+            return invitedUsers(updates);
+        } catch (XoApiException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed add-member answer: " + e.getMessage());
+        }
     }
 
     /**
@@ -1140,6 +1163,66 @@ public final class RestDispatcher {
     // ------------------------------------------------------------------ T35: group full info + group about + contacts
 
     /**
+     * TL_chatParticipants assembled from the backend membership snapshot
+     * ({members:[{user, role, joined_at}]}) — shared by chats/members.php
+     * (getFullChat) and the v1.8.1 add-member snapshot. Role classes map
+     * Creator/Admin/Participant; version tracks the list size (join/leave).
+     */
+    private static TLRPC.TL_chatParticipants chatParticipantsFromMembers(JSONArray membersJson, long chatId) throws Exception {
+        TLRPC.TL_chatParticipants participants = new TLRPC.TL_chatParticipants();
+        participants.chat_id = chatId;
+        long creatorId = 0;
+        for (int i = 0; i < membersJson.length(); i++) {
+            JSONObject member = membersJson.getJSONObject(i);
+            if ("creator".equals(member.optString("role"))) {
+                JSONObject c = member.optJSONObject("user");
+                if (c != null) {
+                    creatorId = c.optLong("id");
+                    break;
+                }
+            }
+        }
+        for (int i = 0; i < membersJson.length(); i++) {
+            JSONObject member = membersJson.getJSONObject(i);
+            JSONObject userJson = member.optJSONObject("user");
+            if (userJson == null) {
+                continue;
+            }
+            TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+            String role = member.optString("role");
+            long joined = member.optLong("joined_at", 0);
+            TLRPC.ChatParticipant participant;
+            if ("creator".equals(role)) {
+                TLRPC.TL_chatParticipantCreator creator = new TLRPC.TL_chatParticipantCreator();
+                creator.user_id = user.id;
+                participant = creator;
+            } else if ("admin".equals(role)) {
+                TLRPC.TL_chatParticipantAdmin admin = new TLRPC.TL_chatParticipantAdmin();
+                admin.user_id = user.id;
+                admin.inviter_id = creatorId != 0 ? creatorId : user.id;
+                admin.date = (int) joined;
+                participant = admin;
+            } else {
+                TLRPC.TL_chatParticipant plain = new TLRPC.TL_chatParticipant();
+                plain.user_id = user.id;
+                plain.inviter_id = creatorId != 0 ? creatorId : user.id;
+                plain.date = (int) joined;
+                participant = plain;
+            }
+            participants.participants.add(participant);
+        }
+        participants.version = participants.participants.size(); // count changes on join/leave
+        return participants;
+    }
+
+    /** TL_updateChatParticipants wrapper — the basic-group membership broadcast. */
+    private static TLRPC.TL_updateChatParticipants wrapParticipants(TLRPC.TL_chatParticipants participants) {
+        TLRPC.TL_updateChatParticipants update = new TLRPC.TL_updateChatParticipants();
+        update.participants = participants;
+        return update;
+    }
+
+    /**
      * TL_messages_getFullChat — the basic-group info surface (MessagesController
      * loadFullChat:6470, HARD cast to TL_messages_chatFull). The backend
      * members endpoint answers members (with roles) + the viewer's chat
@@ -1174,51 +1257,8 @@ public final class RestDispatcher {
                 full.about = (String) aboutObj;
             }
 
-            TLRPC.TL_chatParticipants participants = new TLRPC.TL_chatParticipants();
-            participants.chat_id = req.chat_id;
-            long creatorId = 0;
-            for (int i = 0; i < membersJson.length(); i++) {
-                JSONObject member = membersJson.getJSONObject(i);
-                if ("creator".equals(member.optString("role"))) {
-                    JSONObject c = member.optJSONObject("user");
-                    if (c != null) {
-                        creatorId = c.optLong("id");
-                        break;
-                    }
-                }
-            }
-
+            TLRPC.TL_chatParticipants participants = chatParticipantsFromMembers(membersJson, req.chat_id);
             TLRPC.TL_chat chat = mapGroupChat(chatJson);
-            for (int i = 0; i < membersJson.length(); i++) {
-                JSONObject member = membersJson.getJSONObject(i);
-                JSONObject userJson = member.optJSONObject("user");
-                if (userJson == null) {
-                    continue;
-                }
-                TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
-                String role = member.optString("role");
-                long joined = member.optLong("joined_at", 0);
-                TLRPC.ChatParticipant participant;
-                if ("creator".equals(role)) {
-                    TLRPC.TL_chatParticipantCreator creator = new TLRPC.TL_chatParticipantCreator();
-                    creator.user_id = user.id;
-                    participant = creator;
-                } else if ("admin".equals(role)) {
-                    TLRPC.TL_chatParticipantAdmin admin = new TLRPC.TL_chatParticipantAdmin();
-                    admin.user_id = user.id;
-                    admin.inviter_id = creatorId != 0 ? creatorId : user.id;
-                    admin.date = (int) joined;
-                    participant = admin;
-                } else {
-                    TLRPC.TL_chatParticipant plain = new TLRPC.TL_chatParticipant();
-                    plain.user_id = user.id;
-                    plain.inviter_id = creatorId != 0 ? creatorId : user.id;
-                    plain.date = (int) joined;
-                    participant = plain;
-                }
-                participants.participants.add(participant);
-            }
-            participants.version = participants.participants.size(); // count changes on join/leave
             full.participants = participants;
             full.participants_count = participants.participants.size();
             full.notify_settings = new TLRPC.TL_peerNotifySettings();
