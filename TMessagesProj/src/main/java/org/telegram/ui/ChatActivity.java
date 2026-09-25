@@ -10293,8 +10293,10 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         CharSequence text = null;
         View.OnClickListener onClickListener = null;
         if (distanceToPeer >= 0 && currentUser != null) {
+            // T37: People Nearby is removed — the distance bar (never set by
+            // our backend anyway) no longer deep-links to it.
             text = LocaleController.formatString("ChatDistanceToPeer", R.string.ChatDistanceToPeer, currentUser.first_name, LocaleController.formatDistance(distanceToPeer, 0));
-            onClickListener = v -> presentFragment(new PeopleNearbyActivity());
+            onClickListener = null;
         } else if (currentChat != null && chatInviterId != 0) {
             boolean show = preferences.getInt("dialog_bar_vis3" + dialog_id, 0) == 2;
             boolean showReport = preferences.getBoolean("dialog_bar_report" + dialog_id, false);

@@ -628,40 +628,14 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 } else if (id == 9) {
                     Browser.openUrl(LaunchActivity.this, LocaleController.getString("TelegramFaqUrl", R.string.TelegramFaqUrl));
                     drawerLayoutContainer.closeDrawer(false);
-                } else if (id == 10) {
-                    presentFragment(new CallLogActivity());
-                    drawerLayoutContainer.closeDrawer(false);
                 } else if (id == 11) {
                     Bundle args = new Bundle();
                     args.putLong("user_id", UserConfig.getInstance(currentAccount).getClientUserId());
                     presentFragment(new ChatActivity(args));
                     drawerLayoutContainer.closeDrawer(false);
-                } else if (id == 12) {
-                    if (Build.VERSION.SDK_INT >= 23) {
-                        if (checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                            presentFragment(new ActionIntroActivity(ActionIntroActivity.ACTION_TYPE_NEARBY_LOCATION_ACCESS));
-                            drawerLayoutContainer.closeDrawer(false);
-                            return;
-                        }
-                    }
-                    boolean enabled = true;
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                        LocationManager lm = (LocationManager) ApplicationLoader.applicationContext.getSystemService(Context.LOCATION_SERVICE);
-                        enabled = lm.isLocationEnabled();
-                    } else if (Build.VERSION.SDK_INT >= 19) {
-                        try {
-                            int mode = Settings.Secure.getInt(ApplicationLoader.applicationContext.getContentResolver(), Settings.Secure.LOCATION_MODE, Settings.Secure.LOCATION_MODE_OFF);
-                            enabled = (mode != Settings.Secure.LOCATION_MODE_OFF);
-                        } catch (Throwable e) {
-                            FileLog.e(e);
-                        }
-                    }
-                    if (enabled) {
-                        presentFragment(new PeopleNearbyActivity());
-                    } else {
-                        presentFragment(new ActionIntroActivity(ActionIntroActivity.ACTION_TYPE_NEARBY_LOCATION_ENABLED));
-                    }
-                    drawerLayoutContainer.closeDrawer(false);
+                // T37: drawer ids 10 (Calls → CallLogActivity) and 12 (People
+                // Nearby → PeopleNearbyActivity + the location-permission
+                // intro flow) are removed with their features.
                 } else if (id == 13) {
                     Browser.openUrl(LaunchActivity.this, LocaleController.getString("TelegramFeaturesUrl", R.string.TelegramFeaturesUrl));
                     drawerLayoutContainer.closeDrawer(false);
@@ -3239,15 +3213,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                     pushOpened = true;
                 }
             } else if (showCallLog) {
-                getActionBarLayout().presentFragment(new INavigationLayout.NavigationParams(new CallLogActivity()).setNoAnimation(true));
-                if (AndroidUtilities.isTablet()) {
-                    actionBarLayout.rebuildFragments(INavigationLayout.REBUILD_FLAG_REBUILD_LAST);
-                    rightActionBarLayout.rebuildFragments(INavigationLayout.REBUILD_FLAG_REBUILD_LAST);
-                    drawerLayoutContainer.setAllowOpenDrawer(false, false);
-                } else {
-                    drawerLayoutContainer.setAllowOpenDrawer(true, false);
-                }
-                pushOpened = true;
+                // T37: Calls are removed — the tg://calllog deep link no
+                // longer opens anything; the Calls screen does not exist.
+                showCallLog = false;
             } else if (openBot) {
                 processAttachedMenuBotFromShortcut(botId);
                 pushOpened = false;
@@ -5822,10 +5790,10 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                         }
                         SendMessagesHelper.prepareSendingDocuments(accountInstance, documentsPathsArray, documentsOriginalPathsArray, documentsUrisArray, captionToSend, documentsMimeType, did, replyToMsg, replyToMsg, null, null, null, notify, 0, null, null, 0, 0, false);
                     }
-	                if (sendingLocation != null) {
-	                    SendMessagesHelper.prepareSendingLocation(accountInstance, sendingLocation, did);
-	                    sendingText = null;
-	                }
+                        if (sendingLocation != null) {
+                            SendMessagesHelper.prepareSendingLocation(accountInstance, sendingLocation, did);
+                            sendingText = null;
+                        }
                     if (voicePath != null) {
                         File file = new File(voicePath);
 

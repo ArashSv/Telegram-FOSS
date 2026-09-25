@@ -564,34 +564,9 @@ public class ContactsActivity extends BaseFragment implements NotificationCenter
                     if (needPhonebook) {
                         if (row == 0) {
                             presentFragment(new InviteContactsActivity());
-                        } else if (row == 1 && hasGps) {
-                            if (Build.VERSION.SDK_INT >= 23) {
-                                Activity activity = getParentActivity();
-                                if (activity != null) {
-                                    if (activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                                        presentFragment(new ActionIntroActivity(ActionIntroActivity.ACTION_TYPE_NEARBY_LOCATION_ACCESS));
-                                        return;
-                                    }
-                                }
-                            }
-                            boolean enabled = true;
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                                LocationManager lm = (LocationManager) ApplicationLoader.applicationContext.getSystemService(Context.LOCATION_SERVICE);
-                                enabled = lm.isLocationEnabled();
-                            } else if (Build.VERSION.SDK_INT >= 19) {
-                                try {
-                                    int mode = Settings.Secure.getInt(ApplicationLoader.applicationContext.getContentResolver(), Settings.Secure.LOCATION_MODE, Settings.Secure.LOCATION_MODE_OFF);
-                                    enabled = (mode != Settings.Secure.LOCATION_MODE_OFF);
-                                } catch (Throwable e) {
-                                    FileLog.e(e);
-                                }
-                            }
-                            if (!enabled) {
-                                presentFragment(new ActionIntroActivity(ActionIntroActivity.ACTION_TYPE_NEARBY_LOCATION_ENABLED));
-                                return;
-                            }
-                            presentFragment(new PeopleNearbyActivity());
                         }
+                        // T37: the People Nearby row (formerly row 1 with GPS)
+                        // is removed with its feature.
                     } else if (inviteViaLink != 0) {
                         if (row == 0) {
                             presentFragment(new GroupInviteActivity(chatId != 0 ? chatId : channelId));

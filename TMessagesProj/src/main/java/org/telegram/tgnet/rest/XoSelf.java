@@ -138,12 +138,31 @@ public final class XoSelf {
             merged.username = incoming.username;
         }
 
+        // T37: the phone merge can never DEGRADE a known number.
+        //  - org.json's optString(key, fallback) stringifies the JSON-null
+        //    sentinel into the LITERAL "null" (4 chars) — the last remaining
+        //    mechanism that could ride a self payload into a rendered
+        //    "+null" (it passes every isEmpty() guard). Null-safe read.
+        //  - The backend has NO endpoint that removes a phone (checked:
+        //    nothing writes users.phone after the registration INSERT), so
+        //    an absent/empty/null phone key means "no information", never
+        //    "removed" — keep the current value in that case.
+        String incomingPhone = null;
         if (userJson.has("phone")) {
-            String phone = userJson.optString("phone", "");
-            merged.phone = phone.length() > 0 ? phone : null;
-        } else if (current != null && current.id == merged.id) {
+            Object phoneObj = userJson.opt("phone");
+            incomingPhone = phoneObj instanceof String ? (String) phoneObj : null;
+        }
+        if (incomingPhone != null && incomingPhone.length() > 0 && !"null".equals(incomingPhone)) {
+            merged.phone = incomingPhone;
+        } else if (current != null && current.id == merged.id && current.phone != null && current.phone.length() > 0) {
             merged.phone = current.phone;
-        } // else: a foreign-shaped payload must never invent a phone
+        } else if (incomingPhone != null && incomingPhone.length() > 0) {
+            // first merge for this id — nothing to keep; a null-string
+            // payload must not plant the literal "null".
+            merged.phone = "null".equals(incomingPhone) ? null : incomingPhone;
+        } else {
+            merged.phone = null;
+        }
 
         if (userJson.has("photo")) {
             JSONObject photoJson = userJson.optJSONObject("photo");

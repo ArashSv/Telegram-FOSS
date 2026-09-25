@@ -258,56 +258,46 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
         int newSecretIcon;
         int newChannelIcon;
         int contactsIcon;
-        int callsIcon;
         int savedIcon;
         int settingsIcon;
         int inviteIcon;
         int helpIcon;
-        int peopleNearbyIcon;
         if (eventType == 0) {
             newGroupIcon = R.drawable.msg_groups_ny;
             //newSecretIcon = R.drawable.msg_secret_ny;
             //newChannelIcon = R.drawable.msg_channel_ny;
             contactsIcon = R.drawable.msg_contacts_ny;
-            callsIcon = R.drawable.msg_calls_ny;
             savedIcon = R.drawable.msg_saved_ny;
             settingsIcon = R.drawable.msg_settings_ny;
             inviteIcon = R.drawable.msg_invite_ny;
             helpIcon = R.drawable.msg_help_ny;
-            peopleNearbyIcon = R.drawable.msg_nearby_ny;
         } else if (eventType == 1) {
             newGroupIcon = R.drawable.msg_groups_14;
             //newSecretIcon = R.drawable.msg_secret_14;
             //newChannelIcon = R.drawable.msg_channel_14;
             contactsIcon = R.drawable.msg_contacts_14;
-            callsIcon = R.drawable.msg_calls_14;
             savedIcon = R.drawable.msg_saved_14;
             settingsIcon = R.drawable.msg_settings_14;
             inviteIcon = R.drawable.msg_secret_ny;
             helpIcon = R.drawable.msg_help;
-            peopleNearbyIcon = R.drawable.msg_secret_14;
         } else if (eventType == 2) {
             newGroupIcon = R.drawable.msg_groups_hw;
             //newSecretIcon = R.drawable.msg_secret_hw;
             //newChannelIcon = R.drawable.msg_channel_hw;
             contactsIcon = R.drawable.msg_contacts_hw;
-            callsIcon = R.drawable.msg_calls_hw;
             savedIcon = R.drawable.msg_saved_hw;
             settingsIcon = R.drawable.msg_settings_hw;
             inviteIcon = R.drawable.msg_invite_hw;
             helpIcon = R.drawable.msg_help_hw;
-            peopleNearbyIcon = R.drawable.msg_secret_hw;
         } else {
             newGroupIcon = R.drawable.msg_groups;
             //newSecretIcon = R.drawable.msg_secret;
             //newChannelIcon = R.drawable.msg_channel;
             contactsIcon = R.drawable.msg_contacts;
-            callsIcon = R.drawable.msg_calls;
             savedIcon = R.drawable.msg_saved;
             settingsIcon = R.drawable.msg_settings_old;
             inviteIcon = R.drawable.msg_invite;
             helpIcon = R.drawable.msg_help;
-            peopleNearbyIcon = R.drawable.msg_nearby;
         }
         UserConfig me = UserConfig.getInstance(UserConfig.selectedAccount);
         boolean showDivider = false;
@@ -347,10 +337,9 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
         //items.add(new Item(3, LocaleController.getString("NewSecretChat", R.string.NewSecretChat), newSecretIcon));
         //items.add(new Item(4, LocaleController.getString("NewChannel", R.string.NewChannel), newChannelIcon));
         items.add(new Item(6, LocaleController.getString("Contacts", R.string.Contacts), contactsIcon));
-        items.add(new Item(10, LocaleController.getString("Calls", R.string.Calls), callsIcon));
-        if (hasGps) {
-            items.add(new Item(12, LocaleController.getString("PeopleNearby", R.string.PeopleNearby), peopleNearbyIcon));
-        }
+        // T37: the Calls (id 10) and People Nearby (id 12) drawer entries are
+        // removed with their features — navigation, screens and the calls
+        // permissions no longer exist in this product.
         items.add(new Item(11, LocaleController.getString("SavedMessages", R.string.SavedMessages), savedIcon));
         items.add(new Item(8, LocaleController.getString("Settings", R.string.Settings), settingsIcon));
         items.add(null); // divider

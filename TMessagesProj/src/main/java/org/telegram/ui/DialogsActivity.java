@@ -4494,48 +4494,12 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         filtersView.setVisibility(View.GONE);
 
         if (initialDialogsType != DIALOGS_TYPE_WIDGET) {
-            floatingButton2Container = new FrameLayout(context);
-            floatingButton2Container.setVisibility(onlySelect && initialDialogsType != 10 || folderId != 0 || !storiesEnabled ? View.GONE : View.VISIBLE);
-            contentView.addView(floatingButton2Container, LayoutHelper.createFrame((Build.VERSION.SDK_INT >= 21 ? 36 : 40), (Build.VERSION.SDK_INT >= 21 ? 36 : 40), (LocaleController.isRTL ? Gravity.LEFT : Gravity.RIGHT) | Gravity.BOTTOM, LocaleController.isRTL ? 24 : 0, 0, LocaleController.isRTL ? 0 : 24, 14 + 60 + 8));
-            floatingButton2Container.setOnClickListener(v -> {
-                if (parentLayout != null && parentLayout.isInPreviewMode()) {
-                    finishPreviewFragment();
-                    return;
-                }
-
-                Bundle args = new Bundle();
-                args.putBoolean("destroyAfterSelect", true);
-                presentFragment(new ContactsActivity(args));
-            });
-            if (Build.VERSION.SDK_INT >= 21) {
-                StateListAnimator animator = new StateListAnimator();
-                animator.addState(new int[]{android.R.attr.state_pressed}, ObjectAnimator.ofFloat(floatingButton2Container, View.TRANSLATION_Z, dp(2), dp(4)).setDuration(200));
-                animator.addState(new int[]{}, ObjectAnimator.ofFloat(floatingButton2Container, View.TRANSLATION_Z, dp(4), dp(2)).setDuration(200));
-                floatingButton2Container.setStateListAnimator(animator);
-                floatingButton2Container.setOutlineProvider(new ViewOutlineProvider() {
-                    @SuppressLint("NewApi")
-                    @Override
-                    public void getOutline(View view, Outline outline) {
-                        outline.setOval(0, 0, dp(36), dp(36));
-                    }
-                });
-            }
-
-            floatingButton2 = new RLottieImageView(context);
-            floatingButton2.setScaleType(ImageView.ScaleType.CENTER);
-            floatingButton2.setColorFilter(new PorterDuffColorFilter(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon), PorterDuff.Mode.MULTIPLY));
-            floatingButton2.setImageResource(R.drawable.fab_compose_small);
-            floatingButton2Container.setContentDescription(LocaleController.getString("NewMessageTitle", R.string.NewMessageTitle));
-            floatingButton2Container.addView(floatingButton2, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
-
-            floating2ProgressView = new RadialProgressView(context);
-            floating2ProgressView.setProgressColor(Theme.getColor(Theme.key_windowBackgroundWhiteGrayIcon));
-            floating2ProgressView.setScaleX(0.1f);
-            floating2ProgressView.setScaleY(0.1f);
-            floating2ProgressView.setAlpha(0f);
-            floating2ProgressView.setVisibility(View.GONE);
-            floating2ProgressView.setSize(dp(22));
-            floatingButton2Container.addView(floating2ProgressView, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, LayoutHelper.MATCH_PARENT));
+            // T37: the small pencil button that used to sit above the main
+            // floating button (floatingButton2Container — it opened the same
+            // Contacts area) is removed. The main floating button IS the
+            // pencil now; keeping both would be a duplicate. All remaining
+            // floatingButton2 references in this file are null-guarded, so
+            // the view simply never exists.
         }
 
         floatingButtonContainer = new FrameLayout(context);
@@ -4560,55 +4524,16 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     return;
                 }
 
-                if (!storiesEnabled) {
-                    Bundle args = new Bundle();
-                    args.putBoolean("destroyAfterSelect", true);
-                    presentFragment(new ContactsActivity(args));
-                    return;
-                }
-
-                if (storyHint != null) {
-                    storyHint.hide();
-                }
-
-                final StoriesController.StoryLimit storyLimit = MessagesController.getInstance(currentAccount).getStoriesController().checkStoryLimit();
-                if (storyLimit != null) {
-                    showDialog(new LimitReachedBottomSheet(this, getContext(), storyLimit.getLimitReachedType(), currentAccount, null));
-                    return;
-                }
-
-                StoryRecorder.getInstance(getParentActivity(), currentAccount)
-                        .closeToWhenSent(new StoryRecorder.ClosingViewProvider() {
-                            @Override
-                            public void preLayout(long dialogId, Runnable runnable) {
-                                if (dialogStoriesCell != null) {
-                                    scrollToTop(false, true);
-                                    invalidateScrollY = true;
-                                    fragmentView.invalidate();
-                                    if (dialogId == 0 || dialogId == getUserConfig().getClientUserId()) {
-                                        dialogStoriesCell.scrollToFirstCell();
-                                    } else {
-                                        dialogStoriesCell.scrollTo(dialogId);
-                                    }
-                                    viewPages[0].listView.getViewTreeObserver().addOnPreDrawListener(new ViewTreeObserver.OnPreDrawListener() {
-                                        @Override
-                                        public boolean onPreDraw() {
-                                            viewPages[0].listView.getViewTreeObserver().removeOnPreDrawListener(this);
-                                            AndroidUtilities.runOnUIThread(runnable, 100);
-                                            return false;
-                                        }
-                                    });
-                                } else {
-                                    runnable.run();
-                                }
-                            }
-
-                            @Override
-                            public StoryRecorder.SourceView getView(long dialogId) {
-                                return StoryRecorder.SourceView.fromStoryCell(dialogStoriesCell != null ? dialogStoriesCell.findStoryCell(dialogId) : null);
-                            }
-                        })
-                        .open(StoryRecorder.SourceView.fromFloatingButton(floatingButtonContainer), true);
+                // T37: the floating button is the pencil (New Message →
+                // Contacts / Create Group) in every state. The story-camera
+                // behavior that used to own this button when stories were
+                // enabled is removed from this location, and the separate
+                // small pencil button that used to sit above it is gone —
+                // one pencil, in the primary position, with the exact
+                // Contacts navigation it always had.
+                Bundle args = new Bundle();
+                args.putBoolean("destroyAfterSelect", true);
+                presentFragment(new ContactsActivity(args));
             }
         });
 
@@ -8719,10 +8644,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         if (initialDialogsType == DIALOGS_TYPE_WIDGET) {
             floatingButton.setImageResource(R.drawable.floating_check);
             floatingButtonContainer.setContentDescription(LocaleController.getString("Done", R.string.Done));
-        } else if (storiesEnabled) {
-            floatingButton.setAnimation(R.raw.write_contacts_fab_icon_camera, 56, 56);
-            floatingButtonContainer.setContentDescription(LocaleController.getString("AccDescrCaptureStory", R.string.AccDescrCaptureStory));
         } else {
+            // T37: the pencil in every state — the camera FAB animation that
+            // stories mode used to swap in here is removed from this location.
             floatingButton.setAnimation(R.raw.write_contacts_fab_icon, 52, 52);
             floatingButtonContainer.setContentDescription(LocaleController.getString("NewMessageTitle", R.string.NewMessageTitle));
         }

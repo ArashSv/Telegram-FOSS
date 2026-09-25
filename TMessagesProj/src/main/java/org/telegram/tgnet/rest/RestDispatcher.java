@@ -1447,8 +1447,14 @@ public final class RestDispatcher {
     /**
      * TL_contacts_deleteContacts — contact removal (ProfileActivity
      * delete_contact → ContactsController.deleteContact:505, HARD cast to
-     * TL_updates; processUpdates only). Empty updates are sufficient: the
-     * consumer clears its local state itself.
+     * TL_updates). T37: the consumer clears its contact lists locally, but
+     * the CACHED USER object keeps the stale contact surfaces (the saved
+     * name overwrote first_name, the phone rode from the viewer rule) —
+     * those would survive every reopen because profile reads hit the cache.
+     * So after the backend delete succeeds we re-fetch the authoritative
+     * user jsons and ride them in updates.users: processUpdates putUser
+     * REPLACES the contact-shaped cache entry with the public-shaped truth
+     * (backend name, no phone, contact=false) — nothing stale remains.
      */
     private static TLObject handleContactsDelete(int account, TLRPC.TL_contacts_deleteContacts req) {
         long[] ids = new long[req.id.size()];
@@ -1456,11 +1462,24 @@ public final class RestDispatcher {
             TLRPC.InputUser input = req.id.get(i);
             ids[i] = input instanceof TLRPC.TL_inputUser ? ((TLRPC.TL_inputUser) input).user_id : 0;
         }
-        if (ids.length > 0) {
-            RestGateway.getInstance(account).contactsDelete(ids);
-        }
         TLRPC.TL_updates updates = new TLRPC.TL_updates();
         updates.date = nowSeconds();
+        if (ids.length > 0) {
+            RestGateway.getInstance(account).contactsDelete(ids);
+            try {
+                JSONObject answer = RestGateway.getInstance(account).usersGet(ids);
+                JSONArray usersJson = answer.optJSONArray("users");
+                if (usersJson != null) {
+                    for (int i = 0; i < usersJson.length(); i++) {
+                        updates.users.add(TlJsonMapper.parseUser(usersJson.getJSONObject(i), false));
+                    }
+                }
+            } catch (Exception e) {
+                // The delete itself succeeded; a refresh failure only delays
+                // the cache repair until the next authoritative read.
+                FileLog.e("handleContactsDelete: post-delete user refresh failed", e);
+            }
+        }
         return updates;
     }
 

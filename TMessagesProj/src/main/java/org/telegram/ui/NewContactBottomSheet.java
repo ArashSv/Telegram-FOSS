@@ -452,7 +452,15 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
                     str = str.substring(0, actionPosition) + str.substring(actionPosition + 1);
                     start--;
                 }
+                // T37 international numbers: a LEADING '+' marks a full E.164
+                // identifier typed/pasted by the caller — preserve it instead
+                // of stripping it into a local-looking number (that was the
+                // "+8881111 becomes +988881111" bug). doOnDone consumes it.
+                final boolean fullInternational = str.startsWith("+");
                 StringBuilder builder = new StringBuilder(str.length());
+                if (fullInternational) {
+                    builder.append('+');
+                }
                 for (int a = 0; a < str.length(); a++) {
                     String ch = str.substring(a, a + 1);
                     if (phoneChars.contains(ch)) {
@@ -461,7 +469,7 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
                 }
                 ignoreOnPhoneChange = true;
                 String hint = phoneField.getHintText();
-                if (hint != null) {
+                if (hint != null && !fullInternational) {
                     for (int a = 0; a < builder.length(); a++) {
                         if (a < hint.length()) {
                             if (hint.charAt(a) == ' ') {
@@ -619,7 +627,13 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
             AndroidUtilities.shakeView(firstNameField);
             return;
         }
-        if (codeField.length() == 0) {
+        // T37 international numbers: a phone field that starts with '+' IS
+        // the complete E.164 identifier the caller typed/pasted (+98…, +1…,
+        // +44…, +49…, +8881111, anything) — the country-code field is not
+        // involved and must not be required. No country-specific assumptions.
+        final String typedPhone = phoneField.getText().toString();
+        final boolean fullInternational = typedPhone.startsWith("+");
+        if (!fullInternational && codeField.length() == 0) {
             Vibrator v = (Vibrator) parentFragment.getParentActivity().getSystemService(Context.VIBRATOR_SERVICE);
             if (v != null) {
                 v.vibrate(200);
@@ -635,13 +649,30 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
             AndroidUtilities.shakeView(phoneField);
             return;
         }
+        final String phoneValue;
+        if (fullInternational) {
+            phoneValue = PhoneFormat.stripExceptNumbers(typedPhone, true);
+            int digitCount = PhoneFormat.stripExceptNumbers(typedPhone).length();
+            // Same validity rule as the backend (Validator::phone):
+            // 7-15 digits — not a country-specific pattern.
+            if (digitCount < 7 || digitCount > 15) {
+                Vibrator v = (Vibrator) parentFragment.getParentActivity().getSystemService(Context.VIBRATOR_SERVICE);
+                if (v != null) {
+                    v.vibrate(200);
+                }
+                AndroidUtilities.shakeView(phoneField);
+                return;
+            }
+        } else {
+            phoneValue = "+" + codeField.getText().toString() + phoneField.getText().toString();
+        }
         donePressed = true;
         showEditDoneProgress(true, true);
         final TLRPC.TL_contacts_importContacts req = new TLRPC.TL_contacts_importContacts();
         final TLRPC.TL_inputPhoneContact inputPhoneContact = new TLRPC.TL_inputPhoneContact();
         inputPhoneContact.first_name = firstNameField.getEditText().getText().toString();
         inputPhoneContact.last_name = "";
-        inputPhoneContact.phone = "+" + codeField.getText().toString() + phoneField.getText().toString();
+        inputPhoneContact.phone = phoneValue;
         req.contacts.add(inputPhoneContact);
         int reqId = ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> {
             final TLRPC.TL_contacts_importedContacts res = (TLRPC.TL_contacts_importedContacts) response;
