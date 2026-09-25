@@ -89,6 +89,23 @@ import java.util.HashMap;
  *   <li>ROUTE_DELETE_HISTORY → TL_messages_affectedHistory; consumer
  *       MessagesController.deleteDialog callback (~:8795 HARD cast; offset=0
  *       stops the re-loop, pts=0 stays at the pinned baseline) (T39).</li>
+ *   <li>ROUTE_DELETE_CHAT_USER → TL_updates; consumers
+ *       MessagesController.deleteParticipantFromChat callbacks (~:13953 and
+ *       ~:14029 HARD cast to Updates → processUpdates). SELF (leave) answers
+ *       an EMPTY TL_updates — the local deleteDialog already ran before the
+ *       send; KICK answers the authoritative post-kick snapshot (chats +
+ *       TL_updateChatParticipants + users, same fabrication as addChatUser)
+ *       so processUpdates applies the persisted member list (T40).</li>
+ *   <li>ROUTE_EDIT_CHAT_ADMIN → TL_boolTrue; consumer
+ *       MessagesController.setUserAdminRole basic-group branch (~:7661)
+ *       tests error == null ONLY — the response is unused; the acting UI
+ *       refreshes via loadFullChat 1 s later, every other member via the
+ *       chat_member sync event (T40).</li>
+ *   <li>ROUTE_DELETE_CHAT → TL_boolTrue; consumer
+ *       MessagesController.deleteParticipantFromChat forceDelete branch
+ *       (~:13935/:14010) IGNORES the response entirely — the local dialog
+ *       deletion already ran and every ex-member converges via chat_member
+ *       {event: deleted} (T40).</li>
  * </ul>
  */
 public final class RestRouter {
@@ -138,6 +155,11 @@ public final class RestRouter {
     // T39 — edit pre-check + real dialog deletion (backend v2.1.0)
     public static final int ROUTE_EDIT_DATA = 33;         // TL_messages_getMessageEditData -> LOCAL stub (edit permission already gates client-side)
     public static final int ROUTE_DELETE_HISTORY = 34;    // TL_messages_deleteHistory -> POST /chats/delete-dialog.php (hidden_dialogs, for-me)
+
+    // T40 — group member management: promote/kick/leave/delete (backend v2.2.0)
+    public static final int ROUTE_DELETE_CHAT_USER = 35;  // TL_messages_deleteChatUser -> POST /chats/leave.php (self) | /chats/kick.php (other)
+    public static final int ROUTE_EDIT_CHAT_ADMIN = 36;   // TL_messages_editChatAdmin -> POST /chats/promote.php (binary is_admin, creator-only)
+    public static final int ROUTE_DELETE_CHAT = 37;       // TL_messages_deleteChat -> POST /chats/delete.php (creator, delete for everyone)
 
     // constructor ints (TLRPC.java, this tree): TL_upload_getFile = 0xbe5335be,
     // TL_upload_saveFilePart = 0xb304a621, TL_upload_saveBigFilePart = 0xde7b673d,
@@ -199,6 +221,16 @@ public final class RestRouter {
         // chats/list.php resurrected the dialog on the next load (the reported
         // "deleted chat comes back"). Routed to the new hidden_dialogs contract.
         ROUTES.put(TLRPC.TL_messages_deleteHistory.class, ROUTE_DELETE_HISTORY);
+        // T40 — group member management. TL_messages_deleteChatUser is the
+        // kick/leave funnel (deleteParticipantFromChat ~:13940/:14016),
+        // TL_messages_editChatAdmin the basic-group promote/demote
+        // (setUserAdminRole ~:7655), TL_messages_deleteChat the creator's
+        // delete-for-everyone (~:13934/:14009). All three were default-denied
+        // — every kick/leave/promote attempt in the UI died with
+        // XO_NOT_ROUTED (kick silently, promote via the error alert).
+        ROUTES.put(TLRPC.TL_messages_deleteChatUser.class, ROUTE_DELETE_CHAT_USER);
+        ROUTES.put(TLRPC.TL_messages_editChatAdmin.class, ROUTE_EDIT_CHAT_ADMIN);
+        ROUTES.put(TLRPC.TL_messages_deleteChat.class, ROUTE_DELETE_CHAT);
     }
 
     private RestRouter() {

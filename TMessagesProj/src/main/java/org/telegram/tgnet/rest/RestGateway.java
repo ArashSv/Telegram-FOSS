@@ -272,6 +272,54 @@ public final class RestGateway {
         return authenticatedRequest("POST", "chats/delete-dialog.php", body);
     }
 
+    /**
+     * POST /chats/kick.php {chat_id, user_id} (T40, backend v2.2.0) — remove
+     * another member from a basic group (creator removes admins+members,
+     * admin removes plain members only). Response: the authoritative
+     * post-kick snapshot {members, count, chat, removed_user_id}.
+     */
+    public JSONObject kickChatMember(long chatId, long userId) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        putNumber(body, "user_id", userId);
+        return authenticatedRequest("POST", "chats/kick.php", body);
+    }
+
+    /**
+     * POST /chats/leave.php {chat_id} (T40, backend v2.2.0) — remove the
+     * CALLER from a basic group (creator cannot leave — delete the group
+     * instead). Response: {ok, chat_id}.
+     */
+    public JSONObject leaveChat(long chatId) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        return authenticatedRequest("POST", "chats/leave.php", body);
+    }
+
+    /**
+     * POST /chats/promote.php {chat_id, user_id, is_admin} (T40, backend
+     * v2.2.0) — creator-only promote to admin / demote to member. Response:
+     * the authoritative snapshot {members, count, chat}.
+     */
+    public JSONObject setChatAdmin(long chatId, long userId, boolean isAdmin) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        putNumber(body, "user_id", userId);
+        try {
+            body.put("is_admin", isAdmin);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for is_admin", e);
+        }
+        return authenticatedRequest("POST", "chats/promote.php", body);
+    }
+
+    /**
+     * POST /chats/delete.php {chat_id} (T40, backend v2.2.0) — delete the
+     * group FOR EVERYONE (creator-only; hard-deletes chats, memberships,
+     * hidden dialogs and messages). Response: {ok, chat_id}.
+     */
+    public JSONObject deleteChat(long chatId) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        return authenticatedRequest("POST", "chats/delete.php", body);
+    }
+
     /** GET /users/get.php?ids=1,2,3 — hydration only, no search in v1. */
     public JSONArray usersGet(long[] userIds) {
         if (userIds == null || userIds.length == 0) {
