@@ -549,12 +549,6 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
     private int stickersRow;
     private int devicesRow;
     private int devicesSectionRow;
-    private int helpSectionCell;
-    private int debugHeaderRow;
-    private int sendLogsRow;
-    private int sendLastLogsRow;
-    private int clearLogsRow;
-    private int switchBackendRow;
     private int versionRow;
     private int emptyRow;
     private int bottomPaddingRow;
@@ -3832,27 +3826,6 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 presentFragment(new LiteModeSettingsActivity());
             } else if (position == devicesRow) {
                 presentFragment(new SessionsActivity(0));
-            } else if (position == sendLogsRow) {
-                sendLogs(getParentActivity(), false);
-            } else if (position == sendLastLogsRow) {
-                sendLogs(getParentActivity(), true);
-            } else if (position == clearLogsRow) {
-                FileLog.cleanupLogs();
-            } else if (position == switchBackendRow) {
-                if (getParentActivity() == null) {
-                    return;
-                }
-                AlertDialog.Builder builder1 = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
-                builder1.setMessage(LocaleController.getString("AreYouSure", R.string.AreYouSure));
-                builder1.setTitle(LocaleController.getString("AppName", R.string.AppName));
-                builder1.setPositiveButton(LocaleController.getString("OK", R.string.OK), (dialogInterface, i) -> {
-                    SharedConfig.pushAuthKey = null;
-                    SharedConfig.pushAuthKeyId = null;
-                    SharedConfig.saveConfig();
-                    getConnectionsManager().switchBackend(true);
-                });
-                builder1.setNegativeButton(LocaleController.getString("Cancel", R.string.Cancel), null);
-                showDialog(builder1.create());
             } else if (position == languageRow) {
                 presentFragment(new LanguageSelectActivity());
             } else if (position == setUsernameRow) {
@@ -3896,350 +3869,8 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             }
         });
 
-        listView.setOnItemLongClickListener(new RecyclerListView.OnItemLongClickListener() {
-
-            private int pressCount = 0;
-
-            @Override
-            public boolean onItemClick(View view, int position) {
-                if (position == versionRow) {
-                    pressCount++;
-                    if (pressCount >= 2 || BuildVars.DEBUG_PRIVATE_VERSION) {
-                        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
-                        builder.setTitle(LocaleController.getString("DebugMenu", R.string.DebugMenu));
-                        CharSequence[] items;
-                        items = new CharSequence[]{
-                                LocaleController.getString("DebugMenuImportContacts", R.string.DebugMenuImportContacts),
-                                LocaleController.getString("DebugMenuReloadContacts", R.string.DebugMenuReloadContacts),
-                                LocaleController.getString("DebugMenuResetContacts", R.string.DebugMenuResetContacts),
-                                LocaleController.getString("DebugMenuResetDialogs", R.string.DebugMenuResetDialogs),
-                                BuildVars.DEBUG_VERSION ? null : (BuildVars.LOGS_ENABLED ? LocaleController.getString("DebugMenuDisableLogs", R.string.DebugMenuDisableLogs) : LocaleController.getString("DebugMenuEnableLogs", R.string.DebugMenuEnableLogs)),
-                                SharedConfig.inappCamera ? LocaleController.getString("DebugMenuDisableCamera", R.string.DebugMenuDisableCamera) : LocaleController.getString("DebugMenuEnableCamera", R.string.DebugMenuEnableCamera),
-                                LocaleController.getString("DebugMenuClearMediaCache", R.string.DebugMenuClearMediaCache),
-                                LocaleController.getString("DebugMenuCallSettings", R.string.DebugMenuCallSettings),
-                                null,
-                                BuildVars.DEBUG_PRIVATE_VERSION || ApplicationLoader.isStandaloneBuild() ? LocaleController.getString("DebugMenuCheckAppUpdate", R.string.DebugMenuCheckAppUpdate) : null,
-                                LocaleController.getString("DebugMenuReadAllDialogs", R.string.DebugMenuReadAllDialogs),
-                                BuildVars.DEBUG_PRIVATE_VERSION ? (SharedConfig.disableVoiceAudioEffects ? "Enable voip audio effects" : "Disable voip audio effects") : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? "Clean app update" : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? "Reset suggestions" : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? LocaleController.getString(R.string.DebugMenuClearWebViewCache) : null,
-                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT ? LocaleController.getString(SharedConfig.debugWebView ? R.string.DebugMenuDisableWebViewDebug : R.string.DebugMenuEnableWebViewDebug) : null,
-                                (AndroidUtilities.isTabletInternal() && BuildVars.DEBUG_PRIVATE_VERSION) ? (SharedConfig.forceDisableTabletMode ? "Enable tablet mode" : "Disable tablet mode") : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? LocaleController.getString(SharedConfig.isFloatingDebugActive ? R.string.FloatingDebugDisable : R.string.FloatingDebugEnable) : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? "Force remove premium suggestions" : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? "Share device info" : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? "Force performance class" : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION && !InstantCameraView.allowBigSizeCameraDebug() ? (!SharedConfig.bigCameraForRound ? "Force big camera for round" : "Disable big camera for round") : null,
-                                LocaleController.getString(DualCameraView.dualAvailableStatic(getContext()) ? "DebugMenuDualOff" : "DebugMenuDualOn"),
-                                BuildVars.DEBUG_VERSION ? (SharedConfig.useSurfaceInStories ? "back to TextureView in stories" : "use SurfaceView in stories") : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? (SharedConfig.photoViewerBlur ? "do not blur in photoviewer" : "blur in photoviewer") : null,
-                                !SharedConfig.payByInvoice ? "Enable Invoice Payment" : "Disable Invoice Payment",
-                                BuildVars.DEBUG_PRIVATE_VERSION ? "Update Attach Bots" : null,
-                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP ? (!SharedConfig.isUsingCamera2(currentAccount) ? "Use Camera 2 API" : "Use old Camera 1 API") : null,
-                                BuildVars.DEBUG_VERSION ? "Clear bot biometry data" : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? "Clear all login tokens" : null,
-                                SharedConfig.canBlurChat() && Build.VERSION.SDK_INT >= 31 ? (SharedConfig.useNewBlur ? "back to cpu blur" : "use new gpu blur") : null,
-                                BuildVars.DEBUG_PRIVATE_VERSION ? (SharedConfig.botTabs3DEffect ? "disable tabs 3d effect" : "enable tabs 3d effect") : null
-                        };
-
-                        builder.setItems(items, (dialog, which) -> {
-                            if (which == 0) {
-                                getUserConfig().syncContacts = true;
-                                getUserConfig().saveConfig(false);
-                                getContactsController().forceImportContacts();
-                            } else if (which == 1) {
-                                getContactsController().loadContacts(false, 0);
-                            } else if (which == 2) {
-                                getContactsController().resetImportedContacts();
-                            } else if (which == 3) {
-                                getMessagesController().forceResetDialogs();
-                            } else if (which == 4) {
-                                BuildVars.LOGS_ENABLED = !BuildVars.LOGS_ENABLED;
-                                SharedPreferences sharedPreferences = ApplicationLoader.applicationContext.getSharedPreferences("systemConfig", Context.MODE_PRIVATE);
-                                sharedPreferences.edit().putBoolean("logsEnabled", BuildVars.LOGS_ENABLED).commit();
-                                updateRowsIds();
-                                listAdapter.notifyDataSetChanged();
-                                if (BuildVars.LOGS_ENABLED) {
-                                    FileLog.d("app start time = " + ApplicationLoader.startTime);
-                                    try {
-                                        FileLog.d("buildVersion = " + ApplicationLoader.applicationContext.getPackageManager().getPackageInfo(ApplicationLoader.applicationContext.getPackageName(), 0).versionCode);
-                                    } catch (Exception e) {
-                                        FileLog.e(e);
-                                    }
-                                }
-                            } else if (which == 5) {
-                                SharedConfig.toggleInappCamera();
-                            } else if (which == 6) {
-                                getMessagesStorage().clearSentMedia();
-                                SharedConfig.setNoSoundHintShowed(false);
-                                SharedPreferences.Editor editor = MessagesController.getGlobalMainSettings().edit();
-                                editor.remove("archivehint").remove("proximityhint").remove("archivehint_l").remove("speedhint").remove("gifhint").remove("reminderhint").remove("soundHint").remove("themehint").remove("bganimationhint").remove("filterhint").remove("n_0").remove("storyprvhint").remove("storyhint").remove("storyhint2").remove("storydualhint").remove("storysvddualhint").remove("stories_camera").remove("dualcam").remove("dualmatrix").remove("dual_available").remove("archivehint").remove("askNotificationsAfter").remove("askNotificationsDuration").remove("viewoncehint").remove("taptostorysoundhint").remove("nothanos").remove("voiceoncehint").remove("savedhint").remove("savedsearchhint").remove("savedsearchtaghint").remove("groupEmojiPackHintShown").remove("newppsms").remove("monetizationadshint").apply();
-                                MessagesController.getEmojiSettings(currentAccount).edit().remove("featured_hidden").remove("emoji_featured_hidden").commit();
-                                SharedConfig.textSelectionHintShows = 0;
-                                SharedConfig.lockRecordAudioVideoHint = 0;
-                                SharedConfig.stickersReorderingHintUsed = false;
-                                SharedConfig.forwardingOptionsHintShown = false;
-                                SharedConfig.replyingOptionsHintShown = false;
-                                SharedConfig.messageSeenHintCount = 3;
-                                SharedConfig.emojiInteractionsHintCount = 3;
-                                SharedConfig.dayNightThemeSwitchHintCount = 3;
-                                SharedConfig.fastScrollHintCount = 3;
-                                SharedConfig.stealthModeSendMessageConfirm = 2;
-                                SharedConfig.updateStealthModeSendMessageConfirm(2);
-                                SharedConfig.setStoriesReactionsLongPressHintUsed(false);
-                                SharedConfig.setStoriesIntroShown(false);
-                                SharedConfig.setMultipleReactionsPromoShowed(false);
-                                ChatThemeController.getInstance(currentAccount).clearCache();
-                                getNotificationCenter().postNotificationName(NotificationCenter.newSuggestionsAvailable);
-                                RestrictedLanguagesSelectActivity.cleanup();
-                                PersistColorPalette.getInstance(currentAccount).cleanup();
-                                SharedPreferences prefs = getMessagesController().getMainSettings();
-                                editor = prefs.edit();
-                                editor.remove("peerColors").remove("profilePeerColors").remove("boostingappearance").remove("bizbothint");
-                                for (String key : prefs.getAll().keySet()) {
-                                    if (key.contains("show_gift_for_") || key.contains("bdayhint_") || key.contains("bdayanim_")) {
-                                        editor.remove(key);
-                                    }
-                                }
-                                editor.commit();
-                            } else if (which == 7) {
-                                VoIPHelper.showCallDebugSettings(getParentActivity());
-                            } else if (which == 8) {
-                                SharedConfig.toggleRoundCamera16to9();
-                            } else if (which == 9) {
-                                ((LaunchActivity) getParentActivity()).checkAppUpdate(true, null);
-                            } else if (which == 10) {
-                                getMessagesStorage().readAllDialogs(-1);
-                            } else if (which == 11) {
-                                SharedConfig.toggleDisableVoiceAudioEffects();
-                            } else if (which == 12) {
-                                SharedConfig.pendingAppUpdate = null;
-                                SharedConfig.saveConfig();
-                                NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.appUpdateAvailable);
-                            } else if (which == 13) {
-                                Set<String> suggestions = getMessagesController().pendingSuggestions;
-                                suggestions.add("VALIDATE_PHONE_NUMBER");
-                                suggestions.add("VALIDATE_PASSWORD");
-                                getNotificationCenter().postNotificationName(NotificationCenter.newSuggestionsAvailable);
-                            } else if (which == 14) {
-                                ApplicationLoader.applicationContext.deleteDatabase("webview.db");
-                                ApplicationLoader.applicationContext.deleteDatabase("webviewCache.db");
-                                WebStorage.getInstance().deleteAllData();
-                            } else if (which == 15) {
-                                SharedConfig.toggleDebugWebView();
-                                Toast.makeText(getParentActivity(), LocaleController.getString(SharedConfig.debugWebView ? R.string.DebugMenuWebViewDebugEnabled : R.string.DebugMenuWebViewDebugDisabled), Toast.LENGTH_SHORT).show();
-                            } else if (which == 16) {
-                                SharedConfig.toggleForceDisableTabletMode();
-
-                                Activity activity = AndroidUtilities.findActivity(context);
-                                final PackageManager pm = activity.getPackageManager();
-                                final Intent intent = pm.getLaunchIntentForPackage(activity.getPackageName());
-                                activity.finishAffinity(); // Finishes all activities.
-                                activity.startActivity(intent);    // Start the launch activity
-                                System.exit(0);
-                            } else if (which == 17) {
-                                FloatingDebugController.setActive((LaunchActivity) getParentActivity(), !FloatingDebugController.isActive());
-                            } else if (which == 18) {
-                                getMessagesController().loadAppConfig();
-                                TLRPC.TL_help_dismissSuggestion req = new TLRPC.TL_help_dismissSuggestion();
-                                req.suggestion = "VALIDATE_PHONE_NUMBER";
-                                req.peer = new TLRPC.TL_inputPeerEmpty();
-                                getConnectionsManager().sendRequest(req, (response, error) -> {
-                                    TLRPC.TL_help_dismissSuggestion req2 = new TLRPC.TL_help_dismissSuggestion();
-                                    req2.suggestion = "VALIDATE_PASSWORD";
-                                    req2.peer = new TLRPC.TL_inputPeerEmpty();
-                                    getConnectionsManager().sendRequest(req2, (res2, err2) -> {
-                                        getMessagesController().loadAppConfig();
-                                    });
-                                });
-                            } else if (which == 19) {
-                                int androidVersion = Build.VERSION.SDK_INT;
-                                int cpuCount = ConnectionsManager.CPU_COUNT;
-                                int memoryClass = ((ActivityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACTIVITY_SERVICE)).getMemoryClass();
-                                long minFreqSum = 0, minFreqCount = 0;
-                                long maxFreqSum = 0, maxFreqCount = 0;
-                                long curFreqSum = 0, curFreqCount = 0;
-                                long capacitySum = 0, capacityCount = 0;
-                                StringBuilder cpusInfo = new StringBuilder();
-                                for (int i = 0; i < cpuCount; i++) {
-                                    Long minFreq = AndroidUtilities.getSysInfoLong("/sys/devices/system/cpu/cpu" + i + "/cpufreq/cpuinfo_min_freq");
-                                    Long curFreq = AndroidUtilities.getSysInfoLong("/sys/devices/system/cpu/cpu" + i + "/cpufreq/cpuinfo_cur_freq");
-                                    Long maxFreq = AndroidUtilities.getSysInfoLong("/sys/devices/system/cpu/cpu" + i + "/cpufreq/cpuinfo_max_freq");
-                                    Long capacity = AndroidUtilities.getSysInfoLong("/sys/devices/system/cpu/cpu" + i + "/cpu_capacity");
-                                    cpusInfo.append("#").append(i).append(" ");
-                                    if (minFreq != null) {
-                                        cpusInfo.append("min=").append(minFreq / 1000L).append(" ");
-                                        minFreqSum += (minFreq / 1000L);
-                                        minFreqCount++;
-                                    }
-                                    if (curFreq != null) {
-                                        cpusInfo.append("cur=").append(curFreq / 1000L).append(" ");
-                                        curFreqSum += (curFreq / 1000L);
-                                        curFreqCount++;
-                                    }
-                                    if (maxFreq != null) {
-                                        cpusInfo.append("max=").append(maxFreq / 1000L).append(" ");
-                                        maxFreqSum += (maxFreq / 1000L);
-                                        maxFreqCount++;
-                                    }
-                                    if (capacity != null) {
-                                        cpusInfo.append("cpc=").append(capacity).append(" ");
-                                        capacitySum += capacity;
-                                        capacityCount++;
-                                    }
-                                    cpusInfo.append("\n");
-                                }
-                                StringBuilder info = new StringBuilder();
-                                info.append(Build.MANUFACTURER).append(", ").append(Build.MODEL).append(" (").append(Build.PRODUCT).append(", ").append(Build.DEVICE).append(") ").append(" (android ").append(Build.VERSION.SDK_INT).append(")\n");
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    info.append("SoC: ").append(Build.SOC_MANUFACTURER).append(", ").append(Build.SOC_MODEL).append("\n");
-                                }
-                                String gpuModel = AndroidUtilities.getSysInfoString("/sys/kernel/gpu/gpu_model");
-                                if (gpuModel != null) {
-                                    info.append("GPU: ").append(gpuModel);
-                                    Long minClock = AndroidUtilities.getSysInfoLong("/sys/kernel/gpu/gpu_min_clock");
-                                    Long mminClock = AndroidUtilities.getSysInfoLong("/sys/kernel/gpu/gpu_mm_min_clock");
-                                    Long maxClock = AndroidUtilities.getSysInfoLong("/sys/kernel/gpu/gpu_max_clock");
-                                    if (minClock != null) {
-                                        info.append(", min=").append(minClock / 1000L);
-                                    }
-                                    if (mminClock != null) {
-                                        info.append(", mmin=").append(mminClock / 1000L);
-                                    }
-                                    if (maxClock != null) {
-                                        info.append(", max=").append(maxClock / 1000L);
-                                    }
-                                    info.append("\n");
-                                }
-                                ConfigurationInfo configurationInfo = ((ActivityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACTIVITY_SERVICE)).getDeviceConfigurationInfo();
-                                info.append("GLES Version: ").append(configurationInfo.getGlEsVersion()).append("\n");
-                                info.append("Memory: class=").append(AndroidUtilities.formatFileSize(memoryClass * 1024L * 1024L));
-                                ActivityManager.MemoryInfo memoryInfo = new ActivityManager.MemoryInfo();
-                                ((ActivityManager) ApplicationLoader.applicationContext.getSystemService(Context.ACTIVITY_SERVICE)).getMemoryInfo(memoryInfo);
-                                info.append(", total=").append(AndroidUtilities.formatFileSize(memoryInfo.totalMem));
-                                info.append(", avail=").append(AndroidUtilities.formatFileSize(memoryInfo.availMem));
-                                info.append(", low?=").append(memoryInfo.lowMemory);
-                                info.append(" (threshold=").append(AndroidUtilities.formatFileSize(memoryInfo.threshold)).append(")");
-                                info.append("\n");
-                                info.append("Current class: ").append(SharedConfig.performanceClassName(SharedConfig.getDevicePerformanceClass())).append(", measured: ").append(SharedConfig.performanceClassName(SharedConfig.measureDevicePerformanceClass()));
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    info.append(", suggest=").append(Build.VERSION.MEDIA_PERFORMANCE_CLASS);
-                                }
-                                info.append("\n");
-                                info.append(cpuCount).append(" CPUs");
-                                if (minFreqCount > 0) {
-                                    info.append(", avgMinFreq=").append(minFreqSum / minFreqCount);
-                                }
-                                if (curFreqCount > 0) {
-                                    info.append(", avgCurFreq=").append(curFreqSum / curFreqCount);
-                                }
-                                if (maxFreqCount > 0) {
-                                    info.append(", avgMaxFreq=").append(maxFreqSum / maxFreqCount);
-                                }
-                                if (capacityCount > 0) {
-                                    info.append(", avgCapacity=").append(capacitySum / capacityCount);
-                                }
-                                info.append("\n").append(cpusInfo);
-
-                                listCodecs("video/avc", info);
-                                listCodecs("video/hevc", info);
-                                listCodecs("video/x-vnd.on2.vp8", info);
-                                listCodecs("video/x-vnd.on2.vp9", info);
-
-                                showDialog(new ShareAlert(getParentActivity(), null, info.toString(), false, null, false) {
-                                    @Override
-                                    protected void onSend(LongSparseArray<TLRPC.Dialog> dids, int count, TLRPC.TL_forumTopic topic) {
-                                        AndroidUtilities.runOnUIThread(() -> {
-                                            BulletinFactory.createInviteSentBulletin(getParentActivity(), contentView, dids.size(), dids.size() == 1 ? dids.valueAt(0).id : 0, count, getThemedColor(Theme.key_undo_background), getThemedColor(Theme.key_undo_infoColor)).show();
-                                        }, 250);
-                                    }
-                                });
-                            } else if (which == 20) {
-                                AlertDialog.Builder builder2 = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
-                                builder2.setTitle("Force performance class");
-                                int currentClass = SharedConfig.getDevicePerformanceClass();
-                                int trueClass = SharedConfig.measureDevicePerformanceClass();
-                                builder2.setItems(new CharSequence[] {
-                                    AndroidUtilities.replaceTags((currentClass == SharedConfig.PERFORMANCE_CLASS_HIGH ? "**HIGH**" : "HIGH") + (trueClass == SharedConfig.PERFORMANCE_CLASS_HIGH ? " (measured)" : "")),
-                                    AndroidUtilities.replaceTags((currentClass == SharedConfig.PERFORMANCE_CLASS_AVERAGE ? "**AVERAGE**" : "AVERAGE") + (trueClass == SharedConfig.PERFORMANCE_CLASS_AVERAGE ? " (measured)" : "")),
-                                    AndroidUtilities.replaceTags((currentClass == SharedConfig.PERFORMANCE_CLASS_LOW ? "**LOW**" : "LOW") + (trueClass == SharedConfig.PERFORMANCE_CLASS_LOW ? " (measured)" : ""))
-                                }, (dialog2, which2) -> {
-                                    int newClass = 2 - which2;
-                                    if (newClass == trueClass) {
-                                        SharedConfig.overrideDevicePerformanceClass(-1);
-                                    } else {
-                                        SharedConfig.overrideDevicePerformanceClass(newClass);
-                                    }
-                                });
-                                builder2.setNegativeButton(LocaleController.getString("Cancel", R.string.Cancel), null);
-                                builder2.show();
-                            } else if (which == 21) {
-                                SharedConfig.toggleRoundCamera();
-                            } else if (which == 22) {
-                                boolean enabled = DualCameraView.dualAvailableStatic(getContext());
-                                MessagesController.getGlobalMainSettings().edit().putBoolean("dual_available", !enabled).apply();
-                                try {
-                                    Toast.makeText(getParentActivity(), LocaleController.getString(!enabled ? R.string.DebugMenuDualOnToast : R.string.DebugMenuDualOffToast), Toast.LENGTH_SHORT).show();
-                                } catch (Exception e) {}
-                            } else if (which == 23) {
-                                SharedConfig.toggleSurfaceInStories();
-                                for (int i = 0; i < getParentLayout().getFragmentStack().size(); i++) {
-                                    getParentLayout().getFragmentStack().get(i).clearSheets();
-                                }
-                            } else if (which == 24) {
-                                SharedConfig.togglePhotoViewerBlur();
-                            } else if (which == 25) {
-                                SharedConfig.togglePaymentByInvoice();
-                            } else if (which == 26) {
-                                getMediaDataController().loadAttachMenuBots(false, true);
-                            } else if (which == 27) {
-                                SharedConfig.toggleUseCamera2(currentAccount);
-                            } else if (which == 28) {
-                                BotBiometry.clear();
-                            } else if (which == 29) {
-                                AuthTokensHelper.clearLogInTokens();
-                            } else if (which == 30) {
-                                SharedConfig.toggleUseNewBlur();
-                            } else if (which == 31) {
-                                SharedConfig.setBotTabs3DEffect(!SharedConfig.botTabs3DEffect);
-                            }
-                        });
-                        builder.setNegativeButton(LocaleController.getString("Cancel", R.string.Cancel), null);
-                        showDialog(builder.create());
-                    } else {
-                        try {
-                            Toast.makeText(getParentActivity(), LocaleController.getString("DebugMenuLongPress", R.string.DebugMenuLongPress), Toast.LENGTH_SHORT).show();
-                        } catch (Exception e) {
-                            FileLog.e(e);
-                        }
-                    }
-                    return true;
-                } else if (position >= membersStartRow && position < membersEndRow) {
-                    final TLRPC.ChatParticipant participant;
-                    if (!sortedUsers.isEmpty()) {
-                        participant = visibleChatParticipants.get(sortedUsers.get(position - membersStartRow));
-                    } else {
-                        participant = visibleChatParticipants.get(position - membersStartRow);
-                    }
-                    return onMemberClick(participant, true, view);
-                } else if (position == birthdayRow) {
-                    if (editRow(view, position)) return true;
-                    if (userInfo == null) return false;
-                    try {
-                        AndroidUtilities.addToClipboard(UserInfoActivity.birthdayString(userInfo.birthday));
-                        BulletinFactory.of(ProfileActivity.this).createCopyBulletin(LocaleController.getString(R.string.BirthdayCopied)).show();
-                    } catch (Exception e) {
-                        FileLog.e(e);
-                    }
-                    return true;
-                } else {
-                    if (editRow(view, position)) return true;
-                    return processOnClickOrPress(position, view, view.getWidth() / 2f, (int) (view.getHeight() * .75f));
-                }
-            }
-        });
-
+        // T39: the version-row long-press DebugMenu easter egg is removed with
+        // the Debug section — the settings screen carries no debug surface.
         if (openSimilar) {
             updateRowsIds();
             scrollToSharedMedia();
@@ -8463,12 +8094,6 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         stickersRow = -1;
         devicesRow = -1;
         devicesSectionRow = -1;
-        helpSectionCell = -1;
-        debugHeaderRow = -1;
-        sendLogsRow = -1;
-        sendLastLogsRow = -1;
-        clearLogsRow = -1;
-        switchBackendRow = -1;
         versionRow = -1;
 
         sendMessageRow = -1;
@@ -8594,18 +8219,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 if (starsRow >= 0) {
                     premiumSectionsRow = rowCount++;
                 }
-                if (BuildVars.LOGS_ENABLED || BuildVars.DEBUG_PRIVATE_VERSION) {
-                    helpSectionCell = rowCount++;
-                    debugHeaderRow = rowCount++;
-                }
-                if (BuildVars.LOGS_ENABLED) {
-                    sendLogsRow = rowCount++;
-                    sendLastLogsRow = rowCount++;
-                    clearLogsRow = rowCount++;
-                }
-                if (BuildVars.DEBUG_VERSION) {
-                    switchBackendRow = rowCount++;
-                }
+                // T39: the Debug section (send/last/clear logs, Switch Backend)
+                // is removed from the settings screen — a REST-only product
+                // ships no MTProto debug surface; logs stay reachable via
+                // adb bugreport only.
                 versionRow = rowCount++;
             } else {
                 String username = UserObject.getPublicUsername(user);
@@ -10802,8 +10419,6 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                         headerCell.setText(LocaleController.getString("SETTINGS", R.string.SETTINGS));
                     } else if (position == numberSectionRow) {
                         headerCell.setText(LocaleController.getString("Account", R.string.Account));
-                    } else if (position == debugHeaderRow) {
-                        headerCell.setText(LocaleController.getString("SettingsDebug", R.string.SettingsDebug));
                     }
                     headerCell.setTextColor(applyPeerColor(getThemedColor(Theme.key_windowBackgroundWhiteBlueHeader), false));
                     break;
@@ -11103,14 +10718,6 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                         textCell.setTextAndIcon(LocaleController.getString(R.string.StickersName), R.drawable.msg2_sticker, true);
                     } else if (position == liteModeRow) {
                         textCell.setTextAndIcon(LocaleController.getString(R.string.PowerUsage), R.drawable.msg2_battery, true);
-                    } else if (position == sendLogsRow) {
-                        textCell.setText(LocaleController.getString("DebugSendLogs", R.string.DebugSendLogs), true);
-                    } else if (position == sendLastLogsRow) {
-                        textCell.setText(LocaleController.getString("DebugSendLastLogs", R.string.DebugSendLastLogs), true);
-                    } else if (position == clearLogsRow) {
-                        textCell.setText(LocaleController.getString("DebugClearLogs", R.string.DebugClearLogs), switchBackendRow != -1);
-                    } else if (position == switchBackendRow) {
-                        textCell.setText("Switch Backend", false);
                     } else if (position == devicesRow) {
                         textCell.setTextAndIcon(LocaleController.getString("Devices", R.string.Devices), R.drawable.msg2_devices, true);
                     } else if (position == setAvatarRow) {
@@ -11404,8 +11011,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                         position == languageRow || position == setUsernameRow || position == bioRow ||
                         position == versionRow || position == dataRow || position == chatRow ||
                         position == devicesRow || position == filtersRow || position == stickersRow ||
-                        position == sendLogsRow || position == sendLastLogsRow ||
-                        position == clearLogsRow || position == switchBackendRow || position == setAvatarRow ||
+                        position == setAvatarRow ||
                         position == addToGroupButtonRow || position == liteModeRow || position == birthdayRow || position == channelRow ||
                         position == starsRow;
             }
@@ -11433,7 +11039,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
         @Override
         public int getItemViewType(int position) {
             if (position == infoHeaderRow || position == membersHeaderRow || position == settingsSectionRow2 ||
-                    position == numberSectionRow || position == debugHeaderRow) {
+                    position == numberSectionRow) {
                 return VIEW_TYPE_HEADER;
             } else if (position == phoneRow || position == locationRow || position == numberRow || position == birthdayRow) {
                 return VIEW_TYPE_TEXT_DETAIL;
@@ -11447,8 +11053,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     position == sendMessageRow || position == notificationRow || position == privacyRow ||
                     position == languageRow || position == dataRow || position == chatRow ||
                     position == devicesRow || position == filtersRow || position == stickersRow ||
-                    position == sendLogsRow || position == sendLastLogsRow ||
-                    position == clearLogsRow || position == switchBackendRow || position == setAvatarRow || position == addToGroupButtonRow ||
+                    position == setAvatarRow || position == addToGroupButtonRow ||
                     position == addToContactsRow || position == liteModeRow) {
                 return VIEW_TYPE_TEXT;
             } else if (position == notificationsDividerRow) {
@@ -11459,7 +11064,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 return VIEW_TYPE_NOTIFICATIONS_CHECK_SIMPLE;
             } else if (position == infoSectionRow || position == lastSectionRow || position == membersSectionRow ||
                     position == secretSettingsSectionRow || position == settingsSectionRow || position == devicesSectionRow ||
-                    position == helpSectionCell || position == setAvatarSectionRow || position == passwordSuggestionSectionRow ||
+                    position == setAvatarSectionRow || position == passwordSuggestionSectionRow ||
                     position == phoneSuggestionSectionRow || position == premiumSectionsRow || position == reportDividerRow ||
                     position == channelDividerRow || position == graceSuggestionSectionRow
             ) {
@@ -12736,12 +12341,6 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             put(++pointer, stickersRow, sparseIntArray);
             put(++pointer, devicesRow, sparseIntArray);
             put(++pointer, devicesSectionRow, sparseIntArray);
-            put(++pointer, helpSectionCell, sparseIntArray);
-            put(++pointer, debugHeaderRow, sparseIntArray);
-            put(++pointer, sendLogsRow, sparseIntArray);
-            put(++pointer, sendLastLogsRow, sparseIntArray);
-            put(++pointer, clearLogsRow, sparseIntArray);
-            put(++pointer, switchBackendRow, sparseIntArray);
             put(++pointer, versionRow, sparseIntArray);
             put(++pointer, emptyRow, sparseIntArray);
             put(++pointer, bottomPaddingRow, sparseIntArray);

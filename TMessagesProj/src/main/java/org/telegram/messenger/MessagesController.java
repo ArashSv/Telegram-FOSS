@@ -1382,7 +1382,13 @@ public class MessagesController extends BaseController implements NotificationCe
         maxRecentGifsCount = mainPreferences.getInt("maxRecentGifsCount", 200);
         maxRecentStickersCount = mainPreferences.getInt("maxRecentStickersCount", 30);
         maxFaveStickersCount = mainPreferences.getInt("maxFaveStickersCount", 5);
-        maxEditTime = mainPreferences.getInt("maxEditTime", 3600);
+        // T39: 48h — Telegram's real edit window for private/basic chats. The
+        // 3600 default was an upstream fallback for the config-driven value
+        // (edit_time_limit); the REST model has no TL_config route, so the
+        // fallback silently capped editing at 1 hour. The backend edit
+        // endpoint enforces ownership only, so the client window is the
+        // product rule.
+        maxEditTime = mainPreferences.getInt("maxEditTime", 172800);
         ratingDecay = mainPreferences.getInt("ratingDecay", 2419200);
         linkPrefix = mainPreferences.getString("linkPrefix", "t.me");
         callReceiveTimeout = mainPreferences.getInt("callReceiveTimeout", 20000);

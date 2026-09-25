@@ -222,6 +222,12 @@ public final class RestDispatcher {
                 case RestRouter.ROUTE_EDIT_MESSAGE:
                     response = handleEditMessage(account, (TLRPC.TL_messages_editMessage) object);
                     break;
+                case RestRouter.ROUTE_EDIT_DATA:
+                    response = handleEditData();
+                    break;
+                case RestRouter.ROUTE_DELETE_HISTORY:
+                    response = handleDeleteHistory(account, (TLRPC.TL_messages_deleteHistory) object);
+                    break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
                     break;
@@ -1452,7 +1458,18 @@ public final class RestDispatcher {
                 result.imported.add(imported);
             }
             for (int i = 0; i < usersJson.length(); i++) {
-                result.users.add(TlJsonMapper.parseUser(usersJson.getJSONObject(i), false));
+                TLRPC.TL_user savedUser = TlJsonMapper.parseUser(usersJson.getJSONObject(i), false);
+                // T39: a deliberate save that returned a resolved user IS a
+                // contact relationship (the backend row was just upserted) —
+                // the flag is authoritative even if the wire json lost it to a
+                // type coercion. Without it the profile opens on the
+                // "Add to Contacts" affordance and the list never binds the
+                // contact locally (addContact gates on u.contact).
+                if (!savedUser.contact) {
+                    savedUser.contact = true;
+                    savedUser.flags |= 2048;
+                }
+                result.users.add(savedUser);
             }
             return result;
         } catch (XoApiException e) {
@@ -1535,6 +1552,50 @@ public final class RestDispatcher {
     }
 
     /**
+     * T39: TL_messages_getMessageEditData — the edit-ENTRY pre-check
+     * (ChatActivity.startEditingMessageObject ~:30108 sends it right after
+     * putting the message text into the input). The consumer's only branch on
+     * the result is {@code response == null} → EditMessageError AlertDialog +
+     * exit edit mode; a non-null answer simply lets edit mode stand. Edit
+     * permission is already enforced locally by MessageObject.canEditMessage
+     * (own message, editable media class, edit window), so the REST model
+     * answers the schema class directly: caption = false (text editing — for
+     * media messages the caption IS the content column in this product, and
+     * the send path (ROUTE_EDIT_MESSAGE) treats it identically).
+     */
+    private static TLObject handleEditData() {
+        return new TLRPC.TL_messages_messageEditData();
+    }
+
+    /**
+     * T39: TL_messages_deleteHistory — real dialog deletion ("delete chat"
+     * and "clear history" both funnel here through MessagesController
+     * deleteDialog ~:8783). The consumer (deleteDialog callback ~:8795) HARD
+     * casts to TL_messages_affectedHistory: offset must stay 0 (a positive
+     * offset re-loops deleteDialog), pts/pts_count stay 0 (pinned baseline,
+     * same rule as every other fabricated response). Backend contract:
+     * POST /chats/delete-dialog.php upserts the caller's hidden_dialogs row
+     * — just_clear=true keeps the (now empty) dialog listed, just_clear=false
+     * removes it from chats/list until a newer message arrives; history
+     * never replays past hidden_before. req.revoke ("delete for both") has
+     * no REST backing in v1 — the peer keeps their copy (documented in
+     * API.md §6); the local delete already ran before this request.
+     */
+    private static TLObject handleDeleteHistory(int account, TLRPC.TL_messages_deleteHistory req) {
+        PeerRef peer = resolvePeer(account, req.peer);
+        if (peer == null) {
+            throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable peer for delete-history");
+        }
+        long chatId = requireChatId(account, peer);
+        RestGateway.getInstance(account).deleteDialog(chatId, req.just_clear);
+        TLRPC.TL_messages_affectedHistory res = new TLRPC.TL_messages_affectedHistory();
+        res.offset = 0;
+        res.pts = 0;
+        res.pts_count = 0;
+        return res;
+    }
+
+    /**
      * TL_contacts_addContact — "Add to contacts" from a profile
      * (ContactAddActivity → ContactsController.addContact:2351, HARD cast to
      * TL_updates; the consumer reads res.users). The saved (viewer-ruled)
@@ -1560,7 +1621,15 @@ public final class RestDispatcher {
             updates.date = nowSeconds();
             JSONObject userJson = answer.optJSONObject("user");
             if (userJson != null) {
-                updates.users.add(TlJsonMapper.parseUser(userJson, false));
+                TLRPC.TL_user savedUser = TlJsonMapper.parseUser(userJson, false);
+                // T39: same rule as the import path — a 200 save response with
+                // a resolved user means the contact row exists; the flag is
+                // authoritative and drives addContact's local dict insert.
+                if (!savedUser.contact) {
+                    savedUser.contact = true;
+                    savedUser.flags |= 2048;
+                }
+                updates.users.add(savedUser);
             }
             return updates;
         } catch (XoApiException e) {

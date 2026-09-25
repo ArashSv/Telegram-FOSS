@@ -254,6 +254,24 @@ public final class RestGateway {
         return authenticatedRequest("POST", "messages/delete.php", body);
     }
 
+    /**
+     * POST /chats/delete-dialog.php (T39, backend v2.1.0) — per-user dialog
+     * deletion. just_clear=false = "delete chat" (excluded from chats/list
+     * until a newer message arrives); just_clear=true = "clear history" (the
+     * dialog stays listed but empty). messages/history.php clips everything
+     * at hidden_before for this user. Response {ok, chat_id, just_clear,
+     * hidden_before}.
+     */
+    public JSONObject deleteDialog(long chatId, boolean justClear) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        try {
+            body.put("just_clear", justClear);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for just_clear", e);
+        }
+        return authenticatedRequest("POST", "chats/delete-dialog.php", body);
+    }
+
     /** GET /users/get.php?ids=1,2,3 — hydration only, no search in v1. */
     public JSONArray usersGet(long[] userIds) {
         if (userIds == null || userIds.length == 0) {

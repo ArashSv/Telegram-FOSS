@@ -2474,6 +2474,48 @@ public class ContactsController extends BaseController {
         }, ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagCanCompress);
     }
 
+    /**
+     * T39 — local contact-state maintenance for a DELIBERATE save (the
+     * New-contact sheet path). The upstream flow answered this with a server
+     * push (TL_updates → applyContactsUpdates) and a full contacts reload;
+     * the REST model's sheet response only carries the saved user, and the
+     * reported bug was exactly the missing maintenance: the contact never
+     * entered contacts/contactsDict (list invisible), no sections rebuild ran,
+     * nothing was persisted (invisible again after restart — the 24h gate
+     * suppresses the next server reload), and the profile kept the
+     * "Add to Contacts" affordance (contactsDict.get() == null → menu
+     * add_contact branch). Mirrors addContact's local tail: dict insert +
+     * sections + storage (contacts rows + the contact-flagged user) +
+     * contactsDidLoad. Never accepts the SELF user (the T38 invariant).
+     * MUST be called from the UI thread (the sheet's response callback is).
+     */
+    public void onDeliberateContactSaved(TLRPC.User user) {
+        if (user == null || user.id == getUserConfig().clientUserId) {
+            return;
+        }
+        if (!user.contact) {
+            user.contact = true;
+            user.flags |= 2048;
+        }
+        getMessagesController().putUser(user, false);
+        if (contactsDict.get(user.id) == null) {
+            TLRPC.TL_contact newContact = new TLRPC.TL_contact();
+            newContact.user_id = user.id;
+            contacts.add(newContact);
+            contactsDict.put(newContact.user_id, newContact);
+        }
+        buildContactsSectionsArrays(true);
+        ArrayList<TLRPC.TL_contact> arrayList = new ArrayList<>();
+        TLRPC.TL_contact stored = contactsDict.get(user.id);
+        arrayList.add(stored);
+        getMessagesStorage().putContacts(arrayList, false);
+        ArrayList<TLRPC.User> users = new ArrayList<>();
+        users.add(user);
+        getMessagesStorage().putUsersAndChats(users, null, false, true);
+        getNotificationCenter().postNotificationName(NotificationCenter.updateInterfaces, MessagesController.UPDATE_MASK_NAME);
+        getNotificationCenter().postNotificationName(NotificationCenter.contactsDidLoad);
+    }
+
     public void deleteContactsUndoable(Context context, BaseFragment fragment, final ArrayList<TLRPC.User> users) {
         if (users == null || users.isEmpty()) {
             return;
