@@ -220,6 +220,18 @@ public final class RestGateway {
         return authenticatedRequest("POST", "messages/send.php", body);
     }
 
+    /**
+     * POST /messages/edit.php {message_id, content} — text & caption edits
+     * (T38/13). The backend validates ownership + membership server-side,
+     * persists content + edited_at, pushes message_edit to the other
+     * members, and answers {message: fresh json}.
+     */
+    public JSONObject messagesEdit(long chatId, int messageId, String content) {
+        JSONObject body = putNumber(new JSONObject(), "message_id", messageId);
+        put(body, "content", content);
+        return authenticatedRequest("POST", "messages/edit.php", body);
+    }
+
     /** POST /messages/read.php — idempotent on the server (only advances). */
     public JSONObject read(long chatId, int maxId) {
         JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);

@@ -10,6 +10,7 @@ import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.UserConfig;
+import org.telegram.messenger.UserObject;
 import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayList;
@@ -48,6 +49,104 @@ import java.util.ArrayList;
 public final class XoSelf {
 
     private XoSelf() {
+    }
+
+    /**
+     * T38: re-entrancy latch for {@link #mergeIncoming}. MessagesController.putUser
+     * routes degraded self payloads into this funnel; the funnel re-enters
+     * putUser when it applies the merged user. The latch makes the guard
+     * recursion-proof (the merged user is applied once, unguarded).
+     */
+    private static final ThreadLocal<Boolean> MERGING = ThreadLocal.withInitial(() -> Boolean.FALSE);
+
+    /** True while a mergeIncoming apply is in flight on this thread. */
+    public static boolean isMerging() {
+        return MERGING.get();
+    }
+
+    /**
+     * T38: a self user that arrived from a generic response vector (contacts
+     * list/import, member snapshots, hydration batches — anything that is not
+     * the XoSelf funnel) is DEGRADED when it either lost the self flag (a
+     * public-shaped self payload) or carries no phone. Applying it wholesale
+     * used to wipe the current user's number: profile "Unknown", drawer
+     * "@username" — until the next XoSelf.ensureFresh heal (first poll per
+     * process) restored it, which is exactly the reported "temporary" state.
+     * Our backend never removes a phone, so a phone-less self payload is
+     * always "no information", never "number removed".
+     */
+    public static boolean isDegradedSelfUser(TLRPC.User user, long selfId) {
+        if (user == null || user.id != selfId) {
+            return false;
+        }
+        if (!UserObject.isUserSelf(user)) {
+            return true;
+        }
+        return user.phone == null || user.phone.length() == 0;
+    }
+
+    /**
+     * T38: merge an ALREADY-PARSED, degraded self user into the current self
+     * user and apply it — the parsed counterpart of {@link #mergeApply}.
+     * Key-presence is not recoverable from a parsed object, but the backend
+     * contract makes it unnecessary: a public self json always carries
+     * display_name / username / photo and NEVER a phone, so name, username,
+     * photo and status are authoritative from the payload while the phone
+     * can only be KEPT (never cleared) here. Returns the merged user so the
+     * caller can finish its own bookkeeping with the merged instance, or
+     * null when the merge could not be built.
+     */
+    public static TLRPC.TL_user mergeIncoming(int account, TLRPC.TL_user incoming) {
+        try {
+            TLRPC.User current = UserConfig.getInstance(account).getCurrentUser();
+            TLRPC.TL_user merged = new TLRPC.TL_user();
+            merged.id = incoming.id;
+            if (current != null && current.id == merged.id) {
+                // carry over state the REST contract does not model
+                merged.premium = current.premium;
+                merged.bot = current.bot;
+                merged.verified = current.verified;
+                merged.contact = current.contact;
+                merged.mutual_contact = current.mutual_contact;
+                merged.min = current.min;
+                merged.usernames = current.usernames;
+                merged.emoji_status = current.emoji_status;
+                if (incomingStatusIsPlaceholder(current, incoming)) {
+                    merged.status = current.status;
+                } else {
+                    merged.status = incoming.status;
+                }
+            } else {
+                merged.status = incoming.status;
+            }
+            // authoritative from the payload (a degraded vector still names
+            // the user — display_name is always present in the backend json)
+            merged.first_name = incoming.first_name;
+            merged.last_name = incoming.last_name;
+            merged.username = incoming.username;
+            merged.photo = incoming.photo;
+            // the phone can only be KEPT, never cleared, through this path
+            if (current != null && current.id == merged.id && current.phone != null && current.phone.length() > 0) {
+                merged.phone = current.phone;
+            } else {
+                merged.phone = incoming.phone != null && incoming.phone.length() > 0 && !"null".equals(incoming.phone)
+                        ? incoming.phone : null;
+            }
+            merged.self = true;
+            merged.access_hash = incoming.access_hash != 0 ? incoming.access_hash : 1;
+            rebuildFlags(merged);
+            boolean wasMerging = MERGING.get();
+            MERGING.set(Boolean.TRUE);
+            try {
+                apply(account, merged);
+            } finally {
+                MERGING.set(wasMerging);
+            }
+            return merged;
+        } catch (Exception e) {
+            FileLog.e("XoSelf: mergeIncoming failed", e);
+            return null;
+        }
     }
 
     /**
@@ -177,26 +276,35 @@ public final class XoSelf {
         // --- self flag + coherent serialization flags -----------------------
         merged.self = true;
         merged.access_hash = incoming.access_hash != 0 ? incoming.access_hash : 1;
-        merged.flags = 1 | 1024; // access_hash + self
-        if (merged.first_name != null && merged.first_name.length() > 0) {
-            merged.flags |= 2;
-        }
-        if (merged.last_name != null && merged.last_name.length() > 0) {
-            merged.flags |= 4;
-        }
-        if (merged.username != null && merged.username.length() > 0) {
-            merged.flags |= 8;
-        }
-        if (merged.phone != null && merged.phone.length() > 0) {
-            merged.flags |= 16;
-        }
-        if (merged.photo != null) {
-            merged.flags |= 32;
-        }
-        if (merged.status != null) {
-            merged.flags |= 64; // status present
-        }
+        rebuildFlags(merged);
         return merged;
+    }
+
+    /**
+     * Rebuild a TL_user's serialization flags coherently from the fields
+     * actually set, so the MessagesStorage round-trip preserves exactly what
+     * we hold. Shared by {@link #buildMerged} and {@link #mergeIncoming}.
+     */
+    private static void rebuildFlags(TLRPC.TL_user user) {
+        user.flags = 1 | 1024; // access_hash + self
+        if (user.first_name != null && user.first_name.length() > 0) {
+            user.flags |= 2;
+        }
+        if (user.last_name != null && user.last_name.length() > 0) {
+            user.flags |= 4;
+        }
+        if (user.username != null && user.username.length() > 0) {
+            user.flags |= 8;
+        }
+        if (user.phone != null && user.phone.length() > 0) {
+            user.flags |= 16;
+        }
+        if (user.photo != null) {
+            user.flags |= 32;
+        }
+        if (user.status != null) {
+            user.flags |= 64; // status present
+        }
     }
 
     /** display_name key present and usable (backend always sends it non-empty). */
@@ -299,6 +407,18 @@ public final class XoSelf {
                 }
                 fired.put(account, true);
                 return true;
+            }
+        }
+
+        /**
+         * T38: re-arm the one-shot heal for an account slot. UpdatePoller
+         * calls this when a DIFFERENT user lands in the slot (re-login), so
+         * a fresh session's degraded self user is repaired even though the
+         * process already ran the heal once for the previous session.
+         */
+        public static void reset(int account) {
+            synchronized (fired) {
+                fired.delete(account);
             }
         }
     }

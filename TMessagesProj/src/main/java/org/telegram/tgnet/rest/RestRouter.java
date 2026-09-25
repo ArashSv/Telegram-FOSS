@@ -126,6 +126,7 @@ public final class RestRouter {
     public static final int ROUTE_CONTACTS_IMPORT = 29;   // TL_contacts_importContacts -> POST /contacts/save.php (phone path)
     public static final int ROUTE_CONTACTS_ADD = 30;      // TL_contacts_addContact -> POST /contacts/save.php (user_id path)
     public static final int ROUTE_CONTACTS_DELETE = 31;   // TL_contacts_deleteContacts -> POST /contacts/delete.php
+    public static final int ROUTE_EDIT_MESSAGE = 32;      // TL_messages_editMessage -> POST /messages/edit.php (text + captions)
 
     // constructor ints (TLRPC.java, this tree): TL_upload_getFile = 0xbe5335be,
     // TL_upload_saveFilePart = 0xb304a621, TL_upload_saveBigFilePart = 0xde7b673d,
@@ -169,6 +170,9 @@ public final class RestRouter {
         ROUTES.put(TLRPC.TL_contacts_importContacts.class, ROUTE_CONTACTS_IMPORT);
         ROUTES.put(TLRPC.TL_contacts_addContact.class, ROUTE_CONTACTS_ADD);
         ROUTES.put(TLRPC.TL_contacts_deleteContacts.class, ROUTE_CONTACTS_DELETE);
+        // T38/13 — message & caption editing (the "Can't edit this message" class:
+        // the request class existed, the route did not — default-deny killed it)
+        ROUTES.put(TLRPC.TL_messages_editMessage.class, ROUTE_EDIT_MESSAGE);
     }
 
     private RestRouter() {

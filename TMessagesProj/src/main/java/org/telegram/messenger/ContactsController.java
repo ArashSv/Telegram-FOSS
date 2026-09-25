@@ -1553,6 +1553,19 @@ public class ContactsController extends BaseController {
 
             final boolean isEmpty = contactsArr.isEmpty();
 
+            // T38: the viewer's own user must never sit in the local contacts
+            // array. A self-contact row (own number imported) used to put SELF
+            // into the contacts/search surfaces and re-degrade the self user
+            // through putUsers on every contacts reload. The backend refuses
+            // to emit such rows since v2.0; this filter also cleans any local
+            // residue from older sessions.
+            for (int a = 0; a < contactsArr.size(); a++) {
+                if (contactsArr.get(a).user_id == getUserConfig().getClientUserId()) {
+                    contactsArr.remove(a);
+                    a--;
+                }
+            }
+
             if (from == 2 && !contacts.isEmpty()) {
                 for (int a = 0; a < contactsArr.size(); a++) {
                     TLRPC.TL_contact contact = contactsArr.get(a);

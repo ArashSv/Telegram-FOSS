@@ -115,6 +115,11 @@ public final class UpdatePoller {
             if (startedForUser != 0 && startedForUser != selfId) {
                 // different user in the same account slot: replay own history
                 store.setSyncCursor(0);
+                // T38: re-arm the one-shot self-heal — the fresh session's
+                // self user (or its degraded residue in UserConfig) must be
+                // verified/repaired even though this process already healed
+                // the PREVIOUS session's user.
+                XoSelf.Once.reset(account);
             }
             startedForUser = selfId;
             started = true;
@@ -206,8 +211,10 @@ public final class UpdatePoller {
                     handleDelete(update, tlUpdates);
                     break;
                 case "message_edit":
-                    // v1 client gap (edit propagation) — logged, not applied
-                    FileLog.d("UpdatePoller: message_edit deferred (T7 hardening)");
+                    // T38/13: edits propagate to the OTHER devices here (the
+                    // editing device applies its own response update). The
+                    // sync endpoint materializes the full message json.
+                    handleEdit(update.optJSONObject("message"), tlUpdates, parsedMessages, chatsArr);
                     break;
                 case "read":
                     handleRead(update, pendingReads);
@@ -246,11 +253,24 @@ public final class UpdatePoller {
             return;
         }
         long selfId = UserConfig.getInstance(account).clientUserId;
+        RestChatIndex index = RestChatIndex.getInstance(account);
         if (msgJson.optLong("sender_id", 0) == selfId) {
-            return; // own send — the send path already applied it
+            // T38/15: Saved-Messages self-chat — the owner's OTHER devices
+            // learn saved messages only through this push. The device that
+            // SENT it already holds it (the index remembered it at send
+            // time), so a session-local lookup dedups the double-apply.
+            long chatId = msgJson.optLong("chat_id", 0);
+            boolean selfChat = index.isKnownChat(chatId) && index.userForPrivateChat(chatId) == selfId;
+            if (!selfChat) {
+                return; // own send on a normal chat — the send path already applied it
+            }
+            ArrayList<Integer> probe = new ArrayList<>();
+            probe.add((int) msgJson.optLong("id", 0));
+            if (index.chatIdForAnyMessage(probe) == chatId) {
+                return; // this device already applied its own send
+            }
         }
         long chatId = msgJson.optLong("chat_id", 0);
-        RestChatIndex index = RestChatIndex.getInstance(account);
         if (!index.isKnownChat(chatId) && !rebuildChatIndex()) {
             FileLog.e("UpdatePoller: message for unknown chat " + chatId + " dropped (no chat list answer)");
             return;
@@ -283,6 +303,52 @@ public final class UpdatePoller {
             parsedMessages.add(message);
         } catch (Exception e) {
             FileLog.e("UpdatePoller: malformed message_new", e);
+        }
+    }
+
+    /**
+     * T38/13: a remote edit — re-parse the fresh message exactly like a new
+     * one (the json is the same MessageMapper::json shape) and emit
+     * TL_updateEditMessage, which processUpdateArray applies over the cached
+     * MessageObject (text, caption, edit_date → the "(edited)" marker).
+     */
+    private void handleEdit(JSONObject msgJson, ArrayList<TLRPC.Update> tlUpdates,
+                            ArrayList<TLRPC.TL_message> parsedMessages, ArrayList<TLRPC.Chat> chatsArr) {
+        if (msgJson == null) {
+            return;
+        }
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        long chatId = msgJson.optLong("chat_id", 0);
+        RestChatIndex index = RestChatIndex.getInstance(account);
+        if (!index.isKnownChat(chatId)) {
+            return; // the edit concerns a chat this device never opened; history will load it fresh
+        }
+        boolean isGroup = index.isGroup(chatId);
+        long peerUserId = 0;
+        if (isGroup) {
+            TLRPC.TL_chat chat = index.groupChat(chatId);
+            if (chat == null) {
+                return;
+            }
+            chatsArr.add(chat);
+        } else {
+            peerUserId = index.userForPrivateChat(chatId);
+            if (peerUserId == 0) {
+                return;
+            }
+        }
+        try {
+            long dialogId = isGroup ? -chatId : peerUserId;
+            TLRPC.TL_message message = TlJsonMapper.parseMessage(msgJson, dialogId, isGroup, peerUserId, selfId);
+            index.rememberMessages(chatId, java.util.Collections.singletonList(message));
+            TLRPC.TL_updateEditMessage update = new TLRPC.TL_updateEditMessage();
+            update.message = message;
+            update.pts = 0;
+            update.pts_count = 0;
+            tlUpdates.add(update);
+            parsedMessages.add(message);
+        } catch (Exception e) {
+            FileLog.e("UpdatePoller: malformed message_edit", e);
         }
     }
 

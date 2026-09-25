@@ -750,10 +750,21 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
 
         if (!TextUtils.isEmpty(initialPhoneNumber)) {
             TLRPC.User user = UserConfig.getInstance(currentAccount).getCurrentUser();
+            // T38: a COMPLETE number must land in the phone field, not in the
+            // country-code field. The old pre-fill put "+98912…" (and the
+            // search rows' "+"-stripped complete numbers) wholesale into
+            // codeField, leaving phoneField empty — doOnDone then shook the
+            // form and the same input behaved differently depending on which
+            // entry point (and on whether the self user's phone was intact,
+            // since the fallback branch derives the country code from it).
+            // doOnDone's T37 fullInternational flow owns "+…" in phoneField.
             if (initialPhoneNumber.startsWith("+")) {
-                codeField.setText(initialPhoneNumber.substring(1));
-            } else if (initialPhoneNumberWithCountryCode || user == null || TextUtils.isEmpty(user.phone)) {
-                codeField.setText(initialPhoneNumber);
+                phoneField.setText(initialPhoneNumber);
+            } else if (initialPhoneNumberWithCountryCode) {
+                // search rows: PhoneFormat.stripExceptNumbers stripped the "+"
+                phoneField.setText("+" + initialPhoneNumber);
+            } else if (user == null || TextUtils.isEmpty(user.phone)) {
+                phoneField.setText("+" + initialPhoneNumber);
             } else {
                 boolean foundCountry = false;
                 String phone = user.phone;
