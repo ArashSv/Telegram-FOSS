@@ -82,6 +82,13 @@ import java.util.HashMap;
  *   <li>ROUTE_CONTACTS_DELETE → TL_updates (empty); consumer
  *       ContactsController.deleteContact (~:505 HARD cast to Updates,
  *       processUpdates only) (T35).</li>
+ *   <li>ROUTE_EDIT_DATA → TL_messages_messageEditData{caption=false}; consumer
+ *       ChatActivity.startEditingMessageObject (~:30108, response == null →
+ *       EditMessageError dialog + edit-mode exit) — a non-null answer of this
+ *       class is all the consumer requires (T39).</li>
+ *   <li>ROUTE_DELETE_HISTORY → TL_messages_affectedHistory; consumer
+ *       MessagesController.deleteDialog callback (~:8795 HARD cast; offset=0
+ *       stops the re-loop, pts=0 stays at the pinned baseline) (T39).</li>
  * </ul>
  */
 public final class RestRouter {
@@ -128,6 +135,10 @@ public final class RestRouter {
     public static final int ROUTE_CONTACTS_DELETE = 31;   // TL_contacts_deleteContacts -> POST /contacts/delete.php
     public static final int ROUTE_EDIT_MESSAGE = 32;      // TL_messages_editMessage -> POST /messages/edit.php (text + captions)
 
+    // T39 — edit pre-check + real dialog deletion (backend v2.1.0)
+    public static final int ROUTE_EDIT_DATA = 33;         // TL_messages_getMessageEditData -> LOCAL stub (edit permission already gates client-side)
+    public static final int ROUTE_DELETE_HISTORY = 34;    // TL_messages_deleteHistory -> POST /chats/delete-dialog.php (hidden_dialogs, for-me)
+
     // constructor ints (TLRPC.java, this tree): TL_upload_getFile = 0xbe5335be,
     // TL_upload_saveFilePart = 0xb304a621, TL_upload_saveBigFilePart = 0xde7b673d,
     // TL_messages_sendMedia = 0x7852834e
@@ -173,6 +184,21 @@ public final class RestRouter {
         // T38/13 — message & caption editing (the "Can't edit this message" class:
         // the request class existed, the route did not — default-deny killed it)
         ROUTES.put(TLRPC.TL_messages_editMessage.class, ROUTE_EDIT_MESSAGE);
+        // T39 — edit ENTRY pre-check: ChatActivity.startEditingMessageObject sends
+        // TL_messages_getMessageEditData right after putting the text into the
+        // input; default-deny answered XO_NOT_ROUTED within milliseconds and the
+        // consumer (ChatActivity ~:30113, response == null branch) popped the
+        // EditMessageError AlertDialog and exited edit mode — the "text flashes
+        // into the input, then the old dialog" report. The edit-permission model
+        // already gates locally (MessageObject.canEditMessage), so the answer is
+        // a local stub: TL_messages_messageEditData{caption = false}.
+        ROUTES.put(TLRPC.TL_messages_getMessageEditData.class, ROUTE_EDIT_DATA);
+        // T39 — real dialog deletion: every "delete chat"/"clear history" sends
+        // TL_messages_deleteHistory (MessagesController.deleteDialog ~:8783);
+        // default-deny meant the backend NEVER learned about the deletion and
+        // chats/list.php resurrected the dialog on the next load (the reported
+        // "deleted chat comes back"). Routed to the new hidden_dialogs contract.
+        ROUTES.put(TLRPC.TL_messages_deleteHistory.class, ROUTE_DELETE_HISTORY);
     }
 
     private RestRouter() {

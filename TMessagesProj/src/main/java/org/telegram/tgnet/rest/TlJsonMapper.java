@@ -95,7 +95,14 @@ public final class TlJsonMapper {
             }
         }
         Object contactFlag = object.opt("contact");
-        if (contactFlag instanceof Boolean && (Boolean) contactFlag) {
+        // T39: accept every truthy wire form of the contact flag. The backend
+        // contract is a strict JSON boolean, but org.json drops the flag
+        // silently for any other shape (1, "1", "true") and the profile then
+        // renders the "Add to Contacts" affordance for an existing contact.
+        boolean contactFlagValue = (contactFlag instanceof Boolean && (Boolean) contactFlag)
+                || (contactFlag instanceof Number && ((Number) contactFlag).intValue() == 1)
+                || (contactFlag instanceof String && ("1".equals(contactFlag) || "true".equalsIgnoreCase((String) contactFlag)));
+        if (contactFlagValue) {
             user.contact = true;
             user.flags |= 2048;
         }

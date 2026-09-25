@@ -35,6 +35,7 @@ import org.telegram.PhoneFormat.PhoneFormat;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.Emoji;
+import org.telegram.messenger.ContactsController;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.LocaleController;
 import org.telegram.messenger.MessagesController;
@@ -681,6 +682,13 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
                 if (res != null) {
                     if (!res.users.isEmpty()) {
                         MessagesController.getInstance(currentAccount).putUsers(res.users, false);
+                        // T39: the deliberate save MUST maintain the local
+                        // contact state — the sheet response is the ONLY
+                        // carrier (no server push, no reload trigger), and
+                        // without this the contact never enters the list /
+                        // sections / storage and the profile keeps the
+                        // "Add to Contacts" affordance (the reported bug).
+                        ContactsController.getInstance(currentAccount).onDeliberateContactSaved(res.users.get(0));
                         MessagesController.openChatOrProfileWith(res.users.get(0), null, parentFragment, 1, false);
                         dismiss();
                     } else {
