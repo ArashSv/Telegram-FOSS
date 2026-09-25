@@ -501,6 +501,17 @@ public final class RestGateway {
         return authenticatedRequest("POST", "chats/set-photo.php", body);
     }
 
+    /** POST /chats/set-photo.php {chat_id, remove:true} — clear the group avatar (v1.8). */
+    public JSONObject clearChatPhoto(long chatId) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        try {
+            body.put("remove", true);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for remove", e);
+        }
+        return authenticatedRequest("POST", "chats/set-photo.php", body);
+    }
+
     /** POST /users/set-photo.php {file_id} — own avatar from an uploaded image. */
     public JSONObject setUserPhoto(long fileId) {
         JSONObject body = putNumber(new JSONObject(), "file_id", fileId);
@@ -547,6 +558,88 @@ public final class RestGateway {
             put(body, "bio", bio);
         }
         return authenticatedRequest("POST", "users/edit.php", body);
+    }
+
+    // ------------------------------------------------------------------ T35: group full info + group about + contacts
+
+    /**
+     * GET /chats/members.php?chat_id=… — group members + roles + the viewer's
+     * chat payload (v1.8): one call feeds the TL_messages_chatFull contract
+     * (members, about, chat surfaces).
+     */
+    public JSONObject chatMembers(long chatId) {
+        return authenticatedRequest("GET", "chats/members.php?chat_id=" + chatId, null);
+    }
+
+    /**
+     * POST /chats/edit.php {chat_id, about} — group description (v1.8).
+     * Separate from editChatTitle so "at least one of" holds per request;
+     * empty string clears the about on the backend.
+     */
+    public JSONObject editChatAbout(long chatId, String about) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        put(body, "about", about);
+        return authenticatedRequest("POST", "chats/edit.php", body);
+    }
+
+    /**
+     * GET /contacts/list.php — the caller's registered contacts. Answers the
+     * {ok, contacts:[…], saved_count} envelope; the dispatcher maps it onto
+     * TL_contacts_contacts.
+     */
+    public JSONObject contactsGet() {
+        return authenticatedRequest("GET", "contacts/list.php", null);
+    }
+
+    /**
+     * POST /contacts/save.php {user_id?|phone?, name} — add or rename a
+     * contact. Exactly one of userId/phone; userId derives the phone
+     * server-side (Add-to-contacts from a profile), phone is the New-contact
+     * path. Response {contact, user?, saved_count}.
+     */
+    public JSONObject contactsSave(Long userId, String phone, String name) {
+        JSONObject body = put(new JSONObject(), "name", name);
+        if (userId != null) {
+            putNumber(body, "user_id", userId);
+        } else {
+            put(body, "phone", phone);
+        }
+        return authenticatedRequest("POST", "contacts/save.php", body);
+    }
+
+    /** POST /contacts/delete.php {user_ids:[…]} — remove contacts by user id. */
+    public JSONObject contactsDelete(long[] userIds) {
+        JSONObject body = new JSONObject();
+        JSONArray ids = new JSONArray();
+        for (long id : userIds) {
+            ids.put(id);
+        }
+        try {
+            body.put("user_ids", ids);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for user_ids", e);
+        }
+        return authenticatedRequest("POST", "contacts/delete.php", body);
+    }
+
+    /**
+     * POST /contacts/import.php {contacts:[{phone, name}…]} — device-phonebook
+     * batch sync (performSyncPhoneBook sends up to 500 entries per request).
+     * The backend stores every entry and answers {imported, users, saved_count}
+     * with ONLY the registered matches.
+     */
+    public JSONObject contactsImport(JSONObject[] entries) {
+        JSONObject body = new JSONObject();
+        JSONArray arr = new JSONArray();
+        for (JSONObject entry : entries) {
+            arr.put(entry);
+        }
+        try {
+            body.put("contacts", arr);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for contacts", e);
+        }
+        return authenticatedRequest("POST", "contacts/import.php", body);
     }
 
     // ------------------------------------------------------------------ request core

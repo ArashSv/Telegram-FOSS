@@ -352,6 +352,27 @@ public final class UpdatePoller {
                 return;
             }
             TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+            // T35: the user_updated payload is PROFILE truth from the subject's
+            // own perspective — it cannot carry viewer-relative surfaces. If
+            // the cached user is the viewer's CONTACT, the contact surfaces
+            // (saved name, phone, contact flag) must survive the merge:
+            // first_name stays the saved contact name (a profile rename by
+            // them must not overwrite OUR name for them), phone/contact ride
+            // from the cache. Non-contact users just take the profile json.
+            TLRPC.User cached = MessagesController.getInstance(account).getUser(userId);
+            if (cached != null && cached.contact) {
+                user.first_name = cached.first_name;
+                user.last_name = cached.last_name;
+                user.phone = cached.phone;
+                user.contact = true;
+                user.flags |= 2048;
+                if (user.phone != null && user.phone.length() > 0) {
+                    user.flags |= 16;
+                }
+                if (user.first_name != null && user.first_name.length() > 0) {
+                    user.flags |= 2;
+                }
+            }
             AndroidUtilities.runOnUIThread(() -> {
                 try {
                     MessagesController.getInstance(account).putUser(user, false);

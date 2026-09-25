@@ -70,7 +70,7 @@ public class ContactAddActivity extends BaseFragment implements NotificationCent
 
     private View doneButton;
     private EditTextBoldCursor firstNameField;
-    private EditTextBoldCursor lastNameField;
+    private EditTextBoldCursor lastNameField; // T35: removed from the UI — kept null-safe, references removed
     private BackupImageView avatarImage;
     private TextView nameTextView;
     private TextView onlineTextView;
@@ -182,7 +182,7 @@ public class ContactAddActivity extends BaseFragment implements NotificationCent
                     if (firstNameField.getText().length() != 0) {
                         TLRPC.User user = getMessagesController().getUser(user_id);
                         user.first_name = firstNameField.getText().toString();
-                        user.last_name = lastNameField.getText().toString();
+                        user.last_name = "";
                         user.contact = true;
                         getMessagesController().putUser(user, false);
                         getContactsController().addContact(user, checkBoxCell != null && checkBoxCell.isChecked());
@@ -276,16 +276,16 @@ public class ContactAddActivity extends BaseFragment implements NotificationCent
         firstNameField.setSingleLine(true);
         firstNameField.setGravity(LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT);
         firstNameField.setInputType(InputType.TYPE_TEXT_FLAG_CAP_SENTENCES | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
-        firstNameField.setImeOptions(EditorInfo.IME_ACTION_NEXT);
-        firstNameField.setHint(LocaleController.getString("FirstName", R.string.FirstName));
+        firstNameField.setImeOptions(EditorInfo.IME_ACTION_DONE);
+        firstNameField.setHint(LocaleController.getString("XoName", R.string.XoName));
         firstNameField.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider));
         firstNameField.setCursorSize(AndroidUtilities.dp(20));
         firstNameField.setCursorWidth(1.5f);
         linearLayout.addView(firstNameField, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 36, 24, 24, 24, 0));
+        // T35: single Name field — no last name; Done on the keyboard saves.
         firstNameField.setOnEditorActionListener((textView, i, keyEvent) -> {
-            if (i == EditorInfo.IME_ACTION_NEXT) {
-                lastNameField.requestFocus();
-                lastNameField.setSelection(lastNameField.length());
+            if (i == EditorInfo.IME_ACTION_DONE) {
+                doneButton.performClick();
                 return true;
             }
             return false;
@@ -302,39 +302,8 @@ public class ContactAddActivity extends BaseFragment implements NotificationCent
         });
         firstNameField.setText(firstNameFromCard);
 
-        lastNameField = new EditTextBoldCursor(context) {
-            @Override
-            protected Theme.ResourcesProvider getResourcesProvider() {
-                return resourcesProvider;
-            }
-        };
-        lastNameField.setTextSize(TypedValue.COMPLEX_UNIT_DIP, 18);
-        lastNameField.setHintTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteHintText, resourcesProvider));
-        lastNameField.setTextColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider));
-        lastNameField.setBackgroundDrawable(null);
-        lastNameField.setLineColors(getThemedColor(Theme.key_windowBackgroundWhiteInputField), getThemedColor(Theme.key_windowBackgroundWhiteInputFieldActivated), getThemedColor(Theme.key_text_RedRegular));
-        lastNameField.setMaxLines(1);
-        lastNameField.setLines(1);
-        lastNameField.setSingleLine(true);
-        lastNameField.setGravity(LocaleController.isRTL ? Gravity.RIGHT : Gravity.LEFT);
-        lastNameField.setInputType(InputType.TYPE_TEXT_FLAG_CAP_SENTENCES | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
-        lastNameField.setImeOptions(EditorInfo.IME_ACTION_DONE);
-        lastNameField.setHint(LocaleController.getString("LastName", R.string.LastName));
-        lastNameField.setCursorColor(Theme.getColor(Theme.key_windowBackgroundWhiteBlackText, resourcesProvider));
-        lastNameField.setCursorSize(AndroidUtilities.dp(20));
-        lastNameField.setCursorWidth(1.5f);
-        linearLayout.addView(lastNameField, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, 36, 24, 16, 24, 0));
-        lastNameField.setOnEditorActionListener((textView, i, keyEvent) -> {
-            if (i == EditorInfo.IME_ACTION_DONE) {
-                doneButton.performClick();
-                return true;
-            }
-            return false;
-        });
-        lastNameField.setText(lastNameFromCard);
-
         TLRPC.User user = getMessagesController().getUser(user_id);
-        if (user != null && firstNameFromCard == null && lastNameFromCard == null) {
+        if (user != null && firstNameFromCard == null) {
             if (user.phone == null) {
                 if (phone != null) {
                     user.phone = PhoneFormat.stripExceptNumbers(phone);
@@ -342,7 +311,6 @@ public class ContactAddActivity extends BaseFragment implements NotificationCent
             }
             firstNameField.setText(user.first_name);
             firstNameField.setSelection(firstNameField.length());
-            lastNameField.setText(user.last_name);
         }
 
         infoTextView = new TextView(context);
@@ -893,10 +861,6 @@ public class ContactAddActivity extends BaseFragment implements NotificationCent
         themeDescriptions.add(new ThemeDescription(firstNameField, ThemeDescription.FLAG_HINTTEXTCOLOR, null, null, null, null, Theme.key_windowBackgroundWhiteHintText));
         themeDescriptions.add(new ThemeDescription(firstNameField, ThemeDescription.FLAG_BACKGROUNDFILTER, null, null, null, null, Theme.key_windowBackgroundWhiteInputField));
         themeDescriptions.add(new ThemeDescription(firstNameField, ThemeDescription.FLAG_BACKGROUNDFILTER | ThemeDescription.FLAG_DRAWABLESELECTEDSTATE, null, null, null, null, Theme.key_windowBackgroundWhiteInputFieldActivated));
-        themeDescriptions.add(new ThemeDescription(lastNameField, ThemeDescription.FLAG_TEXTCOLOR, null, null, null, null, Theme.key_windowBackgroundWhiteBlackText));
-        themeDescriptions.add(new ThemeDescription(lastNameField, ThemeDescription.FLAG_HINTTEXTCOLOR, null, null, null, null, Theme.key_windowBackgroundWhiteHintText));
-        themeDescriptions.add(new ThemeDescription(lastNameField, ThemeDescription.FLAG_BACKGROUNDFILTER, null, null, null, null, Theme.key_windowBackgroundWhiteInputField));
-        themeDescriptions.add(new ThemeDescription(lastNameField, ThemeDescription.FLAG_BACKGROUNDFILTER | ThemeDescription.FLAG_DRAWABLESELECTEDSTATE, null, null, null, null, Theme.key_windowBackgroundWhiteInputFieldActivated));
 
         themeDescriptions.add(new ThemeDescription(infoTextView, ThemeDescription.FLAG_TEXTCOLOR, null, null, null, null, Theme.key_windowBackgroundWhiteGrayText4));
 

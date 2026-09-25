@@ -8756,6 +8756,8 @@
     <string name="EditProfileBioHint">Write about yourself...</string>
     <string name="ProfileUserId">ID</string>
     <string name="ProfileUserIdCopied">ID copied to clipboard</string>
+    <!-- T35: single-name contact model (server stores one name per contact) -->
+    <string name="XoName">Name</string>
     <string name="EditProfileBioInfo">You can add a few lines about yourself. Choose who can see your bio in **Settings**.</string>
     <string name="EditProfileBirthday">Your birthday</string>
     <string name="EditProfileBirthdayText">Date of Birth</string>

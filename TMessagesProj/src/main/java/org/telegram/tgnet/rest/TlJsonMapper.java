@@ -61,7 +61,12 @@ public final class TlJsonMapper {
                 user.flags |= 8;
             }
         }
-        String phone = object.optString("phone", null); // self shape only
+        // T35 hardening: the optString fallback would stringify the JSON null
+        // sentinel into the literal "null" (the T33 username trap — phone is
+        // served key-absent for public users today, but the contact rule now
+        // makes phone-bearing shapes common, so the read must be null-safe).
+        Object phoneObj = object.opt("phone");
+        String phone = phoneObj instanceof String ? (String) phoneObj : null;
         if (phone != null && phone.length() > 0) {
             user.phone = phone;
             user.flags |= 16;
@@ -69,6 +74,31 @@ public final class TlJsonMapper {
         if (self) {
             user.flags |= 1024;
             user.self = true;
+        }
+        // T35: the contact-visibility rule (backend v1.8). When the viewer
+        // holds this user as a contact the json carries contact_name (the
+        // custom saved name), phone (digits-only — Telegram's PhoneFormat
+        // prepends '+', so a '+' here would render as '++98…') and
+        // contact=true. contact_name REPLACES first_name: the saved name is
+        // what shows everywhere (dialogs, profile title, member lists) — the
+        // Telegram contact UX. Explicit-null trap: check instanceof String.
+        Object contactNameObj = object.opt("contact_name");
+        if (contactNameObj instanceof String) {
+            String contactName = ((String) contactNameObj).trim();
+            if (contactName.length() > 0) {
+                user.first_name = contactName;
+                user.flags |= 2;
+            }
+        }
+        Object contactFlag = object.opt("contact");
+        if (contactFlag instanceof Boolean && (Boolean) contactFlag) {
+            user.contact = true;
+            user.flags |= 2048;
+        }
+        // Non-self phones are digits-only (ProfileActivity renders "+" + phone);
+        // the SELF phone keeps its backend form ("+98…") — build-38 contract.
+        if (!self && user.phone != null && user.phone.startsWith("+")) {
+            user.phone = user.phone.substring(1);
         }
         // T32: the avatar surface json ({small,big} crop file ids) — the ONLY
         // place a user's profile photo crosses JSON->TL. null keeps the
