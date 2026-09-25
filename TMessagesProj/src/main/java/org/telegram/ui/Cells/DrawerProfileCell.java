@@ -18,6 +18,7 @@ import android.graphics.Paint;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
 import android.graphics.Rect;
+import android.text.TextUtils;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -710,7 +711,15 @@ public class DrawerProfileCell extends FrameLayout implements NotificationCenter
         }
         animatedStatus.setColor(Theme.getColor(Theme.isCurrentThemeDark() ? Theme.key_chats_verifiedBackground : Theme.key_chats_menuPhoneCats));
         status.setColor(Theme.getColor(Theme.isCurrentThemeDark() ? Theme.key_chats_verifiedBackground : Theme.key_chats_menuPhoneCats));
-        phoneTextView.setText(PhoneFormat.getInstance().format("+" + user.phone));
+        // T34: a null phone must never render as "+null" — show the username
+        // (or nothing) instead until the self user is whole again.
+        CharSequence phoneLine = null;
+        if (!TextUtils.isEmpty(user.phone)) {
+            phoneLine = PhoneFormat.getInstance().format("+" + user.phone);
+        } else if (!TextUtils.isEmpty(user.username)) {
+            phoneLine = "@" + user.username;
+        }
+        phoneTextView.setText(phoneLine == null ? "" : phoneLine);
         AvatarDrawable avatarDrawable = new AvatarDrawable(user);
         avatarDrawable.setColor(Theme.getColor(Theme.key_avatar_backgroundInProfileBlue));
         avatarImageView.setForUserOrChat(user, avatarDrawable);

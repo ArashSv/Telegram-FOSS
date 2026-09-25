@@ -862,6 +862,11 @@ public final class RestDispatcher {
         long backendFileId = finalizeAvatarSource(account, req.file);
         JSONObject applied = RestGateway.getInstance(account).setUserPhoto(backendFileId);
         JSONObject userJson = applied.optJSONObject("user");
+        // T34: self-context response — run it through the merge funnel so the
+        // self user gains the new photo surfaces without losing phone/self.
+        if (userJson != null) {
+            XoSelf.mergeApply(account, userJson);
+        }
         JSONObject photoJson = userJson != null ? userJson.optJSONObject("photo") : null;
         TLRPC.TL_photo photo = TlJsonMapper.avatarPhoto(photoJson, nowSeconds());
         if (photo == null) {
@@ -878,7 +883,15 @@ public final class RestDispatcher {
      * avatar and purges its crops.
      */
     private static TLObject handleDeletePhotos(int account, TLRPC.TL_photos_deletePhotos req) {
-        RestGateway.getInstance(account).deleteUserPhoto();
+        JSONObject answer = RestGateway.getInstance(account).deleteUserPhoto();
+        // T34: the response carries the user json with an explicit photo:null
+        // — the merge funnel applies the CLEAR through one canonical path.
+        if (answer != null) {
+            JSONObject userJson = answer.optJSONObject("user");
+            if (userJson != null) {
+                XoSelf.mergeApply(account, userJson);
+            }
+        }
         return new TLRPC.Vector();
     }
 
@@ -913,11 +926,14 @@ public final class RestDispatcher {
         if (userJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "users/edit response lacks the user object");
         }
-        try {
-            return TlJsonMapper.parseUser(userJson, false);
-        } catch (Exception e) {
-            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed edited user: " + e.getMessage());
+        // T34: self-context response → the merge funnel. The returned user is
+        // whole (self flag + phone preserved), applied through the canonical
+        // paths; the v1.6 public-shape replacement corrupted exactly here.
+        TLRPC.TL_user editedUser = XoSelf.mergeApply(account, userJson);
+        if (editedUser == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed edited user");
         }
+        return editedUser;
     }
 
     // ------------------------------------------------------------------ T33: usernames + bio + deep links
@@ -975,11 +991,13 @@ public final class RestDispatcher {
         if (userJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "username-set response lacks the user object");
         }
-        try {
-            return TlJsonMapper.parseUser(userJson, false);
-        } catch (Exception e) {
-            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed username-set user: " + e.getMessage());
+        // T34: self-context response → merge funnel (whole user out; the
+        // caller's putUsers then re-applies the same coherent object).
+        TLRPC.TL_user updated = XoSelf.mergeApply(account, userJson);
+        if (updated == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed username-set user");
         }
+        return updated;
     }
 
     /**
@@ -999,28 +1017,46 @@ public final class RestDispatcher {
             throw new XoApiException(400, "USERNAME_NOT_FOUND", "no user with this username");
         }
         try {
-            TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+            TLRPC.TL_user user;
+            // T34: resolving YOUR OWN handle must not wipe the self user with
+            // its public shape — route through the merge funnel.
+            if (userJson.optLong("id") == UserConfig.getInstance(account).clientUserId) {
+                user = XoSelf.mergeApply(account, userJson);
+                if (user == null) {
+                    throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed resolved self user");
+                }
+            } else {
+                user = TlJsonMapper.parseUser(userJson, false);
+            }
             TLRPC.TL_contacts_resolvedPeer resolved = new TLRPC.TL_contacts_resolvedPeer();
             TLRPC.TL_peerUser peer = new TLRPC.TL_peerUser();
             peer.user_id = user.id;
             resolved.peer = peer;
             resolved.users.add(user);
             return resolved;
+        } catch (XoApiException e) {
+            throw e;
         } catch (Exception e) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed resolved user: " + e.getMessage());
         }
     }
 
     /**
-     * TL_users_getFullUser — ProfileActivity's full-user load (unrouted dead
-     * path until now: the bio row of OTHER users never had data). Our users
-     * json carries bio directly, so the container synthesizes a minimal
-     * TL_userFull with the about flag coherent (flag 2 only when non-empty).
+     * TL_users_getFullUser — ProfileActivity's full-user load. T34 rewrites
+     * the id resolution: upstream getInputUser(self) returns
+     * TL_inputUserSelf (NOT TL_inputUser), so every SELF full-user request
+     * died USER_ID_INVALID here — getUserFull(self) never existed and the
+     * edit-profile screen spun forever on its null guard.
      */
     private static TLObject handleGetFullUser(int account, TLRPC.TL_users_getFullUser req) {
-        long userId = req.id instanceof TLRPC.TL_inputUser
-                ? ((TLRPC.TL_inputUser) req.id).user_id
-                : 0;
+        final long userId;
+        if (req.id instanceof TLRPC.TL_inputUserSelf) {
+            userId = UserConfig.getInstance(account).clientUserId;
+        } else if (req.id instanceof TLRPC.TL_inputUser) {
+            userId = ((TLRPC.TL_inputUser) req.id).user_id;
+        } else {
+            userId = 0;
+        }
         if (userId <= 0) {
             throw new XoApiException(400, "USER_ID_INVALID", "unsupported input user");
         }
@@ -1030,12 +1066,21 @@ public final class RestDispatcher {
         }
         try {
             JSONObject userJson = usersJson.getJSONObject(0);
-            TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+            // Self context: the users vector flows into putUsers on the
+            // response path (loadFullUser) — a public-shaped self there would
+            // re-corrupt the self user. The merge funnel keeps it whole.
+            TLRPC.TL_user user = userId == UserConfig.getInstance(account).clientUserId
+                    ? XoSelf.mergeApply(account, userJson)
+                    : TlJsonMapper.parseUser(userJson, false);
+            if (user == null) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed full user");
+            }
             TLRPC.TL_userFull full = new TLRPC.TL_userFull();
             // UserFull carries NO user_id: the consumer keys on full_user.id
             // (loadFullUser does getUser(res.full_user.id); updateUserInfo
             // persists under info.user.id or info.id). id IS the user id here.
             full.id = user.id;
+            full.user = user; // loadFullUser re-reads it from cache anyway
             Object bioObj = userJson.opt("bio");
             if (bioObj instanceof String) {
                 String about = (String) bioObj;
@@ -1048,6 +1093,8 @@ public final class RestDispatcher {
             container.full_user = full;
             container.users.add(user);
             return container;
+        } catch (XoApiException e) {
+            throw e;
         } catch (Exception e) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed full user: " + e.getMessage());
         }
