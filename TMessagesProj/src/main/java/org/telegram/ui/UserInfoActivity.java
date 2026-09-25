@@ -273,7 +273,7 @@ public class UserInfoActivity extends UniversalFragment implements NotificationC
         final String newBio = bioText();
         final boolean nameChanged = !TextUtils.equals(currentName == null ? "" : currentName, newName);
         final boolean bioChanged = !TextUtils.equals(currentBio == null ? "" : currentBio, newBio);
-        final boolean nothingToDo = (!nameChanged && !bioChanged) || (!error && TextUtils.isEmpty(newName.trim()) && !nameChanged);
+        final boolean nothingToDo = !nameChanged && !bioChanged;
 
         if (error && TextUtils.isEmpty(newName.trim())) {
             BotWebViewVibrationEffect.APP_ERROR.vibrate();
@@ -362,14 +362,6 @@ public class UserInfoActivity extends UniversalFragment implements NotificationC
         if (id == NotificationCenter.userInfoDidLoad) {
             setValue();
         }
-    }
-
-    @Override
-    public boolean onBackPressed() {
-        if (hasChanges()) {
-            processDone(false);
-        }
-        return true;
     }
 
     // ------------------------------------------------------------------
