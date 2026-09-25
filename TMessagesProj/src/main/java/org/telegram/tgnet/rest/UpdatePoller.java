@@ -145,6 +145,12 @@ public final class UpdatePoller {
             if (newCursor != cursor) {
                 store.setSyncCursor(newCursor);
             }
+            // T34: upgrade-path self-heal — one attempt per process, on the
+            // first healthy poll, repairs a self user degraded by the v1.6
+            // partial-replacement bug (no re-login needed after updating).
+            if (XoSelf.Once.firstTime(account)) {
+                XoSelf.ensureFresh(account);
+            }
         } catch (XoApiException e) {
             // T7b: stop only on proof the family is dead (genuine envelope 401 or
             // SESSION_INVALID). A garbled 401 page from an intermediary keeps the
@@ -338,6 +344,11 @@ public final class UpdatePoller {
         try {
             long userId = userJson.getLong("id");
             if (userId == UserConfig.getInstance(account).clientUserId) {
+                // T34: own user_updated (another device changed this account's
+                // profile) merges through XoSelf instead of being dropped —
+                // multi-device profile sync without ever degrading the self
+                // user to a public-shaped replacement.
+                XoSelf.mergeApply(account, userJson);
                 return;
             }
             TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);

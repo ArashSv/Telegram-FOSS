@@ -8754,6 +8754,8 @@
     <string name="EditProfileChannelStartNew">Start a Channel</string>
     <string name="EditProfileChannelSet">Personal channel added.</string>
     <string name="EditProfileBioHint">Write about yourself...</string>
+    <string name="ProfileUserId">ID</string>
+    <string name="ProfileUserIdCopied">ID copied to clipboard</string>
     <string name="EditProfileBioInfo">You can add a few lines about yourself. Choose who can see your bio in **Settings**.</string>
     <string name="EditProfileBirthday">Your birthday</string>
     <string name="EditProfileBirthdayText">Date of Birth</string>
