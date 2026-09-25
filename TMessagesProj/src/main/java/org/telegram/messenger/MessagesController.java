@@ -13838,8 +13838,12 @@ public class MessagesController extends BaseController implements NotificationCe
                 if (!hasJoinMessage && inputUser instanceof TLRPC.TL_inputUserSelf) {
                     generateJoinMessage(chatId, true);
                 }
-                AndroidUtilities.runOnUIThread(() -> loadFullChat(chatId, 0, true), 1000);
             }
+            // T36: BOTH group kinds re-pull the authoritative chatFull after an
+            // add (upstream only did channels). One fresh chats/members.php load
+            // patches memory + storage and rebroadcasts chatInfoDidLoad, so the
+            // member list/count can never settle on the UI-local optimistic add.
+            AndroidUtilities.runOnUIThread(() -> loadFullChat(chatId, 0, true), 1000);
             if (isChannel && inputUser instanceof TLRPC.TL_inputUserSelf) {
                 getMessagesStorage().updateDialogsWithDeletedMessages(-chatId, chatId, new ArrayList<>(), null, true);
             }
