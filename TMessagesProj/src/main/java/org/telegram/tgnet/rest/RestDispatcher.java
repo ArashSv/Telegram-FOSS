@@ -228,6 +228,15 @@ public final class RestDispatcher {
                 case RestRouter.ROUTE_DELETE_HISTORY:
                     response = handleDeleteHistory(account, (TLRPC.TL_messages_deleteHistory) object);
                     break;
+                case RestRouter.ROUTE_DELETE_CHAT_USER:
+                    response = handleDeleteChatUser(account, (TLRPC.TL_messages_deleteChatUser) object);
+                    break;
+                case RestRouter.ROUTE_EDIT_CHAT_ADMIN:
+                    response = handleEditChatAdmin(account, (TLRPC.TL_messages_editChatAdmin) object);
+                    break;
+                case RestRouter.ROUTE_DELETE_CHAT:
+                    response = handleDeleteChat(account, (TLRPC.TL_messages_deleteChat) object);
+                    break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
                     break;
@@ -1593,6 +1602,113 @@ public final class RestDispatcher {
         res.pts = 0;
         res.pts_count = 0;
         return res;
+    }
+
+    /**
+     * T40: TL_messages_deleteChatUser — KICK another member / LEAVE a basic
+     * group (MessagesController.deleteParticipantFromChat ~:13940/:14016; the
+     * UI funnels are the ProfileActivity member long-press, ChatUsersActivity
+     * kick and the needDeleteDialog leave flow). The consumers HARD cast the
+     * response to TLRPC.Updates (~:13953/:14029) and processUpdates it.
+     *
+     * SELF (leave): the caller already deleted their own dialog locally
+     * (deleteDialog runs BEFORE the send) and the backend deleted the
+     * membership row — the answer is an EMPTY TL_updates, there is nothing to
+     * apply; the leaver's OTHER devices converge via the chat_member sync
+     * event.
+     *
+     * KICK: the backend v2.2 answers the authoritative post-kick membership
+     * snapshot ({members, count, chat} — members.php shape); fabricate the
+     * TL-native TL_updateChatParticipants from it (same contract as
+     * handleAddChatUser) so processUpdates applies the PERSISTED state.
+     * The kicked user themselves gets the chat_member {event: kick} push.
+     */
+    private static TLObject handleDeleteChatUser(int account, TLRPC.TL_messages_deleteChatUser req) {
+        if (req.chat_id <= 0) {
+            throw new XoApiException(400, "CHAT_ID_INVALID", "chat_id required");
+        }
+        long userId;
+        if (req.user_id instanceof TLRPC.TL_inputUserSelf) {
+            userId = UserConfig.getInstance(account).clientUserId;
+        } else if (req.user_id instanceof TLRPC.TL_inputUser) {
+            userId = ((TLRPC.TL_inputUser) req.user_id).user_id;
+        } else {
+            throw new XoApiException(400, "USER_ID_INVALID", "unsupported input user");
+        }
+        if (userId == UserConfig.getInstance(account).clientUserId) {
+            RestGateway.getInstance(account).leaveChat(req.chat_id);
+            return new TLRPC.TL_updates();
+        }
+        JSONObject kicked = RestGateway.getInstance(account).kickChatMember(req.chat_id, userId);
+        try {
+            JSONObject chatJson = kicked.optJSONObject("chat");
+            if (chatJson == null) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "kick response lacks the chat object");
+            }
+            TLRPC.TL_updates updates = updatesWithChats(mapGroupChat(chatJson));
+            JSONArray membersJson = kicked.optJSONArray("members");
+            if (membersJson != null) {
+                updates.updates.add(wrapParticipants(chatParticipantsFromMembers(membersJson, req.chat_id)));
+                for (int i = 0; i < membersJson.length(); i++) {
+                    JSONObject userJson = membersJson.getJSONObject(i).optJSONObject("user");
+                    if (userJson != null) {
+                        updates.users.add(TlJsonMapper.parseUser(userJson, false));
+                    }
+                }
+            }
+            return updates;
+        } catch (XoApiException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed kick answer: " + e.getMessage());
+        }
+    }
+
+    /**
+     * T40: TL_messages_editChatAdmin — promote/demote in a basic group
+     * (MessagesController.setUserAdminRole ~:7655; ChatRightsEditActivity
+     * Save and ChatUsersActivity "Remove admin" both land here). The
+     * consumer (~:7661) tests error == null ONLY — the schema response class
+     * is Bool and is otherwise unused; the acting UI refreshes via
+     * loadFullChat 1 s later, every OTHER member via chat_member
+     * {event: promote|demote}. Promoting an EXISTING member is preceded by
+     * TL_messages_addChatUser (the addUserToChat chain): the backend's
+     * USER_ALREADY_PARTICIPANT answer is swallowed by the chain's
+     * ignoreIfAlreadyExists branch, then this request goes out. Answer
+     * TL_boolTrue.
+     */
+    private static TLObject handleEditChatAdmin(int account, TLRPC.TL_messages_editChatAdmin req) {
+        if (req.chat_id <= 0) {
+            throw new XoApiException(400, "CHAT_ID_INVALID", "chat_id required");
+        }
+        long userId;
+        if (req.user_id instanceof TLRPC.TL_inputUserSelf) {
+            userId = UserConfig.getInstance(account).clientUserId;
+        } else if (req.user_id instanceof TLRPC.TL_inputUser) {
+            userId = ((TLRPC.TL_inputUser) req.user_id).user_id;
+        } else {
+            throw new XoApiException(400, "USER_ID_INVALID", "unsupported input user");
+        }
+        RestGateway.getInstance(account).setChatAdmin(req.chat_id, userId, req.is_admin);
+        return new TLRPC.TL_boolTrue();
+    }
+
+    /**
+     * T40: TL_messages_deleteChat — delete a basic group FOR EVERYONE
+     * (MessagesController.deleteParticipantFromChat forceDelete branch
+     * ~:13934/:14009 — the creator's "delete and exit" with delete-for-all).
+     * The consumers IGNORE the response entirely (empty callback body); the
+     * local dialog deletion already ran (deleteDialog before the send) and
+     * every ex-member converges via chat_member {event: deleted}. The
+     * backend v2.2 hard-deletes the chats row, memberships, hidden dialogs
+     * and messages (creator-only, enforced server-side). Answer TL_boolTrue.
+     */
+    private static TLObject handleDeleteChat(int account, TLRPC.TL_messages_deleteChat req) {
+        if (req.chat_id <= 0) {
+            throw new XoApiException(400, "CHAT_ID_INVALID", "chat_id required");
+        }
+        RestGateway.getInstance(account).deleteChat(req.chat_id);
+        return new TLRPC.TL_boolTrue();
     }
 
     /**

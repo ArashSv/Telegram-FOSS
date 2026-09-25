@@ -1282,16 +1282,14 @@ public class ChatRightsEditActivity extends BaseFragment {
         if (loading) {
             return;
         }
-        if (!ChatObject.isChannel(currentChat) && (currentType == TYPE_BANNED || currentType == TYPE_ADMIN && (!isDefaultAdminRights() || rankRow != -1 && currentRank.codePointCount(0, currentRank.length()) > MAX_RANK_LENGTH) || currentType == TYPE_ADD_BOT && (currentRank != null || !isDefaultAdminRights()))) {
-            MessagesController.getInstance(currentAccount).convertToMegaGroup(getParentActivity(), chatId, this, param -> {
-                if (param != 0) {
-                    chatId = param;
-                    currentChat = MessagesController.getInstance(currentAccount).getChat(param);
-                    onDonePressed();
-                }
-            });
-            return;
-        }
+        // T40: upstream converts a BASIC group to a megagroup before the first
+        // rights edit (TL_messages_migrateChat) — basic groups have no granular
+        // rights THERE. This product keeps basic groups basic: the backend
+        // models exactly promote/demote (chats/promote.php, binary is_admin),
+        // migrateChat has no REST backing, and the conversion spinner would
+        // eat every promote/demote (XO_NOT_ROUTED → convertRunnable never
+        // runs → onDonePressed never re-invoked). The gate is removed; the
+        // requests below hit the routed basic-group path directly.
         if (currentType == TYPE_ADMIN || currentType == TYPE_ADD_BOT) {
             if (rankRow != -1 && currentRank.codePointCount(0, currentRank.length()) > MAX_RANK_LENGTH) {
                 listView.smoothScrollToPosition(rankRow);
@@ -1345,7 +1343,17 @@ public class ChatRightsEditActivity extends BaseFragment {
                 return true;
             });
         } else if (currentType == TYPE_BANNED) {
-            MessagesController.getInstance(currentAccount).setParticipantBannedRole(chatId, currentUser, null, bannedRights, isChannel, getFragmentForAlert(1));
+            if (!ChatObject.isChannel(currentChat)) {
+                // T40: a basic group has no per-member banned rights — the only
+                // permission change it supports is DEMOTE (the
+                // AdminWillBeRemoved confirm already ran for admin targets).
+                // setUserAdminRole with empty rights sends the routed
+                // TL_messages_editChatAdmin is_admin=false instead of the
+                // unrouted TL_channels_editBanned (setParticipantBannedRole).
+                MessagesController.getInstance(currentAccount).setUserAdminRole(chatId, currentUser, new TLRPC.TL_chatAdminRights(), currentRank, false, getFragmentForAlert(1), false, false, null, null);
+            } else {
+                MessagesController.getInstance(currentAccount).setParticipantBannedRole(chatId, currentUser, null, bannedRights, isChannel, getFragmentForAlert(1));
+            }
             int rights;
             if (bannedRights.send_messages || bannedRights.send_stickers || bannedRights.embed_links || bannedRights.send_media ||
                     bannedRights.send_gifs || bannedRights.send_games || bannedRights.send_inline) {

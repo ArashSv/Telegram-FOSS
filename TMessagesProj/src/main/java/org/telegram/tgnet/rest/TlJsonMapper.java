@@ -196,12 +196,18 @@ public final class TlJsonMapper {
         result.flags |= 262144;                              // chat.flags bit for default_banned_rights
         // Promoted admins keep the manage UI the backend already authorizes
         // (edit.php / set-photo.php / add-member.php all allow creator+admin).
+        // T40: ban_users joins the set — kick.php grants admins exactly
+        // "remove a plain member", and the kick affordances
+        // (ChatObject.canBlockUsers → admin_rights.ban_users) need this bit
+        // to show at all. flag bit 16 per this tree's TL_chatAdminRights
+        // serialization.
         if ("admin".equals(role)) {
             TLRPC.TL_chatAdminRights rights = new TLRPC.TL_chatAdminRights();
             rights.change_info = true;
             rights.invite_users = true;
             rights.pin_messages = true;
-            rights.flags = 1 | 32 | 128;                     // change_info|invite_users|pin_messages
+            rights.ban_users = true;
+            rights.flags = 1 | 32 | 128 | 16;                // change_info|invite_users|pin_messages|ban_users
             result.admin_rights = rights;
             result.flags |= 16384;                           // chat.flags bit for admin_rights
         }

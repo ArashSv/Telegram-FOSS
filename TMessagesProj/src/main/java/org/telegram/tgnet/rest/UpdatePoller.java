@@ -222,6 +222,13 @@ public final class UpdatePoller {
                 case "chat_new":
                     handleChatNew(update.optJSONObject("chat"), chatsArr);
                     break;
+                case "chat_member":
+                    // T40: group membership changed around me (backend v2.2 —
+                    // ids-only payload; applies directly like user_updated
+                    // because a membership event can arrive alone in a page
+                    // and the tlUpdates batch early-return would swallow it).
+                    handleChatMember(update);
+                    break;
                 case "user_updated":
                     // T32: profile (name/avatar) changes apply directly — see handleUserUpdated
                     handleUserUpdated(update.optJSONObject("user"));
@@ -391,6 +398,53 @@ public final class UpdatePoller {
                     MessagesController.getInstance(account).loadDialogs(0, 0, 100, false);
                 } catch (Exception e) {
                     FileLog.e("UpdatePoller: chat_new dialogs reload failed", e);
+                }
+            });
+        }
+    }
+
+    /**
+     * T40: group membership changed around me (backend v2.2 chat_member —
+     * ids only: {chat_id, event: kick|leave|promote|demote|deleted,
+     * user_id, actor_id}).
+     *
+     * Self-directed kick/leave and whole-group deletion remove the dialog
+     * through the CANONICAL local deleteDialog path (storage + memory +
+     * notifications all happen pre-send; the follow-up delete-history call
+     * is tolerated by the relaxed v2.2 chat-existence guard even though this
+     * session is already out of the chat). Everything else — someone else
+     * joined/left/got promoted/kicked — refreshes the authoritative
+     * membership snapshot via loadFullChat (the same re-pull the add flow
+     * uses); a stale 403 (e.g. I left moments earlier myself) is swallowed
+     * by loadFullChat's error path.
+     */
+    private void handleChatMember(JSONObject update) {
+        if (update == null) {
+            return;
+        }
+        final long chatId = update.optLong("chat_id", 0);
+        final String event = update.optString("event", "");
+        final long userId = update.optLong("user_id", 0);
+        if (chatId <= 0 || event.length() == 0) {
+            return;
+        }
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        boolean selfRemoved = "deleted".equals(event)
+                || (("kick".equals(event) || "leave".equals(event)) && userId == selfId);
+        if (selfRemoved) {
+            AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    MessagesController.getInstance(account).deleteDialog(-chatId, 0, false);
+                } catch (Exception e) {
+                    FileLog.e("UpdatePoller: chat_member self-removal failed", e);
+                }
+            });
+        } else {
+            AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    MessagesController.getInstance(account).loadFullChat(chatId, 0, true);
+                } catch (Exception e) {
+                    FileLog.e("UpdatePoller: chat_member full-chat refresh failed", e);
                 }
             });
         }
