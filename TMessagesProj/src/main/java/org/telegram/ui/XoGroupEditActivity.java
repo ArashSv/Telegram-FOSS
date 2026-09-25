@@ -247,7 +247,7 @@ public class XoGroupEditActivity extends BaseFragment implements NotificationCen
         // ---- members / administrators ---------------------------------------
         HeaderCell headerCell = new HeaderCell(context);
         headerCell.setHeight(46);
-        headerCell.setText(LocaleController.getString("Members", R.string.Members));
+        headerCell.setText(LocaleController.getString("ChannelMembers", R.string.ChannelMembers));
         linearLayout.addView(headerCell, LayoutHelper.createLinear(LayoutHelper.MATCH_PARENT, LayoutHelper.WRAP_CONTENT));
 
         membersCell = new TextCell(context);
@@ -297,7 +297,7 @@ public class XoGroupEditActivity extends BaseFragment implements NotificationCen
                 }
             }
         }
-        administratorsCell.setTextAndValue(LocaleController.getString("Administrators", R.string.Administrators),
+        administratorsCell.setTextAndValue(LocaleController.getString("ChannelAdministrators", R.string.ChannelAdministrators),
                 Integer.toString(admins), false);
     }
 

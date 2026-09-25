@@ -1226,7 +1226,10 @@ public final class RestDispatcher {
             // this backend yet; a planted empty link would wake the link UI.
 
             JSONObject photoJson = chatJson.optJSONObject("photo");
-            TLRPC.TL_chatPhoto chatPhoto = TlJsonMapper.parseChatPhoto(photoJson);
+            // ChatFull.chat_photo is typed Photo (MTProto chatFull carries a
+            // full photo object, not the small TL_chatPhoto surface) — build
+            // the same TL_photo the avatar upload route answers with.
+            TLRPC.TL_photo chatPhoto = TlJsonMapper.avatarPhoto(photoJson, nowSeconds());
             if (chatPhoto != null) {
                 full.chat_photo = chatPhoto;
                 full.flags |= 4;
