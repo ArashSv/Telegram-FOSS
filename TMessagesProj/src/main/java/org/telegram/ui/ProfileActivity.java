@@ -2264,19 +2264,28 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                         TopicCreateFragment fragment = TopicCreateFragment.create(chatId, topicId);
                         presentFragment(fragment);
                     } else {
-                        Bundle args = new Bundle();
-                        if (chatId != 0) {
+                        if (chatId != 0 && currentChat != null && !ChatObject.isChannel(currentChat)) {
+                            // T35: basic groups get the native editor (name/about/
+                            // avatar against our backend) — ChatEditActivity's
+                            // flow is channel-shaped (convert/mega-group rows).
+                            Bundle args = new Bundle();
                             args.putLong("chat_id", chatId);
-                        } else if (isBot) {
-                            args.putLong("user_id", userId);
-                        }
-                        ChatEditActivity fragment = new ChatEditActivity(args);
-                        if (chatInfo != null) {
-                            fragment.setInfo(chatInfo);
+                            presentFragment(new XoGroupEditActivity(args));
                         } else {
-                            fragment.setInfo(userInfo);
+                            Bundle args = new Bundle();
+                            if (chatId != 0) {
+                                args.putLong("chat_id", chatId);
+                            } else if (isBot) {
+                                args.putLong("user_id", userId);
+                            }
+                            ChatEditActivity fragment = new ChatEditActivity(args);
+                            if (chatInfo != null) {
+                                fragment.setInfo(chatInfo);
+                            } else {
+                                fragment.setInfo(userInfo);
+                            }
+                            presentFragment(fragment);
                         }
-                        presentFragment(fragment);
                     }
                 } else if (id == edit_profile) {
                     presentFragment(new UserInfoActivity());

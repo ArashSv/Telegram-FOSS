@@ -201,6 +201,24 @@ public final class RestDispatcher {
                 case RestRouter.ROUTE_GET_FULL_USER:
                     response = handleGetFullUser(account, (TLRPC.TL_users_getFullUser) object);
                     break;
+                case RestRouter.ROUTE_GET_FULL_CHAT:
+                    response = handleGetFullChat(account, (TLRPC.TL_messages_getFullChat) object);
+                    break;
+                case RestRouter.ROUTE_EDIT_CHAT_ABOUT:
+                    response = handleEditChatAbout(account, (TLRPC.TL_messages_editChatAbout) object);
+                    break;
+                case RestRouter.ROUTE_CONTACTS_GET:
+                    response = handleContactsGet(account, (TLRPC.TL_contacts_getContacts) object);
+                    break;
+                case RestRouter.ROUTE_CONTACTS_IMPORT:
+                    response = handleContactsImport(account, (TLRPC.TL_contacts_importContacts) object);
+                    break;
+                case RestRouter.ROUTE_CONTACTS_ADD:
+                    response = handleContactsAdd(account, (TLRPC.TL_contacts_addContact) object);
+                    break;
+                case RestRouter.ROUTE_CONTACTS_DELETE:
+                    response = handleContactsDelete(account, (TLRPC.TL_contacts_deleteContacts) object);
+                    break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
                     break;
@@ -836,6 +854,16 @@ public final class RestDispatcher {
      * every member, so their dialogs reload with the new avatar.
      */
     private static TLObject handleEditChatPhoto(int account, TLRPC.TL_messages_editChatPhoto req) {
+        // v1.8: TL_inputChatPhotoEmpty == "remove the group avatar" (the edit
+        // screen's delete-photo action); anything else is an upload to finalize.
+        if (req.photo instanceof TLRPC.TL_inputChatPhotoEmpty) {
+            JSONObject removed = RestGateway.getInstance(account).clearChatPhoto(req.chat_id);
+            JSONObject removedChatJson = removed.optJSONObject("chat");
+            if (removedChatJson == null) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "chats/set-photo (remove) response lacks the chat object");
+            }
+            return updatesWithChats(mapGroupChat(removedChatJson));
+        }
         long backendFileId = finalizeAvatarSource(account, req.photo);
         JSONObject applied = RestGateway.getInstance(account).setChatPhoto(req.chat_id, backendFileId);
         JSONObject chatJson = applied.optJSONObject("chat");
@@ -1108,6 +1136,285 @@ public final class RestDispatcher {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed chat json: " + e.getMessage());
         }
     }
+
+    // ------------------------------------------------------------------ T35: group full info + group about + contacts
+
+    /**
+     * TL_messages_getFullChat — the basic-group info surface (MessagesController
+     * loadFullChat:6470, HARD cast to TL_messages_chatFull). The backend
+     * members endpoint answers members (with roles) + the viewer's chat
+     * payload in ONE call; we assemble the exact TL_chatFull contract:
+     * participants (Creator/Admin/Participant classes from the backend role),
+     * about (drives ProfileActivity's description row + ChatEditActivity's
+     * bio field), chat_photo (flag 4), notify_settings (mandatory field).
+     *
+     * <p>This one route is what un-empties: ProfileActivity's inline member
+     * list, ChatUsersActivity's members/administrators screens (they read the
+     * cached chatFull locally for basic groups — no other network path
+     * exists), and the description field in the group editor.</p>
+     */
+    private static TLObject handleGetFullChat(int account, TLRPC.TL_messages_getFullChat req) {
+        if (req.chat_id <= 0) {
+            throw new XoApiException(400, "CHAT_ID_INVALID", "invalid chat id");
+        }
+        JSONObject answer = RestGateway.getInstance(account).chatMembers(req.chat_id);
+        JSONArray membersJson = answer.optJSONArray("members");
+        JSONObject chatJson = answer.optJSONObject("chat");
+        if (membersJson == null || chatJson == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "chats/members answer lacks members or chat");
+        }
+        try {
+            TLRPC.TL_messages_chatFull result = new TLRPC.TL_messages_chatFull();
+            TLRPC.TL_chatFull full = new TLRPC.TL_chatFull();
+            full.id = req.chat_id;
+
+            // about: explicit-null safe (the optString("null") trap — T33)
+            Object aboutObj = chatJson.opt("about");
+            if (aboutObj instanceof String && ((String) aboutObj).length() > 0) {
+                full.about = (String) aboutObj;
+            }
+
+            TLRPC.TL_chatParticipants participants = new TLRPC.TL_chatParticipants();
+            participants.chat_id = req.chat_id;
+            long creatorId = 0;
+            for (int i = 0; i < membersJson.length(); i++) {
+                JSONObject member = membersJson.getJSONObject(i);
+                if ("creator".equals(member.optString("role"))) {
+                    JSONObject c = member.optJSONObject("user");
+                    if (c != null) {
+                        creatorId = c.optLong("id");
+                        break;
+                    }
+                }
+            }
+
+            TLRPC.TL_chat chat = mapGroupChat(chatJson);
+            for (int i = 0; i < membersJson.length(); i++) {
+                JSONObject member = membersJson.getJSONObject(i);
+                JSONObject userJson = member.optJSONObject("user");
+                if (userJson == null) {
+                    continue;
+                }
+                TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+                String role = member.optString("role");
+                long joined = member.optLong("joined_at", 0);
+                TLRPC.ChatParticipant participant;
+                if ("creator".equals(role)) {
+                    TLRPC.TL_chatParticipantCreator creator = new TLRPC.TL_chatParticipantCreator();
+                    creator.user_id = user.id;
+                    participant = creator;
+                } else if ("admin".equals(role)) {
+                    TLRPC.TL_chatParticipantAdmin admin = new TLRPC.TL_chatParticipantAdmin();
+                    admin.user_id = user.id;
+                    admin.inviter_id = creatorId != 0 ? creatorId : user.id;
+                    admin.date = (int) joined;
+                    participant = admin;
+                } else {
+                    TLRPC.TL_chatParticipant plain = new TLRPC.TL_chatParticipant();
+                    plain.user_id = user.id;
+                    plain.inviter_id = creatorId != 0 ? creatorId : user.id;
+                    plain.date = (int) joined;
+                    participant = plain;
+                }
+                participants.participants.add(participant);
+            }
+            participants.version = participants.participants.size(); // count changes on join/leave
+            full.participants = participants;
+            full.participants_count = participants.participants.size();
+            full.notify_settings = new TLRPC.TL_peerNotifySettings();
+            // exported_invite stays unset (flag off, null) — no invite links in
+            // this backend yet; a planted empty link would wake the link UI.
+
+            JSONObject photoJson = chatJson.optJSONObject("photo");
+            TLRPC.TL_chatPhoto chatPhoto = TlJsonMapper.parseChatPhoto(photoJson);
+            if (chatPhoto != null) {
+                full.chat_photo = chatPhoto;
+                full.flags |= 4;
+            }
+
+            result.full_chat = full;
+            result.chats.add(chat);
+            for (int i = 0; i < membersJson.length(); i++) {
+                JSONObject userJson = membersJson.getJSONObject(i).optJSONObject("user");
+                if (userJson != null) {
+                    result.users.add(TlJsonMapper.parseUser(userJson, false));
+                }
+            }
+            return result;
+        } catch (XoApiException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed chats/members answer: " + e.getMessage());
+        }
+    }
+
+    /**
+     * TL_messages_editChatAbout — group description save (ChatEditActivity →
+     * MessagesController.updateChatAbout:13505). Consumer contract: response
+     * must be TL_boolTrue, then the call site patches info.about and posts
+     * chatInfoDidLoad itself. Empty string clears the about (backend contract).
+     */
+    private static TLObject handleEditChatAbout(int account, TLRPC.TL_messages_editChatAbout req) {
+        long chatId = req.peer instanceof TLRPC.TL_inputPeerChat
+                ? ((TLRPC.TL_inputPeerChat) req.peer).chat_id
+                : 0;
+        if (chatId <= 0) {
+            throw new XoApiException(400, "PEER_ID_INVALID", "unsupported peer for editChatAbout");
+        }
+        RestGateway.getInstance(account).editChatAbout(chatId, req.about != null ? req.about : "");
+        return new TLRPC.TL_boolTrue();
+    }
+
+    /**
+     * TL_contacts_getContacts — the contacts list (ContactsController
+     * loadContacts:1514, HARD cast to contacts_Contacts). The backend list
+     * answers REGISTERED contacts only (Telegram getContacts semantics) with
+     * viewer-ruled users (contact_name → first_name override + phone +
+     * contact flag, mapped by TlJsonMapper). hash: we never answer
+     * contactsNotModified — the client applies the full list every time,
+     * which keeps it coherent with server-side deletions.
+     */
+    private static TLObject handleContactsGet(int account, TLRPC.TL_contacts_getContacts req) {
+        JSONObject answer = RestGateway.getInstance(account).contactsGet();
+        try {
+            TLRPC.TL_contacts_contacts result = new TLRPC.TL_contacts_contacts();
+            JSONArray arr = answer.optJSONArray("contacts");
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject userJson = arr.getJSONObject(i).optJSONObject("user");
+                    if (userJson == null) {
+                        continue;
+                    }
+                    TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+                    TLRPC.TL_contact contact = new TLRPC.TL_contact();
+                    contact.user_id = user.id;
+                    result.contacts.add(contact);
+                    result.users.add(user);
+                }
+            }
+            result.saved_count = answer.optInt("saved_count", 0);
+            return result;
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed contacts/list answer: " + e.getMessage());
+        }
+    }
+
+    /**
+     * TL_contacts_importContacts — device-phonebook batch sync
+     * (performSyncPhoneBook, batches of 500) AND the New-contact sheet
+     * (NewContactBottomSheet:666, single entry). Both consumers HARD cast to
+     * TL_contacts_importedContacts. The backend stores every entry (registered
+     * or not — the Telegram address-book semantics) and answers the registered
+     * matches: matches → imported + users, unregistered numbers stay stored
+     * and NOT in retry_contacts (retry would make the client drop them from
+     * its phone-book cache — they must remain as invite-able entries).
+     */
+    private static TLObject handleContactsImport(int account, TLRPC.TL_contacts_importContacts req) {
+        if (req.contacts.isEmpty()) {
+            throw new XoApiException(400, "CONTACTS_EMPTY", "import carries no contacts");
+        }
+        JSONObject[] entries = new JSONObject[req.contacts.size()];
+        for (int i = 0; i < req.contacts.size(); i++) {
+            TLRPC.TL_inputPhoneContact input = req.contacts.get(i);
+            String first = input.first_name != null ? input.first_name.trim() : "";
+            String last = input.last_name != null ? input.last_name.trim() : "";
+            String name = (first + (first.length() > 0 && last.length() > 0 ? " " : "") + last).trim();
+            if (name.length() == 0) {
+                name = "Contact";
+            }
+            String phone = input.phone != null && input.phone.length() > 0 ? input.phone : ("+" + input.client_id);
+            JSONObject entry = new JSONObject();
+            try {
+                entry.put("phone", phone);
+                entry.put("name", name);
+            } catch (Exception e) {
+                throw new XoApiException(400, "CONTACT_NAME_INVALID", "malformed import entry");
+            }
+            entries[i] = entry;
+        }
+        JSONObject answer = RestGateway.getInstance(account).contactsImport(entries);
+        try {
+            TLRPC.TL_contacts_importedContacts result = new TLRPC.TL_contacts_importedContacts();
+            JSONArray importedJson = answer.optJSONArray("imported");
+            if (importedJson != null) {
+                for (int i = 0; i < importedJson.length(); i++) {
+                    long backendUserId = importedJson.getJSONObject(i).optLong("user_id");
+                    if (backendUserId <= 0) {
+                        continue;
+                    }
+                    TLRPC.TL_importedContact imported = new TLRPC.TL_importedContact();
+                    imported.user_id = backendUserId;
+                    // client_id: the tree keys phone-book entries by it; we
+                    // match positionally — the first N imported entries align
+                    // with the request order per the backend contract.
+                    imported.client_id = i < req.contacts.size() ? req.contacts.get(i).client_id : 0;
+                    result.imported.add(imported);
+                }
+            }
+            JSONArray usersJson = answer.optJSONArray("users");
+            if (usersJson != null) {
+                for (int i = 0; i < usersJson.length(); i++) {
+                    result.users.add(TlJsonMapper.parseUser(usersJson.getJSONObject(i), false));
+                }
+            }
+            return result;
+        } catch (XoApiException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed contacts/import answer: " + e.getMessage());
+        }
+    }
+
+    /**
+     * TL_contacts_addContact — "Add to contacts" from a profile
+     * (ContactAddActivity → ContactsController.addContact:2351, HARD cast to
+     * TL_updates; the consumer reads res.users). The saved (viewer-ruled)
+     * user rides back so the client's cache gains contact_name/phone/contact
+     * immediately. Name: first_name (+ " " + last_name when present).
+     */
+    private static TLObject handleContactsAdd(int account, TLRPC.TL_contacts_addContact req) {
+        long userId = req.id instanceof TLRPC.TL_inputUser
+                ? ((TLRPC.TL_inputUser) req.id).user_id
+                : 0;
+        if (userId <= 0) {
+            throw new XoApiException(400, "USER_ID_INVALID", "unsupported input user");
+        }
+        String first = req.first_name != null ? req.first_name.trim() : "";
+        String last = req.last_name != null ? req.last_name.trim() : "";
+        String name = (first + (first.length() > 0 && last.length() > 0 ? " " : "") + last).trim();
+        if (name.length() == 0) {
+            throw new XoApiException(400, "CONTACT_NAME_INVALID", "contact name is empty");
+        }
+        JSONObject answer = RestGateway.getInstance(account).contactsSave(userId, null, name);
+        TLRPC.TL_updates updates = new TLRPC.TL_updates();
+        updates.date = nowSeconds();
+        JSONObject userJson = answer.optJSONObject("user");
+        if (userJson != null) {
+            updates.users.add(TlJsonMapper.parseUser(userJson, false));
+        }
+        return updates;
+    }
+
+    /**
+     * TL_contacts_deleteContacts — contact removal (ProfileActivity
+     * delete_contact → ContactsController.deleteContact:505, HARD cast to
+     * TL_updates; processUpdates only). Empty updates are sufficient: the
+     * consumer clears its local state itself.
+     */
+    private static TLObject handleContactsDelete(int account, TLRPC.TL_contacts_deleteContacts req) {
+        long[] ids = new long[req.id.size()];
+        for (int i = 0; i < req.id.size(); i++) {
+            TLRPC.InputUser input = req.id.get(i);
+            ids[i] = input instanceof TLRPC.TL_inputUser ? ((TLRPC.TL_inputUser) input).user_id : 0;
+        }
+        if (ids.length > 0) {
+            RestGateway.getInstance(account).contactsDelete(ids);
+        }
+        TLRPC.TL_updates updates = new TLRPC.TL_updates();
+        updates.date = nowSeconds();
+        return updates;
+    }
+
 
     /** TL_updates carrying only a chats list (processUpdates applies chats verbatim). */
     private static TLRPC.TL_updates updatesWithChats(TLRPC.TL_chat chat) {

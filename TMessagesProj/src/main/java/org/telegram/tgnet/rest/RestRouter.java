@@ -62,6 +62,26 @@ import java.util.HashMap;
  *       consumer is the SAME unified send path as ROUTE_SEND
  *       (SendMessagesHelper ~:6417: {@code response instanceof Updates} →
  *       extract TL_updateNewMessage) (T8c).</li>
+ *   <li>ROUTE_GET_FULL_CHAT → TL_messages_chatFull; consumer MessagesController
+ *       loadFullChat callback (~:6481 HARD cast {@code (TL_messages_chatFull) response})
+ *       → putUsersAndChats + updateChatInfo(full_chat) → chatInfoDidLoad.
+ *       That chatFull feeds ProfileActivity's inline members list and
+ *       ChatUsersActivity's local members/administrators reads (T35).</li>
+ *   <li>ROUTE_EDIT_CHAT_ABOUT → TL_boolTrue; consumer MessagesController
+ *       updateChatAbout (~:13505 {@code response instanceof TL_boolTrue}) →
+ *       patches info.about + chatInfoDidLoad (T35).</li>
+ *   <li>ROUTE_CONTACTS_GET → TL_contacts_contacts; consumer ContactsController
+ *       loadContacts (~:1518 HARD cast to contacts_Contacts) →
+ *       processLoadedContacts (T35).</li>
+ *   <li>ROUTE_CONTACTS_IMPORT → TL_contacts_importedContacts; consumers
+ *       NewContactBottomSheet (~:666) and ContactsController
+ *       performSyncPhoneBook (~:1359) HARD casts (T35).</li>
+ *   <li>ROUTE_CONTACTS_ADD → TL_updates with the saved user; consumer
+ *       ContactsController.addContact (~:2367 HARD cast to Updates,
+ *       consumes res.users) (T35).</li>
+ *   <li>ROUTE_CONTACTS_DELETE → TL_updates (empty); consumer
+ *       ContactsController.deleteContact (~:505 HARD cast to Updates,
+ *       processUpdates only) (T35).</li>
  * </ul>
  */
 public final class RestRouter {
@@ -99,6 +119,14 @@ public final class RestRouter {
     public static final int ROUTE_RESOLVE_USERNAME = 24;  // TL_contacts_resolveUsername -> GET /users/resolve.php
     public static final int ROUTE_GET_FULL_USER = 25;     // TL_users_getFullUser -> GET /users/get.php (bio rides the json)
 
+    // T35 — group full info + group about + contacts (backend v1.8.0)
+    public static final int ROUTE_GET_FULL_CHAT = 26;     // TL_messages_getFullChat -> GET /chats/members.php (+chat payload)
+    public static final int ROUTE_EDIT_CHAT_ABOUT = 27;   // TL_messages_editChatAbout -> POST /chats/edit.php {about}
+    public static final int ROUTE_CONTACTS_GET = 28;      // TL_contacts_getContacts -> GET /contacts/list.php
+    public static final int ROUTE_CONTACTS_IMPORT = 29;   // TL_contacts_importContacts -> POST /contacts/save.php (phone path)
+    public static final int ROUTE_CONTACTS_ADD = 30;      // TL_contacts_addContact -> POST /contacts/save.php (user_id path)
+    public static final int ROUTE_CONTACTS_DELETE = 31;   // TL_contacts_deleteContacts -> POST /contacts/delete.php
+
     // constructor ints (TLRPC.java, this tree): TL_upload_getFile = 0xbe5335be,
     // TL_upload_saveFilePart = 0xb304a621, TL_upload_saveBigFilePart = 0xde7b673d,
     // TL_messages_sendMedia = 0x7852834e
@@ -134,6 +162,13 @@ public final class RestRouter {
         ROUTES.put(TLRPC.TL_account_updateUsername.class, ROUTE_UPDATE_USERNAME);
         ROUTES.put(TLRPC.TL_contacts_resolveUsername.class, ROUTE_RESOLVE_USERNAME);
         ROUTES.put(TLRPC.TL_users_getFullUser.class, ROUTE_GET_FULL_USER);
+        // T35 — group full info + group about + contacts
+        ROUTES.put(TLRPC.TL_messages_getFullChat.class, ROUTE_GET_FULL_CHAT);
+        ROUTES.put(TLRPC.TL_messages_editChatAbout.class, ROUTE_EDIT_CHAT_ABOUT);
+        ROUTES.put(TLRPC.TL_contacts_getContacts.class, ROUTE_CONTACTS_GET);
+        ROUTES.put(TLRPC.TL_contacts_importContacts.class, ROUTE_CONTACTS_IMPORT);
+        ROUTES.put(TLRPC.TL_contacts_addContact.class, ROUTE_CONTACTS_ADD);
+        ROUTES.put(TLRPC.TL_contacts_deleteContacts.class, ROUTE_CONTACTS_DELETE);
     }
 
     private RestRouter() {

@@ -71,7 +71,7 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
     private LinearLayout contentLayout;
     private ContextProgressView editDoneItemProgress;
     private OutlineEditText firstNameField;
-    private OutlineEditText lastNameField;
+    // T35: single Name field — the last-name editor was removed from the sheet
     private OutlineTextContainerView phoneOutlineView;
 
     private ArrayList<CountrySelectActivity.Country> countriesArray = new ArrayList<>();
@@ -86,7 +86,6 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
     private String initialPhoneNumber;
     private boolean initialPhoneNumberWithCountryCode;
     private String initialFirstName;
-    private String initialLastName;
 
     BaseFragment parentFragment;
     int classGuid;
@@ -131,32 +130,14 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
         firstNameField = new OutlineEditText(context);
         firstNameField.getEditText().setInputType(InputType.TYPE_TEXT_FLAG_CAP_SENTENCES | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
         firstNameField.getEditText().setImeOptions(EditorInfo.IME_ACTION_NEXT);
-        firstNameField.setHint(LocaleController.getString("FirstName", R.string.FirstName));
+        firstNameField.setHint(LocaleController.getString("XoName", R.string.XoName));
         if (initialFirstName != null) {
             firstNameField.getEditText().setText(initialFirstName);
             initialFirstName = null;
         }
         frameLayout.addView(firstNameField, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 58, Gravity.LEFT | Gravity.TOP, 0, 0, 0, 0));
+        // T35: single Name field — Done jumps straight to the country/phone row
         firstNameField.getEditText().setOnEditorActionListener((textView, i, keyEvent) -> {
-            if (i == EditorInfo.IME_ACTION_NEXT) {
-                lastNameField.requestFocus();
-                lastNameField.getEditText().setSelection(lastNameField.getEditText().length());
-                return true;
-            }
-            return false;
-        });
-
-        lastNameField = new OutlineEditText(context);
-        lastNameField.setBackground(null);
-        lastNameField.getEditText().setInputType(InputType.TYPE_TEXT_FLAG_CAP_SENTENCES | InputType.TYPE_TEXT_FLAG_AUTO_CORRECT);
-        lastNameField.getEditText().setImeOptions(EditorInfo.IME_ACTION_NEXT);
-        lastNameField.setHint(LocaleController.getString("LastName", R.string.LastName));
-        if (initialLastName != null) {
-            lastNameField.getEditText().setText(initialLastName);
-            initialLastName = null;
-        }
-        frameLayout.addView(lastNameField, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 58, Gravity.LEFT | Gravity.TOP, 0, 68, 0, 0));
-        lastNameField.getEditText().setOnEditorActionListener((textView, i, keyEvent) -> {
             if (i == EditorInfo.IME_ACTION_NEXT) {
                 codeField.requestFocus();
                 codeField.setSelection(codeField.length());
@@ -659,7 +640,7 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
         final TLRPC.TL_contacts_importContacts req = new TLRPC.TL_contacts_importContacts();
         final TLRPC.TL_inputPhoneContact inputPhoneContact = new TLRPC.TL_inputPhoneContact();
         inputPhoneContact.first_name = firstNameField.getEditText().getText().toString();
-        inputPhoneContact.last_name = lastNameField.getEditText().getText().toString();
+        inputPhoneContact.last_name = "";
         inputPhoneContact.phone = "+" + codeField.getText().toString() + phoneField.getText().toString();
         req.contacts.add(inputPhoneContact);
         int reqId = ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> {
@@ -776,15 +757,14 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
     }
 
     public void setInitialName(String firstName, String lastName) {
+        // T35: one name — fold any provided last name into it
+        String combined = (firstName != null ? firstName.trim() : "")
+                + (firstName != null && firstName.trim().length() > 0 && lastName != null && lastName.trim().length() > 0 ? " " : "")
+                + (lastName != null ? lastName.trim() : "");
         if (firstNameField != null) {
-            firstNameField.getEditText().setText(firstName);
+            firstNameField.getEditText().setText(combined);
         } else {
-            initialFirstName = firstName;
-        }
-        if (lastNameField != null) {
-            lastNameField.getEditText().setText(lastName);
-        } else {
-            initialLastName = lastName;
+            initialFirstName = combined;
         }
     }
 
@@ -891,11 +871,6 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
         themeDescriptions.add(new ThemeDescription(firstNameField, ThemeDescription.FLAG_HINTTEXTCOLOR, null, null, null, null, Theme.key_windowBackgroundWhiteHintText));
         themeDescriptions.add(new ThemeDescription(firstNameField, ThemeDescription.FLAG_BACKGROUNDFILTER, null, null, null, null, Theme.key_windowBackgroundWhiteInputField));
         themeDescriptions.add(new ThemeDescription(firstNameField, ThemeDescription.FLAG_BACKGROUNDFILTER | ThemeDescription.FLAG_DRAWABLESELECTEDSTATE, null, null, null, null, Theme.key_windowBackgroundWhiteInputFieldActivated));
-
-        themeDescriptions.add(new ThemeDescription(lastNameField, ThemeDescription.FLAG_TEXTCOLOR, null, null, null, null, Theme.key_windowBackgroundWhiteBlackText));
-        themeDescriptions.add(new ThemeDescription(lastNameField, ThemeDescription.FLAG_HINTTEXTCOLOR, null, null, null, null, Theme.key_windowBackgroundWhiteHintText));
-        themeDescriptions.add(new ThemeDescription(lastNameField, ThemeDescription.FLAG_BACKGROUNDFILTER, null, null, null, null, Theme.key_windowBackgroundWhiteInputField));
-        themeDescriptions.add(new ThemeDescription(lastNameField, ThemeDescription.FLAG_BACKGROUNDFILTER | ThemeDescription.FLAG_DRAWABLESELECTEDSTATE, null, null, null, null, Theme.key_windowBackgroundWhiteInputFieldActivated));
 
         themeDescriptions.add(new ThemeDescription(codeField, ThemeDescription.FLAG_TEXTCOLOR, null, null, null, null, Theme.key_windowBackgroundWhiteBlackText));
         themeDescriptions.add(new ThemeDescription(codeField, ThemeDescription.FLAG_BACKGROUNDFILTER, null, null, null, null, Theme.key_windowBackgroundWhiteInputField));
