@@ -802,7 +802,8 @@ public class ActionIntroActivity extends BaseFragment implements LocationControl
                 }
             }
             if (enabled) {
-                presentFragment(new PeopleNearbyActivity(), true);
+                // T37: People Nearby is removed — the inert nearby intro type
+                // no longer navigates anywhere.
             }
         }
     }
@@ -844,7 +845,8 @@ public class ActionIntroActivity extends BaseFragment implements LocationControl
                 if (grantResults[0] != PackageManager.PERMISSION_GRANTED) {
                     showDialog(AlertsCreator.createLocationRequiredDialog(getParentActivity(), false));
                 } else {
-                    AndroidUtilities.runOnUIThread(() -> presentFragment(new PeopleNearbyActivity(), true));
+                    // T37: People Nearby is removed — nothing to present after
+                    // the location grant for the inert nearby intro types.
                 }
             }
         } else if (requestCode == CAMERA_PERMISSION_REQUEST_CODE) {

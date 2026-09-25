@@ -277,7 +277,7 @@ public class ContactsAdapter extends RecyclerListView.SectionsAdapter {
                 if (isAdmin) {
                     return row != 1;
                 } else if (needPhonebook) {
-                    return hasGps && row != 2 || !hasGps && row != 1;
+                    return row != 1;
                 } else {
                     return row != 3;
                 }
@@ -361,7 +361,9 @@ public class ContactsAdapter extends RecyclerListView.SectionsAdapter {
                 if (isAdmin) {
                     return 2;
                 } else if (needPhonebook) {
-                    return hasGps ? 3 : 2;
+                    // T37: the AddPeopleNearby row is removed — InviteFriends
+                    // plus the gray section header only.
+                    return 2;
                 } else {
                     return 4;
                 }
@@ -459,9 +461,7 @@ public class ContactsAdapter extends RecyclerListView.SectionsAdapter {
                         }
                         int cellHeight = AndroidUtilities.dp(50);
                         int totalHeight = onlyUsers != 0 ? 0 : cellHeight + AndroidUtilities.dp(30);
-                        if (hasGps) {
-                            totalHeight += cellHeight;
-                        }
+                        // T37: the nearby row no longer contributes height.
                         if (!isAdmin && !needPhonebook) {
                             totalHeight += cellHeight;
                         }
@@ -570,9 +570,9 @@ public class ContactsAdapter extends RecyclerListView.SectionsAdapter {
                     if (needPhonebook) {
                         if (position == 0) {
                             textCell.setTextAndIcon(LocaleController.getString("InviteFriends", R.string.InviteFriends), R.drawable.msg_invite, false);
-                        } else if (position == 1) {
-                            textCell.setTextAndIcon(LocaleController.getString("AddPeopleNearby", R.string.AddPeopleNearby), R.drawable.msg_location, false);
                         }
+                        // T37: the AddPeopleNearby row is gone; position 1 is
+                        // the gray Contacts section header (view type 2).
                     } else if (isAdmin) {
                         if (isChannel) {
                             textCell.setTextAndIcon(LocaleController.getString("ChannelInviteViaLink", R.string.ChannelInviteViaLink), R.drawable.msg_link2, false);
@@ -640,7 +640,7 @@ public class ContactsAdapter extends RecyclerListView.SectionsAdapter {
                         return 2;
                     }
                 } else if (needPhonebook) {
-                    if (hasGps && position == 2 || !hasGps && position == 1) {
+                    if (position == 1) {
                         return isEmpty ? 5 : 2;
                     }
                 } else if (position == 3) {

@@ -67,7 +67,11 @@ public final class TlJsonMapper {
         // makes phone-bearing shapes common, so the read must be null-safe).
         Object phoneObj = object.opt("phone");
         String phone = phoneObj instanceof String ? (String) phoneObj : null;
-        if (phone != null && phone.length() > 0) {
+        // T37 defense in depth: a phone that IS the literal "null" (4 chars —
+        // the org.json sentinel-stringification artifact) must never enter
+        // the user object: it passes every isEmpty() guard and renders as
+        // "+null". Treat it as absent.
+        if (phone != null && phone.length() > 0 && !"null".equals(phone)) {
             user.phone = phone;
             user.flags |= 16;
         }

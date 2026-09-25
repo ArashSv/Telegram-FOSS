@@ -915,18 +915,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
         if (permissions.length == 0 || grantResults.length == 0) return;
 
         boolean granted = grantResults[0] == PackageManager.PERMISSION_GRANTED;
-        if (requestCode == 6) {
-            checkPermissions = false;
-            if (currentViewNum == VIEW_PHONE_INPUT) {
-                ((PhoneView)views[currentViewNum]).confirmedNumber = true;
-                views[currentViewNum].onNextPressed(null);
-            }
-        } else if (requestCode == BasePermissionsActivity.REQUEST_CODE_CALLS) {
-            checkShowPermissions = false;
-            if (currentViewNum == VIEW_PHONE_INPUT) {
-                ((PhoneView) views[currentViewNum]).fillNumber();
-            }
-        } else if (requestCode == BasePermissionsActivity.REQUEST_CODE_OPEN_CAMERA) {
+        // T37: requestCodes 6/7 (call/phone-number permissions) are gone —
+        // those permissions are removed from the product.
+        if (requestCode == BasePermissionsActivity.REQUEST_CODE_OPEN_CAMERA) {
             if (granted) {
                 LoginActivityRegisterView registerView = (LoginActivityRegisterView) views[VIEW_REGISTER];
                 registerView.imageUpdater.openCamera();
@@ -1015,22 +1006,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
 
     @Override
     protected void onDialogDismiss(Dialog dialog) {
-        if (Build.VERSION.SDK_INT >= 23) {
-            if (dialog == permissionsDialog && !permissionsItems.isEmpty() && getParentActivity() != null) {
-                try {
-                    getParentActivity().requestPermissions(permissionsItems.toArray(new String[0]), 6);
-                } catch (Exception ignore) {
-
-                }
-            } else if (dialog == permissionsShowDialog && !permissionsShowItems.isEmpty() && getParentActivity() != null) {
-                AndroidUtilities.runOnUIThread(() -> needRequestPermissions = false, 200);
-                try {
-                    getParentActivity().requestPermissions(permissionsShowItems.toArray(new String[0]), 7);
-                } catch (Exception ignore) {
-
-                }
-            }
-        }
+        // T37: the permissionsDialog / permissionsShowDialog retry branches
+        // are removed — the call/phone-number permission flows no longer
+        // exist in this product.
     }
 
     @Override
@@ -2834,64 +2812,11 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                         currentDoneType = DONE_TYPE_FLOATING;
                         needShowProgress(0, false);
 
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && AndroidUtilities.isSimAvailable()) {
-                            boolean allowCall = getParentActivity().checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED;
-                            boolean allowCancelCall = getParentActivity().checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED;
-                            boolean allowReadCallLog = Build.VERSION.SDK_INT < Build.VERSION_CODES.P || getParentActivity().checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED;
-                            boolean allowReadPhoneNumbers = Build.VERSION.SDK_INT < Build.VERSION_CODES.O || getParentActivity().checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED;;
-                            if (codeField != null && "888".equals(codeField.getText())) {
-                                allowCall = true;
-                                allowCancelCall = true;
-                                allowReadCallLog = true;
-                                allowReadPhoneNumbers = true;
-                            }
-                            if (checkPermissions) {
-                                permissionsItems.clear();
-                                if (!allowCall) {
-                                    permissionsItems.add(Manifest.permission.READ_PHONE_STATE);
-                                }
-                                if (!allowCancelCall) {
-                                    permissionsItems.add(Manifest.permission.CALL_PHONE);
-                                }
-                                if (!allowReadCallLog) {
-                                    permissionsItems.add(Manifest.permission.READ_CALL_LOG);
-                                }
-                                if (!allowReadPhoneNumbers && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                    permissionsItems.add(Manifest.permission.READ_PHONE_NUMBERS);
-                                }
-                                if (!permissionsItems.isEmpty()) {
-                                    SharedPreferences preferences = MessagesController.getGlobalMainSettings();
-                                    if (preferences.getBoolean("firstlogin", true) || getParentActivity().shouldShowRequestPermissionRationale(Manifest.permission.READ_PHONE_STATE) || getParentActivity().shouldShowRequestPermissionRationale(Manifest.permission.READ_CALL_LOG)) {
-                                        preferences.edit().putBoolean("firstlogin", false).commit();
-                                        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-
-                                        builder.setPositiveButton(getString("Continue", R.string.Continue), null);
-                                        int resId;
-                                        if (!allowCall && (!allowCancelCall || !allowReadCallLog)) {
-                                            builder.setMessage(getString("AllowReadCallAndLog", R.string.AllowReadCallAndLog));
-                                            resId = R.raw.calls_log;
-                                        } else if (!allowCancelCall || !allowReadCallLog) {
-                                            builder.setMessage(getString("AllowReadCallLog", R.string.AllowReadCallLog));
-                                            resId = R.raw.calls_log;
-                                        } else {
-                                            builder.setMessage(getString("AllowReadCall", R.string.AllowReadCall));
-                                            resId = R.raw.incoming_calls;
-                                        }
-                                        builder.setTopAnimation(resId, 46, false, Theme.getColor(Theme.key_dialogTopBackground));
-                                        permissionsDialog = showDialog(builder.create());
-                                        confirmedNumber = true;
-                                    } else {
-                                        try {
-                                            getParentActivity().requestPermissions(permissionsItems.toArray(new String[0]), 6);
-                                        } catch (Exception e) {
-                                            FileLog.e(e);
-                                        }
-                                    }
-                                    return;
-                                }
-                            }
-                        }
-
+                        // T37: call-related permissions (READ_PHONE_STATE,
+                        // READ_PHONE_NUMBERS, CALL_PHONE, READ_CALL_LOG) are
+                        // removed from the product — the login screen never
+                        // requests them (they existed only to auto-fill the
+                        // number from the SIM). Phone entry is manual.
                         confirmView.animateProgress(()->{
                             confirmView.dismiss();
                             AndroidUtilities.runOnUIThread(()-> {
@@ -2909,65 +2834,10 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                 phoneNumberConfirmView.dismiss();
             }
 
-            boolean simcardAvailable = AndroidUtilities.isSimAvailable();
-            boolean allowCall = true;
-            boolean allowCancelCall = true;
-            boolean allowReadCallLog = true;
-            boolean allowReadPhoneNumbers = true;
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && simcardAvailable) {
-                allowCall = getParentActivity().checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED;
-                allowCancelCall = getParentActivity().checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED;
-                allowReadCallLog = Build.VERSION.SDK_INT < Build.VERSION_CODES.P || getParentActivity().checkSelfPermission(Manifest.permission.READ_CALL_LOG) == PackageManager.PERMISSION_GRANTED;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    allowReadPhoneNumbers = getParentActivity().checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED;
-                }
-                if (checkPermissions) {
-                    permissionsItems.clear();
-                    if (!allowCall) {
-                        permissionsItems.add(Manifest.permission.READ_PHONE_STATE);
-                    }
-                    if (!allowCancelCall) {
-                        permissionsItems.add(Manifest.permission.CALL_PHONE);
-                    }
-                    if (!allowReadCallLog) {
-                        permissionsItems.add(Manifest.permission.READ_CALL_LOG);
-                    }
-                    if (!allowReadPhoneNumbers && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        permissionsItems.add(Manifest.permission.READ_PHONE_NUMBERS);
-                    }
-                    if (!permissionsItems.isEmpty()) {
-                        SharedPreferences preferences = MessagesController.getGlobalMainSettings();
-                        if (preferences.getBoolean("firstlogin", true) || getParentActivity().shouldShowRequestPermissionRationale(Manifest.permission.READ_PHONE_STATE) || getParentActivity().shouldShowRequestPermissionRationale(Manifest.permission.READ_CALL_LOG)) {
-                            preferences.edit().putBoolean("firstlogin", false).commit();
-                            AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-
-                            builder.setPositiveButton(getString("Continue", R.string.Continue), null);
-                            int resId;
-                            if (!allowCall && (!allowCancelCall || !allowReadCallLog)) {
-                                builder.setMessage(getString("AllowReadCallAndLog", R.string.AllowReadCallAndLog));
-                                resId = R.raw.calls_log;
-                            } else if (!allowCancelCall || !allowReadCallLog) {
-                                builder.setMessage(getString("AllowReadCallLog", R.string.AllowReadCallLog));
-                                resId = R.raw.calls_log;
-                            } else {
-                                builder.setMessage(getString("AllowReadCall", R.string.AllowReadCall));
-                                resId = R.raw.incoming_calls;
-                            }
-                            builder.setTopAnimation(resId, 46, false, Theme.getColor(Theme.key_dialogTopBackground));
-                            permissionsDialog = showDialog(builder.create());
-                            confirmedNumber = true;
-                        } else {
-                            try {
-                                getParentActivity().requestPermissions(permissionsItems.toArray(new String[0]), 6);
-                            } catch (Exception e) {
-                                FileLog.e(e);
-                            }
-                        }
-                        return;
-                    }
-                }
-            }
+            // T37: the call-permission request flow that lived here (the
+            // READ_PHONE_STATE / CALL_PHONE / READ_CALL_LOG /
+            // READ_PHONE_NUMBERS ask before proceeding) is removed with the
+            // rest of the calls feature — login proceeds directly.
 
             if (countryState == COUNTRY_STATE_EMPTY) {
                 needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("ChooseCountry", R.string.ChooseCountry));
@@ -3229,119 +3099,11 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             if (numberFilled || activityMode != MODE_LOGIN) {
                 return;
             }
-            try {
-                TelephonyManager tm = (TelephonyManager) ApplicationLoader.applicationContext.getSystemService(Context.TELEPHONY_SERVICE);
-                if (AndroidUtilities.isSimAvailable()) {
-                    boolean allowCall = true;
-                    boolean allowReadPhoneNumbers = true;
-                    if (Build.VERSION.SDK_INT >= 23) {
-                        allowCall = getParentActivity().checkSelfPermission(Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED;
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                            allowReadPhoneNumbers = getParentActivity().checkSelfPermission(Manifest.permission.READ_PHONE_NUMBERS) == PackageManager.PERMISSION_GRANTED;
-                        }
-                        if (checkShowPermissions && (!allowCall || !allowReadPhoneNumbers)) {
-                            permissionsShowItems.clear();
-                            if (!allowCall) {
-                                permissionsShowItems.add(Manifest.permission.READ_PHONE_STATE);
-                            }
-                            if (!allowReadPhoneNumbers && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                permissionsShowItems.add(Manifest.permission.READ_PHONE_NUMBERS);
-                            }
-                            if (!permissionsShowItems.isEmpty()) {
-                                List<String> callbackPermissionItems = new ArrayList<>(permissionsShowItems);
-                                Runnable r = () -> {
-                                    SharedPreferences preferences = MessagesController.getGlobalMainSettings();
-                                    if (preferences.getBoolean("firstloginshow", true) || getParentActivity().shouldShowRequestPermissionRationale(Manifest.permission.READ_PHONE_STATE)) {
-                                        preferences.edit().putBoolean("firstloginshow", false).commit();
-                                        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity());
-
-                                        builder.setTopAnimation(R.raw.incoming_calls, 46, false, Theme.getColor(Theme.key_dialogTopBackground));
-                                        builder.setPositiveButton(getString("Continue", R.string.Continue), null);
-                                        builder.setMessage(getString("AllowFillNumber", R.string.AllowFillNumber));
-                                        permissionsShowDialog = showDialog(builder.create(), true, null);
-                                        needRequestPermissions = true;
-                                    } else {
-                                        getParentActivity().requestPermissions(callbackPermissionItems.toArray(new String[0]), BasePermissionsActivity.REQUEST_CODE_CALLS);
-                                    }
-                                };
-                                if (isAnimatingIntro) {
-                                    animationFinishCallback = r;
-                                } else {
-                                    r.run();
-                                }
-                            }
-                            return;
-                        }
-                    }
-                    numberFilled = true;
-                    if (!newAccount && allowCall && allowReadPhoneNumbers) {
-                        codeField.setAlpha(0);
-                        phoneField.setAlpha(0);
-
-                        String number = PhoneFormat.stripExceptNumbers(tm.getLine1Number());
-                        String textToSet = null;
-                        boolean ok = false;
-                        if (!TextUtils.isEmpty(number)) {
-                            if (number.length() > 4) {
-                                for (int a = 4; a >= 1; a--) {
-                                    String sub = number.substring(0, a);
-
-                                    CountrySelectActivity.Country country;
-                                    List<CountrySelectActivity.Country> list = codesMap.get(sub);
-                                    if (list == null) {
-                                        country = null;
-                                    } else if (list.size() > 1) {
-                                        SharedPreferences preferences = MessagesController.getGlobalMainSettings();
-                                        String lastMatched = preferences.getString("phone_code_last_matched_" + sub, null);
-
-                                        country = list.get(list.size() - 1);
-                                        if (lastMatched != null) {
-                                            for (CountrySelectActivity.Country c : countriesArray) {
-                                                if (Objects.equals(c.shortname, lastMatched)) {
-                                                    country = c;
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        country = list.get(0);
-                                    }
-
-                                    if (country != null) {
-                                        ok = true;
-                                        textToSet = number.substring(a);
-                                        codeField.setText(sub);
-                                        break;
-                                    }
-                                }
-                                if (!ok) {
-                                    textToSet = number.substring(1);
-                                    codeField.setText(number.substring(0, 1));
-                                }
-                            }
-                            if (textToSet != null) {
-                                phoneField.requestFocus();
-                                phoneField.setText(textToSet);
-                                phoneField.setSelection(phoneField.length());
-                            }
-                        }
-
-                        if (phoneField.length() > 0) {
-                            AnimatorSet set = new AnimatorSet().setDuration(300);
-                            set.playTogether(ObjectAnimator.ofFloat(codeField, View.ALPHA, 1f),
-                                    ObjectAnimator.ofFloat(phoneField, View.ALPHA, 1f));
-                            set.start();
-
-                            confirmedNumber = true;
-                        } else {
-                            codeField.setAlpha(1);
-                            phoneField.setAlpha(1);
-                        }
-                    }
-                }
-            } catch (Exception e) {
-                FileLog.e(e);
-            }
+            // T37: the READ_PHONE_STATE / READ_PHONE_NUMBERS request flow
+            // that lived here (SIM auto-fill of the number) is removed with
+            // the call permissions. The user types the number manually,
+            // which is the only behavior this product needs.
+            numberFilled = true;
         }
 
         @Override
