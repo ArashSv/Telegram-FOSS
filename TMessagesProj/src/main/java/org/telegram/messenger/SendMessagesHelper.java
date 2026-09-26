@@ -8232,8 +8232,16 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     if (thumb == null) {
                         thumb = SendMessagesHelper.createVideoThumbnail(path, MediaStore.Video.Thumbnails.MINI_KIND);
                     }
+                    // T47: only REPLACE the existing thumb when a frame was
+                    // actually decoded — scaleAndSaveImage(null) returns null
+                    // and thumbs.set(0, null) plants a null element (NPE later
+                    // in the cell renderers). Server-mapped documents always
+                    // carry a real thumb here; keeping it is strictly better.
                     int side = isEncrypted ? 90 : MEDIA_THUMB_SIDE;
-                    document.thumbs.set(0, ImageLoader.scaleAndSaveImage(photoSize, thumb, side, side, 55, false, true));
+                    TLRPC.PhotoSize generated = ImageLoader.scaleAndSaveImage(photoSize, thumb, side, side, 55, false, true);
+                    if (generated != null) {
+                        document.thumbs.set(0, generated);
+                    }
                 }
             }
         }

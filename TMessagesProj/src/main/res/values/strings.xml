@@ -3420,6 +3420,7 @@
     <string name="PhotoSavedToDownloadsHintLinked">Photo saved to **downloads**.</string>
     <string name="VideoSavedToDownloadsHintLinked">Video saved to **downloads**.</string>
     <string name="GifSavedHint">Added to saved GIFs</string>
+    <string name="GifsLimitReached">Sorry, your GIF collection is full (%1$d). Remove one first.</string>
     <string name="GifSavedToDownloadsHintLinked">GIF saved to **downloads**.</string>
     <string name="AudioSavedHint">File saved to music</string>
     <string name="FileSavedHintLinked">File saved to **downloads**.</string>

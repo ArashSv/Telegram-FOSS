@@ -4190,6 +4190,28 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         }
     }
 
+    /**
+     * T47 — rollback + surface for a REFUSED "Save to GIFs" (PhotoViewer path).
+     * The optimistic local add is undone (memory + web_recent_v3) and the
+     * failure is announced; success needs nothing here — MessagesController
+     * force-syncs the server collection, which refreshes an open panel.
+     */
+    private void onSaveGifError(TLRPC.Document document, TLRPC.TL_error error) {
+        if (document != null) {
+            MediaDataController.getInstance(currentAccount).removeLocalRecentGif(document.id);
+        }
+        if (containerView == null || parentActivity == null) {
+            return;
+        }
+        if (error != null && "GIFS_LIMIT".equals(error.text)) {
+            BulletinFactory.of(containerView, resourcesProvider).createErrorBulletin(
+                    LocaleController.formatString(R.string.GifsLimitReached, MessagesController.getInstance(currentAccount).savedGifsLimitDefault),
+                    resourcesProvider).show();
+        } else {
+            BulletinFactory.of(containerView, resourcesProvider).createErrorBulletin(LocaleController.getString(R.string.ErrorOccurred), resourcesProvider).show();
+        }
+    }
+
     private void showDownloadAlert() {
         AlertDialog.Builder builder = new AlertDialog.Builder(parentActivity, resourcesProvider);
         builder.setTitle(LocaleController.getString("AppName", R.string.AppName));
@@ -5279,20 +5301,27 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     bottomLayout.setTag(1);
                     bottomLayout.setVisibility(View.VISIBLE);
                 } else if (id == gallery_menu_savegif) {
+                    // T47: optimistic local add stays, but the server outcome is
+                    // now observed — a refused save (collection full / access /
+                    // transport) rolls the local add back and surfaces an error
+                    // instead of silently pretending the gif was saved.
+                    final TLRPC.Document savedDocument;
                     if (currentMessageObject != null) {
-                        TLRPC.Document document = currentMessageObject.getDocument();
+                        savedDocument = currentMessageObject.getDocument();
                         if (parentChatActivity != null && parentChatActivity.chatActivityEnterView != null) {
-                            parentChatActivity.chatActivityEnterView.addRecentGif(document);
+                            parentChatActivity.chatActivityEnterView.addRecentGif(savedDocument);
                         } else {
-                            MediaDataController.getInstance(currentAccount).addRecentGif(document, (int) (System.currentTimeMillis() / 1000), true);
+                            MediaDataController.getInstance(currentAccount).addRecentGif(savedDocument, (int) (System.currentTimeMillis() / 1000), true);
                         }
-                        MessagesController.getInstance(currentAccount).saveGif(currentMessageObject, document);
+                        MessagesController.getInstance(currentAccount).saveGif(currentMessageObject, savedDocument, error -> onSaveGifError(savedDocument, error));
                     } else if (pageBlocksAdapter != null) {
                         TLObject object = pageBlocksAdapter.getMedia(currentIndex);
                         if (object instanceof TLRPC.Document) {
-                            TLRPC.Document document = (TLRPC.Document) object;
-                            MediaDataController.getInstance(currentAccount).addRecentGif(document, (int) (System.currentTimeMillis() / 1000), true);
-                            MessagesController.getInstance(currentAccount).saveGif(pageBlocksAdapter.getParentObject(), document);
+                            savedDocument = (TLRPC.Document) object;
+                            MediaDataController.getInstance(currentAccount).addRecentGif(savedDocument, (int) (System.currentTimeMillis() / 1000), true);
+                            MessagesController.getInstance(currentAccount).saveGif(pageBlocksAdapter.getParentObject(), savedDocument, error -> onSaveGifError(savedDocument, error));
+                        } else {
+                            savedDocument = null;
                         }
                     } else {
                         return;
