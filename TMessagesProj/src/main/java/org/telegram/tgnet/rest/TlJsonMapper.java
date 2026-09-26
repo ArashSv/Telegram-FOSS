@@ -496,6 +496,21 @@ public final class TlJsonMapper {
      * locations are planted too for in-memory coherence.
      */
     public static final int VIRTUAL_DC = 1;
+    /**
+     * T47 — sentinel access_hash for REST-mapped GIF documents. Every real
+     * Telegram document carries a non-zero access_hash; the tree reads it as
+     * "this file already lives on the server". With the sentinel, re-sending
+     * a saved gif (emoji-panel GIF tab tap, sendSticker -> sendMessage type 7)
+     * takes the by-reference TL_inputMediaDocument branch
+     * (SendMessagesHelper ~:4592) instead of the upload branch — which, for a
+     * server-resident document with no local file, used to schedule
+     * FileUploadOperation("") and FAIL the message. RestDispatcher.handleSendMedia
+     * maps TL_inputMediaDocument straight to messages/send.php {media_file_id}
+     * (alreadyBackend — no finalize, no re-upload, the Telegram semantics).
+     * GIFs only: every other document kind keeps access_hash = 0 so its
+     * upload behavior is byte-for-byte unchanged.
+     */
+    public static final long GIF_ACCESS_HASH_SENTINEL = 1L;
     /** Server thumb cap (FilesController::makeThumbnail) — mirrored for local layout hints.
      * v2.3.1: 320 -> 240 (nominal 's' dims hint only; bubble 'm' stays BUBBLE_MAX_SIDE). */
     private static final int THUMB_MAX_SIDE = 240;
@@ -618,7 +633,6 @@ public final class TlJsonMapper {
         media.flags |= 1; // document present
         TLRPC.TL_document document = new TLRPC.TL_document();
         document.id = fileId;
-        document.access_hash = 0;
         document.file_reference = new byte[0];
         document.date = messageDate > 0 ? messageDate : (int) (System.currentTimeMillis() / 1000L);
         document.mime_type = mime;
@@ -644,6 +658,9 @@ public final class TlJsonMapper {
         boolean animatedGif = "gif".equals(kind) || "image/gif".equals(mime);
         if (animatedGif) {
             document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
+            // T47: the sentinel makes tab-tap resends a by-reference send
+            // (see GIF_ACCESS_HASH_SENTINEL) — saved gifs are server-resident.
+            document.access_hash = GIF_ACCESS_HASH_SENTINEL;
         }
         boolean isVoice = mime.startsWith("audio/ogg");
         if (mime.startsWith("video/") || "video".equals(kind)) {

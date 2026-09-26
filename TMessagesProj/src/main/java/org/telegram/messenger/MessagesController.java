@@ -8863,6 +8863,24 @@ public class MessagesController extends BaseController implements NotificationCe
     }
 
     public void saveGif(Object parentObject, TLRPC.Document document) {
+        saveGif(parentObject, document, null);
+    }
+
+    /**
+     * T47 — "Save to GIFs" with an outcome callback. The REST backend is the
+     * collection's single source of truth (per-user saved_gifs, durable across
+     * logout and devices), so the save must be OBSERVED, not fire-and-forget:
+     * on success the server collection is force-reloaded (bypasses the
+     * loadRecents one-hour throttle — every open panel + the web_recent_v3
+     * cache converge on the server list, and the gif's bytes warm the media
+     * cache); on failure (GIFS_LIMIT, FILE_ACCESS_DENIED, transport) the
+     * caller rolls back its optimistic local add and tells the user instead
+     * of silently pretending the gif was saved.
+     *
+     * @param onError receives the TL_error (null callback = the old silent
+     *                fire-and-forget behavior)
+     */
+    public void saveGif(Object parentObject, TLRPC.Document document, Utilities.Callback<TLRPC.TL_error> onError) {
         if (parentObject == null || !MessageObject.isGifDocument(document)) {
             return;
         }
@@ -8876,9 +8894,24 @@ public class MessagesController extends BaseController implements NotificationCe
         }
         req.unsave = false;
         getConnectionsManager().sendRequest(req, (response, error) -> {
-            if (error != null && FileRefController.isFileRefError(error.text)) {
-                getFileRefController().requestReference(parentObject, req);
+            if (error != null) {
+                if (FileRefController.isFileRefError(error.text)) {
+                    getFileRefController().requestReference(parentObject, req);
+                } else if (onError != null) {
+                    AndroidUtilities.runOnUIThread(() -> onError.run(error));
+                }
+                return;
             }
+            // success: converge every surface on the server collection NOW
+            // (the push event only covers OTHER devices; this device just
+            // saved and must not wait for the next panel-open throttle slot).
+            AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    getMediaDataController().loadRecents(MediaDataController.TYPE_IMAGE, true, false, true);
+                } catch (Throwable e) {
+                    FileLog.e(e);
+                }
+            });
         });
     }
 

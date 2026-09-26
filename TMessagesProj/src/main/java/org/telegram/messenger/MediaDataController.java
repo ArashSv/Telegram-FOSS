@@ -369,6 +369,23 @@ public class MediaDataController extends BaseController {
         loadingRecentGifs = false;
         recentGifsLoaded = false;
 
+        // T47: lastGifLoadTime (and the sticker load stamps) live in the GLOBAL
+        // "emoji" preferences file, which is NOT wiped on logout — unlike the
+        // per-account database (web_recent_v3 dies with it). After a
+        // logout -> login the panel therefore read an empty cache and then
+        // skipped the server fetch for up to an hour: the user's collection
+        // looked LOST even though gifs/list.php still held it. Reset the
+        // stamps here — cleanup() runs on logout AND on login activation
+        // (LoginActivity) — so the first panel open after (re-)login always
+        // syncs the server collection immediately.
+        MessagesController.getEmojiSettings(currentAccount).edit()
+                .remove("lastGifLoadTime")
+                .remove("lastStickersLoadTime")
+                .remove("lastStickersLoadTimeMask")
+                .remove("lastStickersLoadTimeGreet")
+                .remove("lastStickersLoadTimeFavs")
+                .apply();
+
         currentFetchingEmoji.clear();
         if (Build.VERSION.SDK_INT >= 25) {
             Utilities.globalQueue.postRunnable(() -> {
@@ -1022,6 +1039,32 @@ public class MediaDataController extends BaseController {
 
     public ArrayList<TLRPC.Document> getRecentGifs() {
         return new ArrayList<>(recentGifs);
+    }
+
+    /**
+     * T47 — LOCAL-ONLY removal of a recent gif (memory + web_recent_v3), with
+     * NO unsave request. The rollback half of "Save to GIFs": when the server
+     * rejects the save (GIFS_LIMIT / FILE_ACCESS_DENIED / transport), the
+     * optimistically added entry must not linger — it would evaporate on the
+     * next server sync anyway, which is exactly the reported "saved gifs
+     * disappear" confusion. Posts recentDocumentsDidLoad so an open GIFs
+     * panel re-renders immediately.
+     */
+    public void removeLocalRecentGif(long documentId) {
+        for (int i = 0, N = recentGifs.size(); i < N; i++) {
+            if (recentGifs.get(i).id == documentId) {
+                recentGifs.remove(i);
+                break;
+            }
+        }
+        getMessagesStorage().getStorageQueue().postRunnable(() -> {
+            try {
+                getMessagesStorage().getDatabase().executeFast("DELETE FROM web_recent_v3 WHERE id = '" + documentId + "' AND type = 2").stepThis().dispose();
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+        });
+        AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.recentDocumentsDidLoad, true, TYPE_IMAGE));
     }
 
     public void removeRecentGif(TLRPC.Document document) {
@@ -1985,6 +2028,24 @@ public class MediaDataController extends BaseController {
     }
 
     protected void processLoadedRecentDocuments(int type, ArrayList<TLRPC.Document> documents, boolean gif, int date, boolean replace) {
+        // T47: a failed server load (response == null — transport failure / WAF
+        // reset / error) used to fall through with documents == null and
+        // recentGifs = null — every later getRecentGifs()/updateRecentGifs()
+        // NPE'd and the GIF tab died until relaunch. Keep the current list,
+        // clear the in-flight flag, and do NOT stamp lastGifLoadTime so the
+        // next open retries the server instead of trusting the failure for an
+        // hour.
+        if (documents == null) {
+            AndroidUtilities.runOnUIThread(() -> {
+                if (gif) {
+                    loadingRecentGifs = false;
+                } else {
+                    loadingRecentStickers[type] = false;
+                }
+                FileLog.e("processLoadedRecentDocuments: null list (type=" + type + " gif=" + gif + ") — keeping current");
+            });
+            return;
+        }
         if (documents != null) {
             getMessagesStorage().getStorageQueue().postRunnable(() -> {
                 try {

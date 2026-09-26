@@ -30604,11 +30604,28 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             }
             case OPTION_ADD_TO_GIFS: {
                 TLRPC.Document document = selectedObject.getDocument();
-                getMessagesController().saveGif(selectedObject, document);
                 if (!showGifHint() && getParentActivity() != null) {
                     BulletinFactory.of(this).createDownloadBulletin(BulletinFactory.FileType.GIF, themeDelegate).show();
                 }
                 chatActivityEnterView.addRecentGif(document);
+                // T47: the REST backend is the collection's source of truth —
+                // observe the outcome. On refusal (collection full / access /
+                // transport) roll the optimistic local add back and tell the
+                // user; on success MessagesController force-syncs the server
+                // list (panel + web_recent_v3 cache converge immediately).
+                getMessagesController().saveGif(selectedObject, document, error -> {
+                    if (document != null) {
+                        getMediaDataController().removeLocalRecentGif(document.id);
+                    }
+                    if (getParentActivity() == null || fragmentView == null) {
+                        return;
+                    }
+                    if (error != null && "GIFS_LIMIT".equals(error.text)) {
+                        BulletinFactory.of(this).createErrorBulletin(LocaleController.formatString(R.string.GifsLimitReached, getMessagesController().savedGifsLimitDefault)).show();
+                    } else {
+                        BulletinFactory.of(this).createErrorBulletin(LocaleController.getString(R.string.ErrorOccurred)).show();
+                    }
+                });
                 break;
             }
             case OPTION_EDIT: {
