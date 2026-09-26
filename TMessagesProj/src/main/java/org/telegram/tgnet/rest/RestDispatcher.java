@@ -632,6 +632,12 @@ public final class RestDispatcher {
         String mime = null;
         String name = null;
         Integer width = null, height = null, duration = null;
+        // T46: the document's animated attribute is the TL contract for a
+        // Telegram-style GIF (muted looping MP4). The upstream tree attaches it
+        // in prepareSendingVideo whenever videoEditedInfo.muted is set — the
+        // flag must ride finalize or the backend stamps kind='video' and every
+        // client rebuilds the message as a plain video.
+        boolean asGif = false;
         long thumbTreeId = 0;
 
         if (req.media instanceof TLRPC.TL_inputMediaUploadedPhoto) {
@@ -671,6 +677,9 @@ public final class RestDispatcher {
                 } else if (attribute instanceof TLRPC.TL_documentAttributeAudio) {
                     // duration is a double field in this tree (serialize casts to int)
                     duration = (int) Math.round(((TLRPC.TL_documentAttributeAudio) attribute).duration);
+                } else if (attribute instanceof TLRPC.TL_documentAttributeAnimated) {
+                    // T46: muted video / gif document — carried to finalize as as_gif
+                    asGif = true;
                 }
             }
         } else if (req.media instanceof TLRPC.TL_inputMediaPhoto) {
@@ -696,7 +705,7 @@ public final class RestDispatcher {
             // part count patches any streaming-extended estimate (v1.1b). T14:
             // declare the exact streamed byte total (corruption cross-check).
             long declaredBytes = bridge.uploadedBytesFor(treeUploadId);
-            JSONObject finalizeEnvelope = bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes);
+            JSONObject finalizeEnvelope = bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes, asGif);
             // T29: the finalize answer is the server's final {size, sha256}
             // attestation for the new file — feed the download-integrity index
             // so this client's own later downloads of it verify too.

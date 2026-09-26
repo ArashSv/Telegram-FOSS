@@ -421,6 +421,24 @@ public final class RestGateway {
      */
     public JSONObject fileFinalize(long backendFileId, int chunksTotal, String mediaMime, String mediaName,
                                    Integer width, Integer height, Integer duration, long declaredBytes) {
+        return fileFinalize(backendFileId, chunksTotal, mediaMime, mediaName, width, height, duration, declaredBytes, false);
+    }
+
+    /**
+     * POST /files/finalize.php — assembles + inspects the blob server-side and
+     * returns the v1.1 File JSON (kind/width/height/duration/thumb_file_id/
+     * sha256). {@code mediaMime/mediaName/width/height/duration} are the
+     * client-declared values the server cannot detect itself (video/audio);
+     * images are fully server-validated. Idempotent on ready files.
+     *
+     * <p>T46: {@code asGif} declares the Telegram-style GIF contract — the
+     * upload is a MUTED MP4 animated document (the send editor's mute toggle).
+     * The backend answers kind='gif' over the detected video family (keeping
+     * the real mime + the 25MB gif cap); it only trusts the flag when its own
+     * magic-byte inspection sees video bytes.
+     */
+    public JSONObject fileFinalize(long backendFileId, int chunksTotal, String mediaMime, String mediaName,
+                                   Integer width, Integer height, Integer duration, long declaredBytes, boolean asGif) {
         JSONObject body = putNumber(new JSONObject(), "file_id", backendFileId);
         putNumber(body, "chunks_total", Math.max(1, chunksTotal));
         if (declaredBytes > 0) {
@@ -442,6 +460,9 @@ public final class RestGateway {
         }
         if (duration != null && duration > 0) {
             putNumber(body, "duration", duration);
+        }
+        if (asGif) {
+            put(body, "as_gif", true);
         }
         return fileRequestRetry("files/finalize.php",
                 () -> authenticatedRequest("POST", "files/finalize.php", body));

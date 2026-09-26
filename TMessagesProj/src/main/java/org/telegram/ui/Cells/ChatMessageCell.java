@@ -1100,6 +1100,26 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
     private boolean mediaWasInvisible;
     private boolean timeWasInvisible;
 
+    // T46: persistent "GIF" pill drawn top-left of animated documents
+    // (Telegram-style: the muted-MP4 gif must be recognizable as a GIF).
+    private static TextPaint gifBadgeTextPaint;
+    private static Paint gifBadgeBackgroundPaint;
+    private static final RectF gifBadgeRect = new RectF();
+
+    private static void ensureGifBadgePaints() {
+        if (gifBadgeTextPaint == null) {
+            gifBadgeTextPaint = new TextPaint(TextPaint.ANTI_ALIAS_FLAG);
+            gifBadgeTextPaint.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+            gifBadgeTextPaint.setColor(0xffffffff);
+            gifBadgeTextPaint.setTextSize(AndroidUtilities.dp(11));
+            gifBadgeTextPaint.setTextAlign(Paint.Align.CENTER);
+        }
+        if (gifBadgeBackgroundPaint == null) {
+            gifBadgeBackgroundPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            gifBadgeBackgroundPaint.setColor(0x51000000);
+        }
+    }
+
     private AnimatedEmojiSpan pressedEmoji;
     private LinkSpanDrawable pressedLink;
     private MessageObject.TextLayoutBlock pressedCopyCode;
@@ -12039,6 +12059,26 @@ public class ChatMessageCell extends BaseCell implements SeekBar.SeekBarDelegate
                 setDrawableBounds(Theme.chat_msgMediaMenuDrawable, otherX = (int) (photoImage.getImageX() + photoImage.getImageWidth() - AndroidUtilities.dp(14)), otherY = (int) (photoImage.getImageY() + AndroidUtilities.dp(8.1f)));
                 Theme.chat_msgMediaMenuDrawable.draw(canvas);
                 Theme.chat_msgMediaMenuDrawable.setAlpha(oldAlpha);
+
+                // T46: the "GIF" tag (top-left) — Telegram marks animated
+                // documents so a muted looping video is never mistaken for a
+                // regular video; painted with the same controls fade as the
+                // corner menu dots.
+                ensureGifBadgePaints();
+                int badgeAlpha = (int) (255 * controlsAlpha);
+                int restoreTextAlpha = gifBadgeTextPaint.getAlpha();
+                int restoreBgAlpha = gifBadgeBackgroundPaint.getAlpha();
+                gifBadgeTextPaint.setAlpha(badgeAlpha);
+                gifBadgeBackgroundPaint.setAlpha((int) (0x51 * controlsAlpha));
+                float badgeHeight = AndroidUtilities.dp(17);
+                float badgePaddingX = AndroidUtilities.dp(4.5f);
+                float badgeTextWidth = gifBadgeTextPaint.measureText("GIF");
+                gifBadgeRect.set(photoImage.getImageX() + AndroidUtilities.dp(8), photoImage.getImageY() + AndroidUtilities.dp(8), photoImage.getImageX() + AndroidUtilities.dp(8) + badgeTextWidth + badgePaddingX * 2, photoImage.getImageY() + AndroidUtilities.dp(8) + badgeHeight);
+                canvas.drawRoundRect(gifBadgeRect, badgeHeight / 2f, badgeHeight / 2f, gifBadgeBackgroundPaint);
+                float badgeTextY = gifBadgeRect.centerY() - (gifBadgeTextPaint.descent() + gifBadgeTextPaint.ascent()) / 2f;
+                canvas.drawText("GIF", gifBadgeRect.centerX(), badgeTextY, gifBadgeTextPaint);
+                gifBadgeTextPaint.setAlpha(restoreTextAlpha);
+                gifBadgeBackgroundPaint.setAlpha(restoreBgAlpha);
             }
         } else if (documentAttachType == DOCUMENT_ATTACH_TYPE_MUSIC) {
             if (currentMessageObject.isOutOwner()) {
