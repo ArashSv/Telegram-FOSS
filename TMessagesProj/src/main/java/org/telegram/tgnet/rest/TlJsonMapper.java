@@ -544,6 +544,16 @@ public final class TlJsonMapper {
         RestFileBridge.noteFileMeta(fileId, size,
                 mediaJson.isNull("sha256") ? null : mediaJson.optString("sha256", null));
 
+        // T42: GIFs must resolve to an ANIMATED DOCUMENT, never a still photo.
+        // The backend stamps kind='gif' (v2.3) — and older rows may carry
+        // kind='image' with mime image/gif — both routes land in documentMedia,
+        // which plants TL_documentAttributeAnimated. The photo branch below
+        // must never see a gif (before this fix, a gif with detected dimensions
+        // rendered as a STATIC photo — the reported "gif looks dead" class).
+        if ("gif".equals(kind) || "image/gif".equals(mime)) {
+            return documentMedia(fileId, "image/gif", size, mediaJson.optString("name", null),
+                    kind, width, height, duration, thumbFileId, messageDate);
+        }
         if ("image".equals(kind) && width > 0 && height > 0) {
             return photoMedia(fileId, size, width, height, thumbFileId, messageDate);
         }
@@ -635,7 +645,9 @@ public final class TlJsonMapper {
                 media.flags |= 256; // media.voice — the UI's voice-bubble selector
             }
             document.attributes.add(audio);
-        } else if ("image".equals(kind) && "image/gif".equals(mime)) {
+        } else if ("gif".equals(kind) || "image/gif".equals(mime)) {
+            // T42: animated attribute — the TL contract that makes the whole
+            // tree render + loop this document as a silent video.
             document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
         } else if ("image".equals(kind) && width > 0 && height > 0) {
             // image sent as file: keep dimensions so the gallery preview renders

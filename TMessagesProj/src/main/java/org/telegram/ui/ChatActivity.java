@@ -28227,7 +28227,13 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                                     options.add(OPTION_SHARE);
                                     icons.add(R.drawable.msg_shareout);
                                 } else if (selectedObject.getDocument() != null && !selectedObject.isVoiceOnce() && !selectedObject.isRoundOnce()) {
-                                    if (MessageObject.isNewGifDocument(selectedObject.getDocument())) {
+                                    // T42: image/gif animated documents must get the
+                                    // "Save to GIFs" row too — the old gate keyed on
+                                    // isNewGifDocument (video/mp4 mp4-animations only),
+                                    // so a classic image/gif never offered the row.
+                                    if (MessageObject.isNewGifDocument(selectedObject.getDocument())
+                                            || (MessageObject.isGifDocument(selectedObject.getDocument())
+                                            && !selectedObject.isSticker())) {
                                         items.add(LocaleController.getString("SaveToGIFs", R.string.SaveToGIFs));
                                         options.add(OPTION_ADD_TO_GIFS);
                                         icons.add(R.drawable.msg_gif);

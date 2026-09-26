@@ -5,6 +5,7 @@ import org.json.JSONObject;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.FileLog;
+import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.MessagesStorage;
 import org.telegram.messenger.NotificationCenter;
@@ -233,6 +234,13 @@ public final class UpdatePoller {
                     // T32: profile (name/avatar) changes apply directly — see handleUserUpdated
                     handleUserUpdated(update.optJSONObject("user"));
                     break;
+                case "gifs":
+                    // T42: MY saved-GIF collection changed on another device
+                    // (backend v2.3 owner-only event). Force-reload the server
+                    // collection — bypasses the loadRecents 1-hour throttle;
+                    // the panel re-reads on the next open and while visible.
+                    handleGifsChanged();
+                    break;
                 default:
                     break;
             }
@@ -401,6 +409,23 @@ public final class UpdatePoller {
                 }
             });
         }
+    }
+
+    /**
+     * T42: MY saved-GIF collection changed on another device (backend v2.3
+     * owner-only 'gifs' event). Force-reloads the server collection — the
+     * loadRecents force flag bypasses the 1-hour lastGifLoadTime throttle and
+     * the fresh list lands through processLoadedRecentDocuments, which posts
+     * recentDocumentsDidLoad so an open GIFs panel refreshes in place.
+     */
+    private void handleGifsChanged() {
+        AndroidUtilities.runOnUIThread(() -> {
+            try {
+                MediaDataController.getInstance(account).loadRecents(MediaDataController.TYPE_IMAGE, true, false, true);
+            } catch (Throwable e) {
+                FileLog.e("UpdatePoller: gifs force-reload failed", e);
+            }
+        });
     }
 
     /**
