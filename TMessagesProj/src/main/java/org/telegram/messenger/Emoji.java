@@ -16,7 +16,6 @@ import android.graphics.ColorFilter;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
-import android.graphics.Typeface;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.text.Spannable;
@@ -62,14 +61,6 @@ public class Emoji {
     private static Bitmap[][] emojiBmp = new Bitmap[8][];
     private static boolean[][] loadingEmoji = new boolean[8][];
 
-    // iOS emoji set (Apple Color Emoji converted to the Android CBDT/CBLC color bitmap format).
-    // The typeface below is used ONLY to rasterize the emoji atlas bitmaps (emojiBmp) — it is
-    // never applied to message/input text paints, so regular text keeps its own font.
-    private static final String IOS_EMOJI_FONT_ASSET = "fonts/AppleColorEmoji.ttf";
-    private static volatile Typeface iosEmojiTypeface;
-    private static volatile boolean iosEmojiTypefaceLoaded;
-    private static volatile TextPaint iosEmojiPaint;
-
     public static HashMap<String, Integer> emojiUseHistory = new HashMap<>();
     public static ArrayList<String> recentEmoji = new ArrayList<>();
     public static HashMap<String, String> emojiColor = new HashMap<>();
@@ -114,54 +105,6 @@ public class Emoji {
         }
     }
 
-    private static Typeface getIosEmojiTypeface() {
-        if (!iosEmojiTypefaceLoaded) {
-            synchronized (Emoji.class) {
-                if (!iosEmojiTypefaceLoaded) {
-                    iosEmojiTypefaceLoaded = true;
-                    try {
-                        iosEmojiTypeface = Typeface.createFromAsset(ApplicationLoader.applicationContext.getAssets(), IOS_EMOJI_FONT_ASSET);
-                    } catch (Throwable e) {
-                        FileLog.e(e);
-                        iosEmojiTypeface = null;
-                    }
-                }
-            }
-        }
-        return iosEmojiTypeface;
-    }
-
-    // Rasterizes one emoji sequence into a square bitmap using the bundled iOS emoji font.
-    // Returns null (caller falls back to the bundled PNG asset) if the font is unavailable
-    // or produces degenerate metrics for this sequence.
-    private static Bitmap renderEmojiFromFont(String emoji, int size) {
-        Typeface typeface = getIosEmojiTypeface();
-        if (typeface == null) {
-            return null;
-        }
-        TextPaint paint = iosEmojiPaint;
-        if (paint == null) {
-            paint = new TextPaint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
-            paint.setTypeface(typeface);
-            paint.setColor(0xff000000);
-            iosEmojiPaint = paint;
-        }
-        paint.setTextSize(size);
-        Rect glyphBounds = new Rect();
-        paint.getTextBounds(emoji, 0, emoji.length(), glyphBounds);
-        int width = glyphBounds.width();
-        int height = glyphBounds.height();
-        if (width <= 0 || height <= 0 || width > size * 3 || height > size * 3) {
-            return null;
-        }
-        Bitmap bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888);
-        Canvas canvas = new Canvas(bitmap);
-        float x = (size - width) / 2f - glyphBounds.left;
-        float y = (size - height) / 2f - glyphBounds.top;
-        canvas.drawText(emoji, x, y, paint);
-        return bitmap;
-    }
-
     private static void loadEmoji(final byte page, final short page2) {
         if (emojiBmp[page][page2] == null) {
             if (loadingEmoji[page][page2]) {
@@ -169,15 +112,7 @@ public class Emoji {
             }
             loadingEmoji[page][page2] = true;
             Utilities.globalQueue.postRunnable(() -> {
-                Bitmap bitmap = null;
-                try {
-                    bitmap = renderEmojiFromFont(EmojiData.data[page][page2], AndroidUtilities.density <= 1.0f ? 33 : 66);
-                } catch (Throwable e) {
-                    FileLog.e(e);
-                }
-                if (bitmap == null) {
-                    bitmap = loadBitmap("emoji/" + String.format(Locale.US, "%d_%d.png", page, page2));
-                }
+                final Bitmap bitmap = loadBitmap("emoji/" + String.format(Locale.US, "%d_%d.png", page, page2));
                 if (bitmap != null) {
                     emojiBmp[page][page2] = bitmap;
                     AndroidUtilities.cancelRunOnUIThread(invalidateUiRunnable);
