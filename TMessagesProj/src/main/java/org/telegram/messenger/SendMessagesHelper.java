@@ -6835,7 +6835,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             newMedia.document.mime_type = sentMedia.document.mime_type;
 
             if ((sentMessage.flags & TLRPC.MESSAGE_FLAG_FWD) == 0 && (MessageObject.isOut(sentMessage) || sentMessage.dialog_id == getUserConfig().getClientUserId()) && !MessageObject.isQuickReply(sentMessage)) {
-                if (MessageObject.isNewGifDocument(sentMedia.document)) {
+                // T42: classic image/gif documents auto-collect too — the old
+                // gate (isNewGifDocument, video/mp4 only) silently skipped
+                // them, so a sent gif never surfaced in the GIFs tab recents.
+                if (MessageObject.isNewGifDocument(sentMedia.document)
+                        || (MessageObject.isGifDocument(sentMedia.document) && !MessageObject.isStickerDocument(sentMedia.document))) {
                     boolean save;
                     if (MessageObject.isDocumentHasAttachedStickers(sentMedia.document)) {
                         save = getMessagesController().saveGifsWithStickers;

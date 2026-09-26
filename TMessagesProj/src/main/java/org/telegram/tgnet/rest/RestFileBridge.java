@@ -363,6 +363,10 @@ public final class RestFileBridge {
      *   <li>{@code TL_inputDocumentFileLocation} (documents): {@code id} is the
      *       backend file id; a local_id in [1000, 2000) is the document-thumb
      *       letter (the tree's factory convention).</li>
+     *   <li>{@code TL_inputPeerPhotoFileLocation} (peer avatars — T42): the
+     *       ONLY location class peer avatar requests produce; resolves
+     *       through the avatar crop-id convention (|volume_id|, photo_id
+     *       fallback).</li>
      * </ul>
      * Thumb requests resolve through {@link #thumbFileIdFor} (one cached
      * metadata call per file); when a file has no thumb or the lookup fails,
@@ -394,6 +398,29 @@ public final class RestFileBridge {
             // document-thumb factory convention: local_id = 1000 + letter
             // (the tree copies both volume_id and local_id for thumb requests)
             thumbRequest = localId >= 1000 && localId < 2000;
+        } else if (location instanceof TLRPC.TL_inputPeerPhotoFileLocation) {
+            // T42 — THE avatar fix. Every peer avatar (ImageLocation
+            // .getForUser/getForChat sets photoPeer unconditionally) arrives
+            // HERE — FileLoadOperation ~:310 builds TL_inputPeerPhotoFile-
+            // Location{id=volume_id, volume_id, local_id 'a'|'c', photo_id,
+            // peer} — and this bridge had no branch for the class: resolve
+            // returned 0 and handleFileGet answered FILE_ID_INVALID, so every
+            // avatar NOT already on disk failed to download (other users,
+            // groups, and the self avatar after a restart). The mapper plants
+            // volume_id = -<crop file id> (TlJsonMapper.avatarLocation), so
+            // |volume_id| IS the downloadable crop row; after a storage reload
+            // both slots rebuild from photo_id (= the big crop id) and 'a'
+            // requests therefore stream the big crop — correct pixels, a few
+            // extra bytes, cache-fine. Crops are the public avatar surfaces
+            // (users/chats.avatar_file_id -> thumb_of rule) so access is
+            // guaranteed for every viewer; thumbRequest stays false ('a'/'c'
+            // are real, standalone files).
+            TLRPC.TL_inputPeerPhotoFileLocation peerLoc = (TLRPC.TL_inputPeerPhotoFileLocation) location;
+            parentId = Math.abs(peerLoc.volume_id);
+            if (parentId <= 0) {
+                parentId = Math.abs(peerLoc.photo_id);
+            }
+            thumbRequest = false;
         } else {
             return 0;
         }

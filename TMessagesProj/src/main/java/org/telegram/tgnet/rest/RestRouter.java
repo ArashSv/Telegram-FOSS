@@ -161,6 +161,11 @@ public final class RestRouter {
     public static final int ROUTE_EDIT_CHAT_ADMIN = 36;   // TL_messages_editChatAdmin -> POST /chats/promote.php (binary is_admin, creator-only)
     public static final int ROUTE_DELETE_CHAT = 37;       // TL_messages_deleteChat -> POST /chats/delete.php (creator, delete for everyone)
 
+    // T42 — GIFs + avatar delete (backend v2.3.0)
+    public static final int ROUTE_GET_SAVED_GIFS = 38;    // TL_messages_getSavedGifs -> GET /gifs/list.php (TL_messages_savedGifs{gifs:[Document]})
+    public static final int ROUTE_SAVE_GIF = 39;          // TL_messages_saveGif -> POST /gifs/save.php {file_id, unsave} (TL_boolTrue)
+    public static final int ROUTE_UPDATE_PROFILE_PHOTO = 40; // TL_photos_updateProfilePhoto -> POST /users/delete-photo.php {} (TL_inputPhotoEmpty = delete; TL_photos_photo)
+
     // constructor ints (TLRPC.java, this tree): TL_upload_getFile = 0xbe5335be,
     // TL_upload_saveFilePart = 0xb304a621, TL_upload_saveBigFilePart = 0xde7b673d,
     // TL_messages_sendMedia = 0x7852834e
@@ -231,6 +236,23 @@ public final class RestRouter {
         ROUTES.put(TLRPC.TL_messages_deleteChatUser.class, ROUTE_DELETE_CHAT_USER);
         ROUTES.put(TLRPC.TL_messages_editChatAdmin.class, ROUTE_EDIT_CHAT_ADMIN);
         ROUTES.put(TLRPC.TL_messages_deleteChat.class, ROUTE_DELETE_CHAT);
+        // T42 — the saved-GIF collection. The GIFs tab always existed in the
+        // emoji panel, but its server sync (MediaDataController.loadRecents
+        // ~:1919 -> TL_messages_getSavedGifs) and the "Save to GIFs" action
+        // (MessagesController.saveGif ~:8878 / MediaDataController
+        // .removeRecentGif ~:1043 -> TL_messages_saveGif) were default-denied
+        // — the panel only ever showed locally-cached recents and the server
+        // never learned about a save. Routed to the v2.3.0 gifs endpoints.
+        ROUTES.put(TLRPC.TL_messages_getSavedGifs.class, ROUTE_GET_SAVED_GIFS);
+        ROUTES.put(TLRPC.TL_messages_saveGif.class, ROUTE_SAVE_GIF);
+        // T42 — avatar DELETE of the CURRENT photo. ProfileActivity's delete
+        // dialog / PhotoViewer's delete row funnel through
+        // MessagesController.deleteUserPhoto(null) ~:7757 which sends
+        // TL_photos_updateProfilePhoto{id: TL_inputPhotoEmpty}; default-deny
+        // meant the backend never learned, the avatar resurrected on the next
+        // users/get and other devices never saw the removal. (Set-as-main with
+        // a real TL_inputPhoto is a no-op success on this single-avatar backend.)
+        ROUTES.put(TLRPC.TL_photos_updateProfilePhoto.class, ROUTE_UPDATE_PROFILE_PHOTO);
     }
 
     private RestRouter() {

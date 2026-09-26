@@ -19347,7 +19347,10 @@ public class MessagesController extends BaseController implements NotificationCe
                     hasNotOutMessage = true;
                 }
                 if (message.isOut() && !message.isSending() && !message.isForwarded()) {
-                    if (message.isNewGif()) {
+                    // T42: classic image/gif documents auto-collect too (the
+                    // old isNewGif() gate covered only video/mp4 animations).
+                    if (message.isNewGif()
+                            || (message.isGif() && !MessageObject.isStickerDocument(message.messageOwner.media.document))) {
                         boolean save;
                         if (MessageObject.isDocumentHasAttachedStickers(message.messageOwner.media.document)) {
                             save = getMessagesController().saveGifsWithStickers;

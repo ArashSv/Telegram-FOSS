@@ -601,6 +601,32 @@ public final class RestGateway {
         return authenticatedRequest("POST", "users/delete-photo.php", new JSONObject());
     }
 
+    // ------------------------------------------------------------------ T42: saved GIFs
+
+    /**
+     * GET /gifs/list.php — the caller's saved-GIF collection (max 30, newest
+     * first): {ok, gifs:[file json...], hash, max}. Each entry parses through
+     * TlJsonMapper.parseMedia in the dispatcher (kind='gif' -> animated doc).
+     */
+    public JSONObject getGifs() {
+        return authenticatedRequest("GET", "gifs/list.php", null);
+    }
+
+    /**
+     * POST /gifs/save.php {file_id, unsave} — add (unsave=false) or remove
+     * (unsave=true) a gif from the caller's collection. GIFS_LIMIT (400)
+     * answers when the collection already holds 30 gifs.
+     */
+    public JSONObject saveGif(long fileId, boolean unsave) {
+        JSONObject body = putNumber(new JSONObject(), "file_id", fileId);
+        try {
+            body.put("unsave", unsave);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for unsave", e);
+        }
+        return authenticatedRequest("POST", "gifs/save.php", body);
+    }
+
     // ------------------------------------------------------------------ T33: usernames + bio + deep links
 
     /**

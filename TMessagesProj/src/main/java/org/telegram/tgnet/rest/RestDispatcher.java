@@ -237,6 +237,15 @@ public final class RestDispatcher {
                 case RestRouter.ROUTE_DELETE_CHAT:
                     response = handleDeleteChat(account, (TLRPC.TL_messages_deleteChat) object);
                     break;
+                case RestRouter.ROUTE_GET_SAVED_GIFS:
+                    response = handleGetSavedGifs(account, (TLRPC.TL_messages_getSavedGifs) object);
+                    break;
+                case RestRouter.ROUTE_SAVE_GIF:
+                    response = handleSaveGif(account, (TLRPC.TL_messages_saveGif) object);
+                    break;
+                case RestRouter.ROUTE_UPDATE_PROFILE_PHOTO:
+                    response = handleUpdateProfilePhoto(account, (TLRPC.TL_photos_updateProfilePhoto) object);
+                    break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
                     break;
@@ -962,6 +971,107 @@ public final class RestDispatcher {
             }
         }
         return new TLRPC.Vector();
+    }
+
+    /**
+     * T42 — TL_messages_getSavedGifs: the GIFs tab's server sync
+     * (MediaDataController.loadRecents ~:1919). The backend answers the full
+     * collection (max 30 rows — always cheap); the client hash round-trip
+     * never matches the server crc32, so NotModified is not attempted — the
+     * full-list answer IS the refresh. Each file json parses through the
+     * regular media mapper (kind='gif' -> TL_document with the animated
+     * attribute), and the documents feed the existing recent-gifs machinery.
+     * Contract: {@code TL_messages_savedGifs{gifs: [TL_document...]}}.
+     */
+    private static TLObject handleGetSavedGifs(int account, TLRPC.TL_messages_getSavedGifs req) {
+        JSONObject answer = RestGateway.getInstance(account).getGifs();
+        TLRPC.TL_messages_savedGifs result = new TLRPC.TL_messages_savedGifs();
+        org.json.JSONArray arr = answer == null ? null : answer.optJSONArray("gifs");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject fileJson = arr.optJSONObject(i);
+                if (fileJson == null) {
+                    continue;
+                }
+                TLRPC.MessageMedia media = TlJsonMapper.parseMedia(fileJson, 0);
+                if (media instanceof TLRPC.TL_messageMediaDocument
+                        && ((TLRPC.TL_messageMediaDocument) media).document instanceof TLRPC.TL_document) {
+                    result.gifs.add(((TLRPC.TL_messageMediaDocument) media).document);
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * T42 — TL_messages_saveGif: "Save to GIFs" (MessagesController.saveGif
+     * ~:8878, unsave=false) and the panel's remove (MediaDataController
+     * .removeRecentGif ~:1043, unsave=true). Consumers only test error==null;
+     * the authoritative collection rides their next gifs/list.php load. A
+     * GIFS_LIMIT (collection full at 30) propagates as a typed TL_error.
+     * Contract: {@code TL_boolTrue}.
+     */
+    private static TLObject handleSaveGif(int account, TLRPC.TL_messages_saveGif req) {
+        if (!(req.id instanceof TLRPC.TL_inputDocument)) {
+            throw new XoApiException(400, "FILE_ID_INVALID", "saveGif carries no document id");
+        }
+        long fileId = ((TLRPC.TL_inputDocument) req.id).id;
+        RestGateway.getInstance(account).saveGif(fileId, req.unsave);
+        return new TLRPC.TL_boolTrue();
+    }
+
+    /**
+     * T42 — TL_photos_updateProfilePhoto. TWO shapes reach this route:
+     *  - id = TL_inputPhotoEmpty  -> DELETE the current avatar (the
+     *    ProfileActivity dialog / PhotoViewer row funnel through
+     *    MessagesController.deleteUserPhoto(null) ~:7757). Backend
+     *    users/delete-photo.php clears the avatar + purges the crops; the
+     *    self json rides the merge funnel. The consumer clears the local
+     *    photo when the answer's photo is not a TL_photo — so the answer
+     *    carries photo=null deliberately.
+     *  - id = a real TL_inputPhoto -> upstream "set as main". This backend
+     *    keeps ONE avatar per user, so the requested photo IS the current
+     *    one: answer with the current surfaces (a no-op success) instead of
+     *    the destructive XO_NOT_ROUTED the UI used to swallow.
+     * Contract: {@code TL_photos_photo} (hard-cast by the consumer).
+     */
+    private static TLObject handleUpdateProfilePhoto(int account, TLRPC.TL_photos_updateProfilePhoto req) {
+        TLRPC.TL_photos_photo result = new TLRPC.TL_photos_photo();
+        if (req.id instanceof TLRPC.TL_inputPhotoEmpty) {
+            JSONObject answer = RestGateway.getInstance(account).deleteUserPhoto();
+            if (answer != null) {
+                JSONObject userJson = answer.optJSONObject("user");
+                if (userJson != null) {
+                    XoSelf.mergeApply(account, userJson);
+                }
+            }
+            // result.photo stays null -> consumer plants TL_userProfilePhotoEmpty
+            return result;
+        }
+        // set-as-main no-op: mirror the CURRENT avatar surfaces back.
+        org.telegram.messenger.UserConfig userConfig = org.telegram.messenger.UserConfig.getInstance(account);
+        TLRPC.User self = userConfig.getCurrentUser();
+        if (self != null && self.photo != null && self.photo.photo_id != 0) {
+            TLRPC.TL_photo photo = new TLRPC.TL_photo();
+            photo.id = self.photo.photo_id;
+            photo.dc_id = TlJsonMapper.VIRTUAL_DC;
+            photo.date = nowSeconds();
+            photo.flags |= 4;
+            TLRPC.TL_photoSize small = new TLRPC.TL_photoSize();
+            small.type = "a";
+            small.location = self.photo.photo_small;
+            small.w = 160;
+            small.h = 160;
+            TLRPC.TL_photoSize big = new TLRPC.TL_photoSize();
+            big.type = "c";
+            big.location = self.photo.photo_big;
+            big.w = 640;
+            big.h = 640;
+            photo.sizes.add(small);
+            photo.sizes.add(big);
+            result.photo = photo;
+        }
+        return result;
     }
 
     /**
