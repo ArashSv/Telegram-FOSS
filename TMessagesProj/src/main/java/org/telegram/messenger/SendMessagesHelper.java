@@ -885,6 +885,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     }
 
     private static volatile SendMessagesHelper[] Instance = new SendMessagesHelper[UserConfig.MAX_ACCOUNT_COUNT];
+
+    /** T44: cap for locally generated media preview thumbs (video frames, documents) —
+     * mirrors the backend FilesController thumbnail cap (240px, v2.3.1). Before this
+     * cap the video path used the FULL frame side (up to 4K) at JPEG q80, producing
+     * multi-hundred-KB previews that every recipient downloaded per video bubble. */
+    public static final int MEDIA_THUMB_SIDE = 240;
     public static SendMessagesHelper getInstance(int num) {
         SendMessagesHelper localInstance = Instance[num];
         if (localInstance == null) {
@@ -7811,7 +7817,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                         document.mime_type = "image/gif";
                                     }
                                     try {
-                                        int side = isEncrypted ? 90 : 320;
+                                        int side = isEncrypted ? 90 : MEDIA_THUMB_SIDE;
                                         Bitmap bitmap;
                                         if (finalPath.endsWith("mp4")) {
                                             bitmap = createVideoThumbnail(finalPath, MediaStore.Video.Thumbnails.MINI_KIND);
@@ -7829,7 +7835,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                             bitmap = ImageLoader.loadBitmap(finalPath, null, side, side, true);
                                         }
                                         if (bitmap != null) {
-                                            TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(bitmap, side, side, side > 90 ? 80 : 55, false);
+                                            TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(bitmap, side, side, 55, false);
                                             if (thumb != null) {
                                                 document.thumbs.add(thumb);
                                                 document.flags |= 1;
@@ -8226,8 +8232,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     if (thumb == null) {
                         thumb = SendMessagesHelper.createVideoThumbnail(path, MediaStore.Video.Thumbnails.MINI_KIND);
                     }
-                    int side = isEncrypted ? 90 : 320;
-                    document.thumbs.set(0, ImageLoader.scaleAndSaveImage(photoSize, thumb, side, side, side > 90 ? 80 : 55, false, true));
+                    int side = isEncrypted ? 90 : MEDIA_THUMB_SIDE;
+                    document.thumbs.set(0, ImageLoader.scaleAndSaveImage(photoSize, thumb, side, side, 55, false, true));
                 }
             }
         }
@@ -8466,7 +8472,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             }
                             if (thumbFile != null) {
                                 try {
-                                    int side = isEncrypted || info.ttl != 0 ? 90 : 320;
+                                    int side = isEncrypted || info.ttl != 0 ? 90 : MEDIA_THUMB_SIDE;
                                     Bitmap bitmap;
                                     if (thumbFile.getAbsolutePath().endsWith("mp4")) {
                                         bitmap = SendMessagesHelper.createVideoThumbnail(thumbFile.getAbsolutePath(), MediaStore.Video.Thumbnails.MINI_KIND);
@@ -8474,7 +8480,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                                         bitmap = ImageLoader.loadBitmap(thumbFile.getAbsolutePath(), null, side, side, true);
                                     }
                                     if (bitmap != null) {
-                                        TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(bitmap, side, side, side > 90 ? 80 : 55, isEncrypted);
+                                        TLRPC.PhotoSize thumb = ImageLoader.scaleAndSaveImage(bitmap, side, side, 55, isEncrypted);
                                         if (thumb != null) {
                                             document.thumbs.add(thumb);
                                             document.flags |= 1;
@@ -8661,8 +8667,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
 
                                 TLRPC.PhotoSize size = null;
                                 if (thumb != null) {
-                                    int side = isEncrypted || info.ttl != 0 ? 90 : Math.max(thumb.getWidth(), thumb.getHeight());
-                                    size = ImageLoader.scaleAndSaveImage(null, thumb, videoEditedInfo != null && videoEditedInfo.isSticker ? Bitmap.CompressFormat.WEBP : Bitmap.CompressFormat.JPEG, false, side, side, side > 90 ? 80 : 55, isEncrypted, 0, 0, false);
+                                    int side = isEncrypted || info.ttl != 0 ? 90 : Math.min(Math.max(thumb.getWidth(), thumb.getHeight()), MEDIA_THUMB_SIDE);
+                                    size = ImageLoader.scaleAndSaveImage(null, thumb, videoEditedInfo != null && videoEditedInfo.isSticker ? Bitmap.CompressFormat.WEBP : Bitmap.CompressFormat.JPEG, false, side, side, videoEditedInfo != null && videoEditedInfo.isSticker ? 80 : 55, isEncrypted, 0, 0, false);
                                     if (size != null && size.location != null) {
                                         thumbKey = getKeyForPhotoSize(accountInstance, size, null, true, false);
                                     }
@@ -9350,8 +9356,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     if (thumb == null) {
                         thumb = createVideoThumbnail(videoPath, MediaStore.Video.Thumbnails.MINI_KIND);
                     }
-                    int side = isEncrypted || ttl != 0 ? 90 : 320;
-                    TLRPC.PhotoSize size = ImageLoader.scaleAndSaveImage(thumb, side, side, side > 90 ? 80 : 55, isEncrypted);
+                    int side = isEncrypted || ttl != 0 ? 90 : MEDIA_THUMB_SIDE;
+                    TLRPC.PhotoSize size = ImageLoader.scaleAndSaveImage(thumb, side, side, 55, isEncrypted);
                     if (thumb != null && size != null) {
                         if (isRound) {
                             if (isEncrypted) {

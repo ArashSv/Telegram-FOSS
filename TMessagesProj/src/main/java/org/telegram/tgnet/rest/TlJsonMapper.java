@@ -496,8 +496,9 @@ public final class TlJsonMapper {
      * locations are planted too for in-memory coherence.
      */
     public static final int VIRTUAL_DC = 1;
-    /** Server thumb cap (FilesController::makeThumbnail) — mirrored for local layout hints. */
-    private static final int THUMB_MAX_SIDE = 320;
+    /** Server thumb cap (FilesController::makeThumbnail) — mirrored for local layout hints.
+     * v2.3.1: 320 -> 240 (nominal 's' dims hint only; bubble 'm' stays BUBBLE_MAX_SIDE). */
+    private static final int THUMB_MAX_SIDE = 240;
 
     /**
      * v1.1 media JSON (MessageMapper join: file_id/mime_type/size/name/kind/
