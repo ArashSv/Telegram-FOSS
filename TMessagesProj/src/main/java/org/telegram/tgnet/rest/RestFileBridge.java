@@ -303,11 +303,21 @@ public final class RestFileBridge {
     /** @see #finalizeUpload(long, int, String, String, Integer, Integer, Integer) */
     public JSONObject finalizeUpload(long treeUploadId, int chunksTotal, String mime, String name,
                                      Integer width, Integer height, Integer duration, long declaredBytes) {
+        return finalizeUpload(treeUploadId, chunksTotal, mime, name, width, height, duration, declaredBytes, false);
+    }
+
+    /**
+     * T46: full-shape finalize. {@code asGif} marks the Telegram-style GIF
+     * contract (muted MP4 animated document) — the backend stamps kind='gif'
+     * over the detected video family when its own inspection sees video bytes.
+     */
+    public JSONObject finalizeUpload(long treeUploadId, int chunksTotal, String mime, String name,
+                                     Integer width, Integer height, Integer duration, long declaredBytes, boolean asGif) {
         long backendId = backendFileIdFor(treeUploadId);
         if (backendId == 0) {
             return null;
         }
-        return RestGateway.getInstance(account).fileFinalize(backendId, chunksTotal, mime, name, width, height, duration, declaredBytes);
+        return RestGateway.getInstance(account).fileFinalize(backendId, chunksTotal, mime, name, width, height, duration, declaredBytes, asGif);
     }
 
     /**

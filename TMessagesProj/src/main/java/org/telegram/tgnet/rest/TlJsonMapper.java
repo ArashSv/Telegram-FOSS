@@ -546,13 +546,19 @@ public final class TlJsonMapper {
                 mediaJson.isNull("sha256") ? null : mediaJson.optString("sha256", null));
 
         // T42: GIFs must resolve to an ANIMATED DOCUMENT, never a still photo.
-        // The backend stamps kind='gif' (v2.3) — and older rows may carry
-        // kind='image' with mime image/gif — both routes land in documentMedia,
-        // which plants TL_documentAttributeAnimated. The photo branch below
-        // must never see a gif (before this fix, a gif with detected dimensions
-        // rendered as a STATIC photo — the reported "gif looks dead" class).
+        // The backend stamps kind='gif' (v2.3 for image/gif; v2.4 for muted MP4
+        // via the as_gif finalize flag) — and older rows may carry kind='image'
+        // with mime image/gif — both routes land in documentMedia, which plants
+        // TL_documentAttributeAnimated. The photo branch below must never see a
+        // gif (before this fix, a gif with detected dimensions rendered as a
+        // STATIC photo — the reported "gif looks dead" class).
+        // T46: the mapper keeps the REAL mime — a v2.4 gif row may legitimately
+        // be video/mp4 (Telegram's canonical GIF shape); clobbering it to
+        // image/gif (the T42 behavior) would strip the video context the tree
+        // needs to classify the message as a GIF and stream it.
         if ("gif".equals(kind) || "image/gif".equals(mime)) {
-            return documentMedia(fileId, "image/gif", size, mediaJson.optString("name", null),
+            String docMime = mime != null && mime.startsWith("video/") ? mime : "image/gif";
+            return documentMedia(fileId, docMime, size, mediaJson.optString("name", null),
                     kind, width, height, duration, thumbFileId, messageDate);
         }
         if ("image".equals(kind) && width > 0 && height > 0) {
@@ -630,6 +636,15 @@ public final class TlJsonMapper {
             filename.file_name = name;
             document.attributes.add(filename);
         }
+        // T46: the animated attribute is independent of the mime family — a
+        // Telegram GIF is a MUTED MP4 carrying BOTH the animated flag (loop,
+        // silent, GIF badge) and the video attribute (duration + dimensions,
+        // keeps MessageObject.isNewGifDocument true => TYPE_GIF). Legacy
+        // image/gif rows keep exactly the T42 shape (animated only).
+        boolean animatedGif = "gif".equals(kind) || "image/gif".equals(mime);
+        if (animatedGif) {
+            document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
+        }
         boolean isVoice = mime.startsWith("audio/ogg");
         if (mime.startsWith("video/") || "video".equals(kind)) {
             TLRPC.TL_documentAttributeVideo video = new TLRPC.TL_documentAttributeVideo();
@@ -646,11 +661,7 @@ public final class TlJsonMapper {
                 media.flags |= 256; // media.voice — the UI's voice-bubble selector
             }
             document.attributes.add(audio);
-        } else if ("gif".equals(kind) || "image/gif".equals(mime)) {
-            // T42: animated attribute — the TL contract that makes the whole
-            // tree render + loop this document as a silent video.
-            document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
-        } else if ("image".equals(kind) && width > 0 && height > 0) {
+        } else if (!animatedGif && "image".equals(kind) && width > 0 && height > 0) {
             // image sent as file: keep dimensions so the gallery preview renders
             TLRPC.TL_documentAttributeImageSize imageSize = new TLRPC.TL_documentAttributeImageSize();
             imageSize.w = width;

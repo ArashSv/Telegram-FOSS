@@ -7802,9 +7802,9 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         return insets.left;
     }
 
-	private int getRightInset() {
-		return insets.right;
-	}
+        private int getRightInset() {
+                return insets.right;
+        }
 
     private void dismissInternal() {
         try {
@@ -12989,7 +12989,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     menuItem.hideSubItem(gallery_menu_hide_translation);
                 }
                 allowShare = !noforwards;
-                if (newMessageObject.isNewGif() && allowShare && !DialogObject.isEncryptedDialog(newMessageObject.getDialogId())) {
+                // T46: isGif() covers BOTH shapes the backend can stamp — the
+                // Telegram-style muted MP4 (isNewGif) and classic image/gif
+                // documents (T42) — so the "Save to GIFs" affordance matches
+                // the ChatActivity long-press row instead of splitting them.
+                if (newMessageObject.isGif() && allowShare && !DialogObject.isEncryptedDialog(newMessageObject.getDialogId())) {
                     menuItem.showSubItem(gallery_menu_savegif);
                 }
                 if (newMessageObject.canDeleteMessage(parentChatActivity != null && parentChatActivity.isInScheduleMode(), null) && slideshowMessageId == 0) {
