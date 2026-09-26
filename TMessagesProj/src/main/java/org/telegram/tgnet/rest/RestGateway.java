@@ -462,7 +462,7 @@ public final class RestGateway {
             putNumber(body, "duration", duration);
         }
         if (asGif) {
-            put(body, "as_gif", true);
+            putBool(body, "as_gif", true);
         }
         return fileRequestRetry("files/finalize.php",
                 () -> authenticatedRequest("POST", "files/finalize.php", body));
@@ -1021,6 +1021,16 @@ public final class RestGateway {
 
     /** Same contract as {@link #put} for long values. */
     private static JSONObject putNumber(JSONObject json, String key, long value) {
+        try {
+            json.put(key, value);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for key " + key, e);
+        }
+        return json;
+    }
+
+    /** Same contract as {@link #put} for boolean values. */
+    private static JSONObject putBool(JSONObject json, String key, boolean value) {
         try {
             json.put(key, value);
         } catch (JSONException e) {
