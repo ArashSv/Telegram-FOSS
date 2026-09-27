@@ -2506,7 +2506,7 @@ public class ImageLoader {
                     try {
                         if (ApplicationLoader.applicationContext.getExternalMediaDirs().length > 0) {
                             publicMediaDir = getPublicStorageDir();
-                            publicMediaDir = new File(publicMediaDir, "Telegram");
+                            publicMediaDir = new File(publicMediaDir, "Hermes");
                             publicMediaDir.mkdirs();
                         }
                     } catch (Exception e) {
@@ -2522,7 +2522,7 @@ public class ImageLoader {
                             path = ApplicationLoader.applicationContext.getExternalFilesDir(null);
                         }
                     }
-                    telegramPath = new File(path, "Telegram");
+                    telegramPath = new File(path, "Hermes");
                 }
                 telegramPath.mkdirs();
 
@@ -2532,7 +2532,7 @@ public class ImageLoader {
                         File dir = dirs.get(a);
                         if (dir != null && !TextUtils.isEmpty(SharedConfig.storageCacheDir) && dir.getAbsolutePath().startsWith(SharedConfig.storageCacheDir)) {
                             path = dir;
-                            telegramPath = new File(path, "Telegram");
+                            telegramPath = new File(path, "Hermes");
                             telegramPath.mkdirs();
                             break;
                         }
@@ -2541,7 +2541,7 @@ public class ImageLoader {
 
                 if (telegramPath.isDirectory()) {
                     try {
-                        File imagePath = new File(telegramPath, "Telegram Images");
+                        File imagePath = new File(telegramPath, "Hermes Images");
                         imagePath.mkdir();
                         if (imagePath.isDirectory() && canMoveFiles(cachePath, imagePath, FileLoader.MEDIA_DIR_IMAGE)) {
                             mediaDirs.put(FileLoader.MEDIA_DIR_IMAGE, imagePath);
@@ -2554,7 +2554,7 @@ public class ImageLoader {
                     }
 
                     try {
-                        File videoPath = new File(telegramPath, "Telegram Video");
+                        File videoPath = new File(telegramPath, "Hermes Video");
                         videoPath.mkdir();
                         if (videoPath.isDirectory() && canMoveFiles(cachePath, videoPath, FileLoader.MEDIA_DIR_VIDEO)) {
                             mediaDirs.put(FileLoader.MEDIA_DIR_VIDEO, videoPath);
@@ -2567,7 +2567,7 @@ public class ImageLoader {
                     }
 
                     try {
-                        File audioPath = new File(telegramPath, "Telegram Audio");
+                        File audioPath = new File(telegramPath, "Hermes Audio");
                         audioPath.mkdir();
                         if (audioPath.isDirectory() && canMoveFiles(cachePath, audioPath, FileLoader.MEDIA_DIR_AUDIO)) {
                             AndroidUtilities.createEmptyFile(new File(audioPath, ".nomedia"));
@@ -2581,7 +2581,7 @@ public class ImageLoader {
                     }
 
                     try {
-                        File documentPath = new File(telegramPath, "Telegram Documents");
+                        File documentPath = new File(telegramPath, "Hermes Documents");
                         documentPath.mkdir();
                         if (documentPath.isDirectory() && canMoveFiles(cachePath, documentPath, FileLoader.MEDIA_DIR_DOCUMENT)) {
                             AndroidUtilities.createEmptyFile(new File(documentPath, ".nomedia"));
@@ -2595,7 +2595,7 @@ public class ImageLoader {
                     }
 
                     try {
-                        File normalNamesPath = new File(telegramPath, "Telegram Files");
+                        File normalNamesPath = new File(telegramPath, "Hermes Files");
                         normalNamesPath.mkdir();
                         if (normalNamesPath.isDirectory() && canMoveFiles(cachePath, normalNamesPath, FileLoader.MEDIA_DIR_FILES)) {
                             AndroidUtilities.createEmptyFile(new File(normalNamesPath, ".nomedia"));
@@ -2609,7 +2609,7 @@ public class ImageLoader {
                     }
 
                     try {
-                        File normalNamesPath = new File(telegramPath, "Telegram Stories");
+                        File normalNamesPath = new File(telegramPath, "Hermes Stories");
                         normalNamesPath.mkdir();
                         if (normalNamesPath.isDirectory() && canMoveFiles(cachePath, normalNamesPath, FileLoader.MEDIA_DIR_STORIES)) {
                             AndroidUtilities.createEmptyFile(new File(normalNamesPath, ".nomedia"));
@@ -2624,7 +2624,7 @@ public class ImageLoader {
                 }
                 if (publicMediaDir != null && publicMediaDir.isDirectory()) {
                     try {
-                        File imagePath = new File(publicMediaDir, "Telegram Images");
+                        File imagePath = new File(publicMediaDir, "Hermes Images");
                         imagePath.mkdir();
                         if (imagePath.isDirectory() && canMoveFiles(cachePath, imagePath, FileLoader.MEDIA_DIR_IMAGE)) {
                             mediaDirs.put(FileLoader.MEDIA_DIR_IMAGE_PUBLIC, imagePath);
@@ -2637,7 +2637,7 @@ public class ImageLoader {
                     }
 
                     try {
-                        File videoPath = new File(publicMediaDir, "Telegram Video");
+                        File videoPath = new File(publicMediaDir, "Hermes Video");
                         videoPath.mkdir();
                         if (videoPath.isDirectory() && canMoveFiles(cachePath, videoPath, FileLoader.MEDIA_DIR_VIDEO)) {
                             mediaDirs.put(FileLoader.MEDIA_DIR_VIDEO_PUBLIC, videoPath);

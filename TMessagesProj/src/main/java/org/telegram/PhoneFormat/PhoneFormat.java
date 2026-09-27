@@ -94,6 +94,18 @@ public class PhoneFormat {
         return stripExceptNumbers(str, false);
     }
 
+    // T51: closed fictional namespace of this messenger — "+404" followed by exactly
+    // 5 digits (8 digits total after '+'). Real numbering plans never collide with
+    // this exact shape (real +40 numbers carry 9+ national digits), so matching the
+    // full stripped string is unambiguous. Root fix for display grouping: the generic
+    // country-rule engine below matches the REAL calling code 40 (Romania) and renders
+    // "+40 400000"; the namespace must always render as "+404 00000" instead.
+    private static final java.util.regex.Pattern XO_NAMESPACE_PATTERN = java.util.regex.Pattern.compile("^404(\\d{5})$");
+
+    private static java.util.regex.Matcher xoNamespaceMatcher(String str) {
+        return XO_NAMESPACE_PATTERN.matcher(str.startsWith("+") ? str.substring(1) : str);
+    }
+
     public PhoneFormat() {
         init(null);
     }
@@ -191,6 +203,11 @@ public class PhoneFormat {
         try {
             String str = strip(orig);
 
+            java.util.regex.Matcher ns = xoNamespaceMatcher(str);
+            if (ns.matches()) {
+                return "+404 " + ns.group(1);
+            }
+
             if (str.startsWith("+")) {
                 String rest = str.substring(1);
                 CallingCodeInfo info = findCallingCodeInfo(rest);
@@ -236,6 +253,10 @@ public class PhoneFormat {
             return true;
         }
         String str = strip(phoneNumber);
+
+        if (xoNamespaceMatcher(str).matches()) {
+            return true;
+        }
 
         if (str.startsWith("+")) {
             String rest = str.substring(1);

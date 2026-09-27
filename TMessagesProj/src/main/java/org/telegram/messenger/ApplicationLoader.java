@@ -290,7 +290,7 @@ public class ApplicationLoader extends Application {
         } catch (Exception e) {
             FileLog.e(e);
         }
-        org.osmdroid.config.Configuration.getInstance().setUserAgentValue("Telegram-FOSS(F-Droid) "+VERSIONNAME);
+        org.osmdroid.config.Configuration.getInstance().setUserAgentValue("Hermes "+VERSIONNAME);
         org.osmdroid.config.Configuration.getInstance().setOsmdroidBasePath(new File(getCacheDir(),"osmdroid"));
     }
 
@@ -337,9 +337,9 @@ public class ApplicationLoader extends Application {
             PendingIntent pintent = PendingIntent.getService(applicationContext, 0, new Intent(applicationContext, NotificationsService.class), PendingIntent.FLAG_MUTABLE);
             AlarmManager alarm = (AlarmManager)applicationContext.getSystemService(Context.ALARM_SERVICE);
             alarm.cancel(pintent);
-	        if (pendingIntent != null) {
-	            alarm.cancel(pendingIntent);
-	        }
+                if (pendingIntent != null) {
+                    alarm.cancel(pendingIntent);
+                }
         }
     }
 

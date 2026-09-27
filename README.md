@@ -3,9 +3,9 @@
 
 [![Donate](https://liberapay.com/assets/widgets/donate.svg)](https://liberapay.com/Telegram-FOSS/) or <img src="https://en.bitcoin.it/w/images/en/c/cb/BC_Logotype.png" alt="Bitcoin" height="25px" /> `1P8kNcifVAkBWtWmjKY4RvVLy5QwruE2LQ`
 
-# Telegram-FOSS
+# Hermes
 
-[Telegram](https://telegram.org) is a messaging app with a focus on speed and security. It’s superfast, simple and free.
+Hermes is a reliable messenger for times when the internet is unavailable, built upon the open-source [Telegram client for Android](https://github.com/DrKLO/Telegram). Hermes makes no claim to have developed the Android client from scratch; see attribution below.
 
 This is an unofficial, FOSS-friendly fork of the original [Telegram App for Android](https://github.com/DrKLO/Telegram).
 
