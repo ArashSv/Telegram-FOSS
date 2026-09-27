@@ -14,6 +14,8 @@ import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.messenger.Utilities;
 
+import android.os.SystemClock;
+
 import java.util.ArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -62,6 +64,13 @@ public final class UpdatePoller {
     private static final long BACKGROUND_POLL_INTERVAL_MS = 10_000;
     private static final long MAX_BACKOFF_MS = 60_000;
     private static final int POLL_LIMIT = 200;
+    /**
+     * T49: minimum gap between explicit presence transition POSTs. Screen
+     * on/off flapping collapses to at most one signal per gap; everything
+     * else is covered losslessly by the sync piggyback, so a skipped flip is
+     * simply retried on the next tick.
+     */
+    private static final long PRESENCE_MIN_GAP_MS = 4_000;
 
     private static final UpdatePoller[] instances = new UpdatePoller[4];
 
@@ -84,6 +93,9 @@ public final class UpdatePoller {
     private final RestGateway gateway;
     private final RestAuthStore store;
     private final ScheduledExecutorService scheduler;
+    /** T49: last seen background-state (edge detector for the explicit presence POST). */
+    private boolean lastPresenceBackground = true;
+    private long lastPresenceFlipElapsed;
 
     private volatile boolean started;
     private long startedForUser;   // client user id the loop was armed for
@@ -125,6 +137,10 @@ public final class UpdatePoller {
             startedForUser = selfId;
             started = true;
             consecutiveFailures = 0;
+            // T49: adopt the current state silently — the very next poll's
+            // piggyback reports "online" if foregrounded; no edge POST on arm.
+            lastPresenceBackground = isBackground();
+            lastPresenceFlipElapsed = SystemClock.elapsedRealtime();
             FileLog.d("UpdatePoller: started for account " + account + " user " + selfId);
             scheduler.execute(this::tick);
         }
@@ -142,11 +158,21 @@ public final class UpdatePoller {
         }
         long cursor = store.getSyncCursor();
         try {
-            JSONObject page = gateway.sync(cursor, POLL_LIMIT);
+            // T49: the poll doubles as the presence heartbeat. Foreground
+            // polls carry presence=1 so the backend piggybacks its throttled
+            // last_seen touch on THIS request (zero extra traffic);
+            // backgrounded polls carry presence=0 and let the session age
+            // out of "online" naturally. The explicit offline transition is
+            // a separate one-shot POST below, on the screen-state flip.
+            JSONObject page = gateway.sync(cursor, POLL_LIMIT, !isBackground());
             process(page);
             consecutiveFailures = 0;
             // Xo (T7c): the poll is the REST liveness heartbeat — keep the header truthful
             ConnectionsManager.getInstance(account).setXoConnectionState(ConnectionsManager.ConnectionStateConnected);
+            // T49: the page's server_time is the clock correction source —
+            // presence formatting compares server-epoch stamps against
+            // ConnectionsManager.getCurrentTime(), which reads XoClock.
+            XoClock.onServerTime(page.optLong("server_time", 0));
             long newCursor = page.optLong("cursor", cursor);
             if (newCursor != cursor) {
                 store.setSyncCursor(newCursor);
@@ -176,7 +202,45 @@ public final class UpdatePoller {
         long idleInterval = isBackground() ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
         long delay = consecutiveFailures == 0 ? idleInterval
                 : Math.min(idleInterval << Math.min(consecutiveFailures, 6), MAX_BACKOFF_MS);
+        processPresenceTransition();
         scheduler.schedule(this::tick, delay, TimeUnit.MILLISECONDS);
+    }
+
+    /**
+     * T49: fire the explicit presence POST on the background/foreground FLIP
+     * (screen off / UI paused → "offline"; the reverse → "online"). Two
+     * properties keep it noise-free:
+     * <ul>
+     *   <li>transition-edge only — a steady state sends nothing; and</li>
+     *   <li>the flip is recorded ONLY when the POST is actually attempted, so
+     *       a debounced-away flip retries on the next tick instead of being
+     *       lost.</li>
+     * </ul>
+     * Runs on the poller scheduler thread — never the UI thread. Failure is
+     * deliberately swallowed: the piggyback self-heals the steady state and
+     * the next flip re-attempts.
+     */
+    private void processPresenceTransition() {
+        if (!started) {
+            return;
+        }
+        boolean background = isBackground();
+        if (background == lastPresenceBackground) {
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (now - lastPresenceFlipElapsed < PRESENCE_MIN_GAP_MS) {
+            return; // keep the un-flipped state: retried on the next tick
+        }
+        lastPresenceBackground = background;
+        lastPresenceFlipElapsed = now;
+        final String state = background ? "offline" : "online";
+        try {
+            gateway.presencePing(state);
+            FileLog.d("UpdatePoller: presence " + state);
+        } catch (Exception e) {
+            FileLog.e("UpdatePoller: presence " + state + " failed (piggyback self-heals)", e);
+        }
     }
 
     /** Tree-canonical foreground signal: UI paused or screen off → background cadence. */
@@ -234,6 +298,14 @@ public final class UpdatePoller {
                     // T32: profile (name/avatar) changes apply directly — see handleUserUpdated
                     handleUserUpdated(update.optJSONObject("user"));
                     break;
+                case "user_status":
+                    // T49: a chat peer's presence flipped. Reuses the upstream
+                    // TL_updateUserStatus machinery (status swap +
+                    // UPDATE_MASK_STATUS refresh of every open header/profile
+                    // + storage persist) by riding the same tlUpdates batch —
+                    // zero bespoke UI code.
+                    handleUserStatus(update, tlUpdates);
+                    break;
                 case "gifs":
                     // T42: MY saved-GIF collection changed on another device
                     // (backend v2.3 owner-only event). Force-reload the server
@@ -260,6 +332,35 @@ public final class UpdatePoller {
                 FileLog.e("UpdatePoller: processUpdateArray failed", e);
             }
         });
+    }
+
+    /**
+     * T49: map a REST {@code user_status} update onto the upstream
+     * {@link TLRPC.TL_updateUserStatus} and add it to the batch that goes
+     * through {@code MessagesController.processUpdateArray} — the canonical
+     * getDifference path applies it (in-memory swap, UPDATE_MASK_STATUS
+     * interface refresh, storage persist) with no bespoke UI code anywhere.
+     * Offline carries was_online as expires — this tree's TL_userStatusOffline
+     * serializes exactly that field, and formatUserStatus/formatDateOnline
+     * render "last seen at …" from it.
+     */
+    private void handleUserStatus(JSONObject update, ArrayList<TLRPC.Update> tlUpdates) {
+        long userId = update.optLong("user_id", 0);
+        if (userId <= 0 || userId == UserConfig.getInstance(account).clientUserId) {
+            return; // malformed or self-echo — nothing to apply
+        }
+        TLRPC.TL_updateUserStatus tl = new TLRPC.TL_updateUserStatus();
+        tl.user_id = userId;
+        if (update.optBoolean("online", false)) {
+            TLRPC.TL_userStatusOnline status = new TLRPC.TL_userStatusOnline();
+            status.expires = (int) Math.max(1, update.optLong("expires", 0));
+            tl.status = status;
+        } else {
+            TLRPC.TL_userStatusOffline status = new TLRPC.TL_userStatusOffline();
+            status.expires = (int) Math.max(0, update.optLong("was_online", 0));
+            tl.status = status;
+        }
+        tlUpdates.add(tl);
     }
 
     private void handleNewMessage(JSONObject msgJson, ArrayList<TLRPC.Update> tlUpdates,
