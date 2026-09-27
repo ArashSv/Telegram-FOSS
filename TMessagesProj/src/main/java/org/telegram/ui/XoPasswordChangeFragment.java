@@ -30,6 +30,7 @@ import org.telegram.tgnet.rest.RestAuthController;
 import org.telegram.tgnet.rest.RestGateway;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.Theme;
+import org.telegram.ui.ActionBar.ThemeDescription;
 import org.telegram.ui.Components.LayoutHelper;
 import org.telegram.ui.Components.OutlineTextContainerView;
 import org.telegram.ui.Components.RLottieImageView;
