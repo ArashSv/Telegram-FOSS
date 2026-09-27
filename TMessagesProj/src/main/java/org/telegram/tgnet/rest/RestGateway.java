@@ -336,11 +336,33 @@ public final class RestGateway {
         return response.optJSONArray("users");
     }
 
-    /** GET /sync/index.php — short-polling page; cursor contract API.md §9. */
-    public JSONObject sync(long cursor, int limit) {
+    /**
+     * GET /sync/index.php — short-polling page; cursor contract API.md §9.
+     * T49 (v2.5.0): the poll doubles as the presence heartbeat — presence=true
+     * (foreground) lets the backend piggyback a throttled last_seen touch on
+     * this very request; presence=false (backgrounded) never touches. No
+     * separate presence traffic exists in steady state.
+     */
+    public JSONObject sync(long cursor, int limit, boolean presence) {
         String url = "sync/index.php?cursor=" + Math.max(0, cursor)
-                + "&limit=" + Math.max(1, Math.min(500, limit));
+                + "&limit=" + Math.max(1, Math.min(500, limit))
+                + "&presence=" + (presence ? 1 : 0);
         return authenticatedRequest("GET", url, null);
+    }
+
+    public JSONObject sync(long cursor, int limit) {
+        return sync(cursor, limit, true);
+    }
+
+    /**
+     * POST /users/presence.php (T49, backend v2.5.0) — the EXPLICIT transition
+     * signal ("online" = screen on/foreground, "offline" = screen off/background).
+     * Fire-and-forget by contract: it fires only on the two rare state edges,
+     * never in a loop; the steady state is the piggyback above. Answers {ok}.
+     */
+    public JSONObject presencePing(String state) {
+        JSONObject body = put(new JSONObject(), "state", state);
+        return authenticatedRequest("POST", "users/presence.php", body);
     }
 
     // ------------------------------------------------------------------ file & media API (T8)

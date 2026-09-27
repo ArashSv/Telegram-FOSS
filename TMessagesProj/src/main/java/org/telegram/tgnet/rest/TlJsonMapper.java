@@ -128,9 +128,42 @@ public final class TlJsonMapper {
         // (bit 0) so the MessagesStorage round-trip preserves it.
         user.access_hash = 1;
         user.flags |= 1;
+        // T49 (backend v2.5.0): presence — map the backend status json onto
+        // the TL status classes every legacy surface already renders
+        // (ChatAvatarContainer/ProfileActivity via formatUserStatus, contacts
+        // sorting, ...). Online carries expires (= last_seen + backend
+        // window): the UI shows "Online" until it lapses and then falls back
+        // to "last seen …" by itself — the crash/lost-session self-heal.
+        // Offline carries was_online: formatDateOnline renders the exact
+        // "last seen at HH:mm / yesterday / date" the product wants. A null
+        // or unknown shape keeps the neutral TL_userStatusEmpty default
+        // ("last seen a long time ago") — never a guessed state.
+        JSONObject statusJson = object.optJSONObject("status");
+        boolean statusPlanted = false;
+        if (statusJson != null) {
+            if (statusJson.optBoolean("online", false)) {
+                int expires = statusJson.optInt("expires", 0);
+                if (expires > 0) {
+                    TLRPC.TL_userStatusOnline online = new TLRPC.TL_userStatusOnline();
+                    online.expires = expires;
+                    user.status = online;
+                    statusPlanted = true;
+                }
+            } else {
+                int wasOnline = statusJson.optInt("was_online", 0);
+                if (wasOnline > 0) {
+                    TLRPC.TL_userStatusOffline offline = new TLRPC.TL_userStatusOffline();
+                    offline.expires = wasOnline;
+                    user.status = offline;
+                    statusPlanted = true;
+                }
+            }
+        }
         // null status NPEs in legacy UI paths (UserObject.isOnline and friends);
         // every MTProto-parsed user carries one, so we do too
-        user.status = new TLRPC.TL_userStatusEmpty();
+        if (!statusPlanted) {
+            user.status = new TLRPC.TL_userStatusEmpty();
+        }
         return user;
     }
 

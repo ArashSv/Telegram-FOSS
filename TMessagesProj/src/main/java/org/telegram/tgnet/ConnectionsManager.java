@@ -1,5 +1,7 @@
 package org.telegram.tgnet;
 
+import org.telegram.tgnet.rest.XoClock;
+
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.SharedPreferences;
@@ -295,8 +297,17 @@ public class ConnectionsManager extends BaseController {
         return native_getCurrentTimeMillis(currentAccount);
     }
 
+    /**
+     * T49: on REST accounts the MTProto handshake no longer corrects the
+     * clock, so the correction rides the sync poll instead (XoClock —
+     * server_time anchored on elapsedRealtime). Before the first poll this
+     * reports the device wall clock, i.e. the same value native_getCurrentTime
+     * (delta 0) has ever returned on this fork — behavior can only sharpen,
+     * never regress. Every status/last-seen comparison site in the tree reads
+     * THIS method, so one hook keeps the whole presence domain consistent.
+     */
     public int getCurrentTime() {
-        return native_getCurrentTime(currentAccount);
+        return XoClock.currentTimeSeconds();
     }
 
     public int getCurrentDatacenterId() {
