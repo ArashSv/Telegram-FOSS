@@ -885,11 +885,11 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             boolean allowOpen = true;
             if (AndroidUtilities.isTablet()) {
                 allowOpen = actionBarLayout.getFragmentStack().size() <= 1 && layersActionBarLayout.getFragmentStack().isEmpty();
-                if (layersActionBarLayout.getFragmentStack().size() == 1 && (layersActionBarLayout.getFragmentStack().get(0) instanceof LoginActivity || layersActionBarLayout.getFragmentStack().get(0) instanceof IntroActivity)) {
+                if (layersActionBarLayout.getFragmentStack().size() == 1 && (layersActionBarLayout.getFragmentStack().get(0) instanceof LoginActivity)) {
                     allowOpen = false;
                 }
             }
-            if (actionBarLayout.getFragmentStack().size() == 1 && (actionBarLayout.getFragmentStack().get(0) instanceof LoginActivity || actionBarLayout.getFragmentStack().get(0) instanceof IntroActivity)) {
+            if (actionBarLayout.getFragmentStack().size() == 1 && (actionBarLayout.getFragmentStack().get(0) instanceof LoginActivity)) {
                 allowOpen = false;
             }
             drawerLayoutContainer.setAllowOpenDrawer(allowOpen, false);
@@ -1183,11 +1183,9 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         onUserLeaveHintListeners.remove(callback);
     }
 
+    // T52: the intro is gone — when the client is not activated, go straight to the login page
     private BaseFragment getClientNotActivatedFragment() {
-        if (LoginActivity.loadCurrentState(false, currentAccount).getInt("currentViewNum", 0) != 0) {
-            return new LoginActivity();
-        }
-        return new IntroActivity();
+        return new LoginActivity();
     }
 
     public void showSelectStatusDialog() {
@@ -1431,7 +1429,8 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 layersActionBarLayout.rebuildLogout();
                 rightActionBarLayout.rebuildLogout();
             }
-            presentFragment(new IntroActivity().setOnLogout());
+            // T52: intro removed — land directly on the login page after logout
+            presentFragment(new LoginActivity());
         }
     }
 
@@ -7658,7 +7657,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             ArticleViewer.getInstance().close(false, true);
         }
         if (AndroidUtilities.isTablet()) {
-            drawerLayoutContainer.setAllowOpenDrawer(!(fragment instanceof LoginActivity || fragment instanceof IntroActivity || fragment instanceof CountrySelectActivity) && (layersActionBarLayout == null || layersActionBarLayout.getView().getVisibility() != View.VISIBLE), true);
+            drawerLayoutContainer.setAllowOpenDrawer(!(fragment instanceof LoginActivity || fragment instanceof CountrySelectActivity) && (layersActionBarLayout == null || layersActionBarLayout.getView().getVisibility() != View.VISIBLE), true);
             if (fragment instanceof DialogsActivity) {
                 DialogsActivity dialogsActivity = (DialogsActivity) fragment;
                 if (dialogsActivity.isMainDialogList() && layout != actionBarLayout) {
@@ -7750,8 +7749,8 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             }
         } else {
             boolean allow = true; // TODO: Make it a flag inside fragment itself, maybe BaseFragment#isDrawerOpenAllowed()?
-            if (fragment instanceof LoginActivity || fragment instanceof IntroActivity || fragment instanceof ProxyListActivity || fragment instanceof ProxySettingsActivity) {
-                if (mainFragmentsStack.size() == 0 || mainFragmentsStack.get(0) instanceof IntroActivity || mainFragmentsStack.get(0) instanceof LoginActivity) {
+            if (fragment instanceof LoginActivity || fragment instanceof ProxyListActivity || fragment instanceof ProxySettingsActivity) {
+                if (mainFragmentsStack.size() == 0 || mainFragmentsStack.get(0) instanceof LoginActivity) {
                     allow = false;
                 }
             } else if (fragment instanceof CountrySelectActivity) {
@@ -7767,7 +7766,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
     @Override
     public boolean needAddFragmentToStack(BaseFragment fragment, INavigationLayout layout) {
         if (AndroidUtilities.isTablet()) {
-            drawerLayoutContainer.setAllowOpenDrawer(!(fragment instanceof LoginActivity || fragment instanceof IntroActivity || fragment instanceof CountrySelectActivity || fragment instanceof ProxyListActivity || fragment instanceof ProxySettingsActivity) && layersActionBarLayout.getView().getVisibility() != View.VISIBLE, true);
+            drawerLayoutContainer.setAllowOpenDrawer(!(fragment instanceof LoginActivity || fragment instanceof CountrySelectActivity || fragment instanceof ProxyListActivity || fragment instanceof ProxySettingsActivity) && layersActionBarLayout.getView().getVisibility() != View.VISIBLE, true);
             if (fragment instanceof DialogsActivity) {
                 DialogsActivity dialogsActivity = (DialogsActivity) fragment;
                 if (dialogsActivity.isMainDialogList() && layout != actionBarLayout) {
@@ -7833,8 +7832,8 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
             }
         } else {
             boolean allow = true;
-            if (fragment instanceof LoginActivity || fragment instanceof IntroActivity || fragment instanceof ProxyListActivity || fragment instanceof ProxySettingsActivity) {
-                if (mainFragmentsStack.size() == 0 || mainFragmentsStack.get(0) instanceof IntroActivity) {
+            if (fragment instanceof LoginActivity || fragment instanceof ProxyListActivity || fragment instanceof ProxySettingsActivity) {
+                if (mainFragmentsStack.size() == 0) {
                     allow = false;
                 }
             } else if (fragment instanceof CountrySelectActivity) {

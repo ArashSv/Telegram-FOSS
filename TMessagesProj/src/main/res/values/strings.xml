@@ -4265,12 +4265,6 @@
     <string name="Page5Message">**Hermes** has no limits on\nthe size of your media and chats.</string>
     <string name="Page6Message">**Hermes** lets you access your messages\nfrom multiple devices.</string>
     <string name="StartMessaging">Start Messaging</string>
-    <string name="XoIntro1Title">Hermes</string>
-    <string name="XoIntro1Message">A reliable messenger for times when the internet is unavailable.</string>
-    <string name="XoIntro2Title">Telegram Client-Based</string>
-    <string name="XoIntro2Message">Hermes is built upon the open-source Telegram client. We make no claim to have developed the Android client from scratch.</string>
-    <string name="XoIntro3Title">Secure</string>
-    <string name="XoIntro3Message">Hermes prioritizes user security and privacy, minimizing data collection and unnecessary permissions whenever possible.</string>
     <!-- VoIP -->
     <string name="AccountSettings">Account Settings</string>
     <string name="VoipUseLessData">Use less data for calls</string>
