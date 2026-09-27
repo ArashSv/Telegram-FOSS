@@ -1994,16 +1994,13 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
 
             phoneField = new AnimatedPhoneNumberEditText(context) {
 
-                @Override
-                public boolean onKeyDown(int keyCode, KeyEvent event) {
-                    if (keyCode == KeyEvent.KEYCODE_DEL && phoneField.length() == 0) {
-                        codeField.requestFocus();
-                        codeField.setSelection(codeField.length());
-                        codeField.dispatchKeyEvent(event);
-                    }
-                    return super.onKeyDown(keyCode, event);
-                }
-
+                // T50: the OLD DEL-forwarding onKeyDown override is GONE — it
+                // dispatched KEYCODE_DEL straight into codeField whenever the
+                // phone field was empty, which DELETED the now-STATIC "+404"
+                // prefix. The prefix is plain text: backspace on an empty
+                // number field simply does nothing.
+                // (dispatchKeyEvent works without focus, which is why
+                // codeField.setFocusable(false) alone could not stop it.)
 
                 @Override
                 public boolean onTouchEvent(MotionEvent event) {
@@ -2119,10 +2116,15 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             // T50: the country list, SIM detection and the MTProto nearest-DC
             // probe are gone — the prefix is hard-fixed at +404 and NOTHING
             // else can be selected or typed. The subscriber field takes over
-            // focus directly.
+            // focus directly. The prefix is fully inert: no key listener, no
+            // text selection, no long-press menu — it is a LABEL, not input.
             codeField.setText("404");
+            codeField.setKeyListener(null);
             codeField.setFocusable(false);
             codeField.setFocusableInTouchMode(false);
+            codeField.setLongClickable(false);
+            codeField.setTextIsSelectable(false);
+            codeField.setCursorVisible(false);
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 codeField.setShowSoftInputOnFocus(false);
             }
@@ -2283,6 +2285,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoTooManyAttempts));
                     } else if (error.text != null && error.text.contains("VALIDATION_ERROR")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidPhoneNumber", R.string.InvalidPhoneNumber));
+                    } else if (error.text != null && (error.text.contains("MALFORMED_RESPONSE") || error.text.equals("NO_CONNECTION") || error.code == -1)) {
+                        // T50: transport-level failure (non-JSON reply, WAF page, no network)
+                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoConnectionError));
                     } else {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("ErrorOccurred", R.string.ErrorOccurred) + "\n" + error.text);
                     }
@@ -2502,6 +2507,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                         showError(getString(R.string.XoWrongPassword));
                     } else if (error.text != null && error.text.startsWith("FLOOD_WAIT")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoTooManyAttempts));
+                    } else if (error.text != null && (error.text.contains("MALFORMED_RESPONSE") || error.text.equals("NO_CONNECTION") || error.code == -1)) {
+                        // T50: transport-level failure (non-JSON reply, WAF page, no network)
+                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoConnectionError));
                     } else {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("ErrorOccurred", R.string.ErrorOccurred) + "\n" + error.text);
                     }
@@ -2726,6 +2734,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoNumberTakenTitle));
                     } else if (error.text != null && error.text.contains("VALIDATION_ERROR")) {
                         showError(getString(R.string.XoPasswordTooShort));
+                    } else if (error.text != null && (error.text.contains("MALFORMED_RESPONSE") || error.text.equals("NO_CONNECTION") || error.code == -1)) {
+                        // T50: transport-level failure (non-JSON reply, WAF page, no network)
+                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoConnectionError));
                     } else {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("ErrorOccurred", R.string.ErrorOccurred) + "\n" + error.text);
                     }
@@ -5850,6 +5861,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                     needHideProgress(false);
                     if (error.text != null && error.text.startsWith("FLOOD_WAIT")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoTooManyAttempts));
+                    } else if (error.text != null && (error.text.contains("MALFORMED_RESPONSE") || error.text.equals("NO_CONNECTION") || error.code == -1)) {
+                        // T50: transport-level failure (non-JSON reply, WAF page, no network)
+                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoConnectionError));
                     } else {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("ErrorOccurred", R.string.ErrorOccurred) + "\n" + error.text);
                     }

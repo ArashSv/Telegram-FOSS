@@ -8782,6 +8782,7 @@
     <string name="XoNewPasswordTitle">رمز دو مرحله‌ای جدید را وارد کنید.</string>
     <string name="XoPasswordSaved">رمز دو مرحله‌ای تغییر کرد.</string>
     <string name="XoPasswordError">خطا در تغییر رمز. دوباره امتحان کنید.</string>
+    <string name="XoConnectionError">خطا در ارتباط با سرور. اتصال اینترنت را بررسی کنید و چند لحظه بعد دوباره امتحان کنید.</string>
     <string name="EditProfileBioInfo">You can add a few lines about yourself. Choose who can see your bio in **Settings**.</string>
     <string name="EditProfileBirthday">Your birthday</string>
     <string name="EditProfileBirthdayText">Date of Birth</string>
