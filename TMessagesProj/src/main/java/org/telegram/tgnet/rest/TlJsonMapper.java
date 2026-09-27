@@ -257,6 +257,14 @@ public final class TlJsonMapper {
         photo.photo_id = bigId; // reload-stable: see avatarLocation javadoc
         photo.photo_small = avatarLocation(smallId, 'a');
         photo.photo_big = avatarLocation(bigId, 'c');
+        // T48: two-size durability. (a) dc_id rides the serialized photo so
+        // ImageLocation.getForUser/getForChat (photo.dc_id first, fileLocation
+        // second) keeps the virtual dc across storage reloads — without it the
+        // reload chain loses dc and FileLoadOperation fails outright.
+        photo.dc_id = VIRTUAL_DC;
+        // (b) remember big->small so a post-reload 'a' request (rebuilt as
+        // volume_id = -photo_id = big) still resolves to the 160px crop.
+        RestFileBridge.noteAvatarPair(bigId, smallId);
         return photo;
     }
 
@@ -276,6 +284,9 @@ public final class TlJsonMapper {
         photo.photo_id = bigId; // reload-stable: see avatarLocation javadoc
         photo.photo_small = avatarLocation(smallId, 'a');
         photo.photo_big = avatarLocation(bigId, 'c');
+        // T48: two-size durability — see parseUserProfilePhoto.
+        photo.dc_id = VIRTUAL_DC;
+        RestFileBridge.noteAvatarPair(bigId, smallId);
         return photo;
     }
 
@@ -337,7 +348,12 @@ public final class TlJsonMapper {
         message.id = (int) msg.getLong("id");
         long senderId = msg.getLong("sender_id");
         message.date = (int) msg.optLong("date", System.currentTimeMillis() / 1000L);
-        String content = msg.optString("content", null);
+        // T48: Android's org.json stringifies the JSON null sentinel as the
+        // literal "null" (optString -> "null"), so media messages without a
+        // caption rendered a bogus "null" caption everywhere (bubble, viewer,
+        // dialog list, notifications). Guard with isNull exactly like the
+        // sha256 parse below; the backend also ships "" instead of null now.
+        String content = msg.isNull("content") ? null : msg.optString("content", null);
         message.message = content == null ? "" : content;
 
         message.from_id = new TLRPC.TL_peerUser();

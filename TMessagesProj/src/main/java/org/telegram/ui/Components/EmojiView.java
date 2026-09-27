@@ -5860,12 +5860,18 @@ public class EmojiView extends FrameLayout implements NotificationCenter.Notific
     private void updateRecentGifs() {
         final int prevSize = recentGifs.size();
         long prevHash = MediaDataController.calcDocumentsHash(recentGifs, Integer.MAX_VALUE);
+        // T48: calcDocumentsHash is order-insensitive, so a pure move-to-front
+        // (using a gif from the tab now reorders the collection) never rebound
+        // an open panel. Track the head id as well — the list is newest-first,
+        // so a changed head IS a reorder.
+        long prevFirstId = prevSize > 0 ? recentGifs.get(0).id : 0;
         recentGifs = MediaDataController.getInstance(currentAccount).getRecentGifs();
         long newHash = MediaDataController.calcDocumentsHash(recentGifs, Integer.MAX_VALUE);
+        long newFirstId = !recentGifs.isEmpty() ? recentGifs.get(0).id : 0;
         if (gifTabs != null && prevSize == 0 && !recentGifs.isEmpty() || prevSize != 0 && recentGifs.isEmpty()) {
             updateGifTabs();
         }
-        if ((prevSize != recentGifs.size() || prevHash != newHash) && gifAdapter != null) {
+        if ((prevSize != recentGifs.size() || prevHash != newHash || prevFirstId != newFirstId) && gifAdapter != null) {
             gifAdapter.notifyDataSetChanged();
         }
     }

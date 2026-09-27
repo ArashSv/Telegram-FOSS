@@ -100,6 +100,39 @@ public final class RestFileBridge {
             ApplicationLoader.applicationContext.getSharedPreferences("xofilemeta", android.content.Context.MODE_PRIVATE);
     private static final int META_PREFS_MAX = 4096;
 
+    // ------------------------------------------------------------------
+    // T48 avatar two-size persistence. The backend ships every avatar as
+    // TWO square crops (AvatarService: 160px small + 640px big); the live
+    // mapper plants photo_small = -smallId/'a' and photo_big = -bigId/'c'.
+    // But a storage reload rebuilds BOTH slots from photo_id (= the BIG
+    // crop id, TLRPC readParams: volume_id = -photo_id, local_id = 'a'),
+    // which silently degraded every list avatar (TYPE_SMALL) to the 640px
+    // download. Persisting big->small per install lets the peer-photo
+    // resolve route a reloaded 'a' request back to the real 160px file,
+    // so small avatars stay small and the profile/full view keeps the
+    // big crop. ids are server-global; the store is tiny (one entry per
+    // avatar ever seen) and never needs invalidation (crop rows die with
+    // the avatar itself and the map simply never matches again).
+    // ------------------------------------------------------------------
+    private static final android.content.SharedPreferences avatarPrefs =
+            ApplicationLoader.applicationContext.getSharedPreferences("xoavatars", android.content.Context.MODE_PRIVATE);
+
+    /** Records big crop id -> small crop id for the peer-photo resolve (idempotent). */
+    public static void noteAvatarPair(long bigId, long smallId) {
+        if (bigId <= 0 || smallId <= 0 || bigId == smallId) {
+            return;
+        }
+        if (avatarPrefs.getLong("big_" + bigId, 0) == smallId) {
+            return;
+        }
+        avatarPrefs.edit().putLong("big_" + bigId, smallId).apply();
+    }
+
+    /** Small crop id for a big crop id (0 = unknown — caller keeps the parent). */
+    private static long avatarSmallFor(long bigId) {
+        return bigId <= 0 ? 0 : avatarPrefs.getLong("big_" + bigId, 0);
+    }
+
     /**
      * Records the server-attested {size, sha256} of a backend file. Idempotent;
      * a later record for the same id wins (files are immutable once ready, so
@@ -429,6 +462,18 @@ public final class RestFileBridge {
             parentId = Math.abs(peerLoc.volume_id);
             if (parentId <= 0) {
                 parentId = Math.abs(peerLoc.photo_id);
+            }
+            // T48: letter-aware small-crop resolve. A live parse carries the
+            // real small id in volume_id (nothing to do); a storage reload
+            // rebuilds the 'a' slot from photo_id (= the BIG crop id) — the
+            // persisted pair maps it back so TYPE_SMALL avatars stream the
+            // 160px file instead of the 640px one. Unknown pair -> keep the
+            // parent (previous behavior: correct pixels, bigger bytes).
+            if (peerLoc.local_id == 'a') {
+                long smallId = avatarSmallFor(parentId);
+                if (smallId > 0 && smallId != parentId) {
+                    return smallId;
+                }
             }
             thumbRequest = false;
         } else {
