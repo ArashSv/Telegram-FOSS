@@ -559,6 +559,73 @@ public final class RestDispatcher {
         return new TLRPC.TL_boolTrue();
     }
 
+    /**
+     * T48: blocking small-binary upload for the send path's thumb guarantee.
+     * Fully replicates the {@link #uploadPart} wire contract (init → one
+     * chunk with the sub-32 KB WAF pad → echo size/sha verify → noteUpload-
+     * Bytes) for a fully buffered payload, WITHOUT the FileLoader delayed-
+     * message machinery: the caller gets back a fresh tree upload id whose
+     * parts are already on the backend, ready for the normal
+     * {@code finalizeUpload(treeId, 1, mime, ...)} in handleSendMedia.
+     *
+     * <p>Why: video/gif thumbs ride an async detour (video upload completes →
+     * thumb upload starts → only then does messages/send fire). Any hiccup in
+     * that detour (thumb file missing from cache, delayed-message replay
+     * after a process kill, upload-error path that force-sends) and the video
+     * is sent WITHOUT its thumb_file_id — the receiver then shows a bare
+     * dark bubble, because this host has no ffmpeg to synthesize video
+     * thumbs server-side. The send path now attaches the thumb synchronously
+     * as a last line of defense (see SendMessagesHelper.ensureRestThumb).
+     *
+     * @return the tree upload id (0 = upload failed; the caller sends
+     *         without the thumb exactly like today)
+     */
+    public static long uploadSmallBlocking(int account, byte[] data) {
+        if (data == null || data.length == 0) {
+            return 0;
+        }
+        long treeUploadId = Utilities.random.nextLong();
+        try {
+            RestFileBridge bridge = RestFileBridge.getInstance(account);
+            long backendId = bridge.ensureBackendFile(treeUploadId, 1);
+            byte[] body = data;
+            int realLen = 0;
+            if (data.length < 32 * 1024) {
+                body = new byte[32 * 1024];
+                System.arraycopy(data, 0, body, 0, data.length);
+                realLen = data.length;
+            }
+            String sentSha = sha256Hex(data);
+            JSONObject storedEnvelope = RestGateway.getInstance(account).fileChunkAttested(backendId, 0, body, realLen);
+            long stored = storedEnvelope.optLong("size", -1);
+            String storedSha = storedEnvelope.isNull("sha256") ? null : storedEnvelope.optString("sha256", null);
+            boolean bad = (stored >= 0 && stored != data.length)
+                    || (storedSha != null && !storedSha.equalsIgnoreCase(sentSha));
+            if (bad) {
+                // one idempotent re-send, then give up (mirror of uploadPart)
+                storedEnvelope = RestGateway.getInstance(account).fileChunkAttested(backendId, 0, body, realLen);
+                stored = storedEnvelope.optLong("size", -1);
+                storedSha = storedEnvelope.isNull("sha256") ? null : storedEnvelope.optString("sha256", null);
+                if (stored >= 0 && stored != data.length) {
+                    FileLog.w("RestDispatcher: small upload mismatch (stored " + stored + " of " + data.length + "B), giving up");
+                    return 0;
+                }
+                if (storedSha != null && !storedSha.equalsIgnoreCase(sentSha)) {
+                    FileLog.w("RestDispatcher: small upload sha mismatch, giving up");
+                    return 0;
+                }
+            }
+            bridge.noteUploadBytes(treeUploadId, data.length);
+            if (BuildVars.LOGS_ENABLED) {
+                FileLog.d("RestDispatcher: small upload " + data.length + "B treeId=" + treeUploadId + " -> file " + backendId);
+            }
+            return treeUploadId;
+        } catch (Exception e) {
+            FileLog.w("RestDispatcher: small blocking upload failed: " + e.getMessage());
+            return 0;
+        }
+    }
+
     /** T29: lowercase hex sha256 of a byte range (part-level upload attestation). */
     private static String sha256Hex(byte[] data) {
         return Utilities.bytesToHex(Utilities.computeSHA256(data, 0, data.length));

@@ -2924,6 +2924,9 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         }
         getNotificationCenter().removePostponeNotificationsCallback(postponeNotificationsWhileLoadingCallback);
         getMessagesController().setLastCreatedDialogId(dialog_id, chatMode == MODE_SCHEDULED, false);
+        AndroidUtilities.cancelRunOnUIThread(mediaRetryRunnable);
+        mediaRetryScheduled = false;
+        mediaRetryCandidates.clear();
         getNotificationCenter().removeObserver(this, NotificationCenter.messagesDidLoad);
         getNotificationCenter().removeObserver(this, NotificationCenter.premiumFloodWaitReceived);
         NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.emojiLoaded);
@@ -20048,6 +20051,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                     return;
                 }
                 processNewMessages(arr);
+                scheduleMediaRetry(arr);
             } else if (ChatObject.isChannel(currentChat) && !currentChat.megagroup && chatInfo != null && did == -chatInfo.linked_chat_id) {
                 for (int a = 0, N = arr.size(); a < N; a++) {
                     MessageObject messageObject = arr.get(a);
@@ -22915,6 +22919,85 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
     }
 
     private ArrayList<MessageObject> notPushedSponsoredMessages;
+    // T48: open-chat media self-heal. A media message that arrives while its
+    // chat is OPEN binds exactly once; if that single bind does not start the
+    // download (a transient REST-transport failure — this fork's media path
+    // sees WAF resets/rate limiting upstream MTProto never had — or a bind-
+    // time gate that evaluated to 0 at the wrong instant), the bubble sits
+    // dark FOREVER while the user stares at it, and leaving + re-entering
+    // the chat rebinds the row so the download starts. That rebind IS the
+    // fix, so the watchdog does exactly that, in place: it re-notifies the
+    // arrived media rows a few times while the chat stays open (1.5s / 4s /
+    // 8s). A rebind re-runs the full upstream gate + ImageReceiver logic and
+    // re-kicks anything stalled; it is idempotent (FileLoader dedups by
+    // operation key, so already-loading or already-loaded rows are untouched
+    // and the bind just re-attaches). Candidates drop out as soon as their
+    // media exists locally or the attempt budget is spent.
+    private final ArrayList<MessageObject> mediaRetryCandidates = new ArrayList<>();
+    private int mediaRetryAttempts;
+    private boolean mediaRetryScheduled;
+
+    private final Runnable mediaRetryRunnable = new Runnable() {
+        @Override
+        public void run() {
+            mediaRetryTick();
+        }
+    };
+
+    private void scheduleMediaRetry(ArrayList<MessageObject> messages) {
+        boolean added = false;
+        for (int a = 0; a < messages.size(); a++) {
+            MessageObject obj = messages.get(a);
+            if (obj.getId() > 0 && (obj.isPhoto() || obj.isVideo() || obj.isGif() || obj.isDocument())
+                    && !mediaRetryCandidates.contains(obj)) {
+                mediaRetryCandidates.add(obj);
+                added = true;
+            }
+        }
+        if (!added) {
+            return;
+        }
+        mediaRetryAttempts = 0;
+        if (!mediaRetryScheduled) {
+            mediaRetryScheduled = true;
+            AndroidUtilities.runOnUIThread(mediaRetryRunnable, 1500);
+        }
+    }
+
+    private void mediaRetryTick() {
+        mediaRetryScheduled = false;
+        mediaRetryAttempts++;
+        if (chatAdapter == null || getParentActivity() == null) {
+            mediaRetryCandidates.clear();
+            return;
+        }
+        boolean stillWatching = false;
+        for (int a = mediaRetryCandidates.size() - 1; a >= 0; a--) {
+            MessageObject obj = mediaRetryCandidates.get(a);
+            obj.checkMediaExistance();
+            boolean loading = obj.getDocument() != null
+                    && FileLoader.getInstance(currentAccount).isLoadingFile(FileLoader.getAttachFileName(obj.getDocument()));
+            if (obj.mediaExists || loading) {
+                mediaRetryCandidates.remove(a); // healthy — nothing to heal
+                continue;
+            }
+            int idx = messages.indexOf(obj);
+            if (idx >= 0 && chatAdapter.messagesStartRow + idx < chatAdapter.getItemCount()) {
+                chatAdapter.notifyItemChanged(chatAdapter.messagesStartRow + idx);
+            } else {
+                mediaRetryCandidates.remove(a); // row left the open chat
+                continue;
+            }
+            stillWatching = true;
+        }
+        if (stillWatching && mediaRetryAttempts < 3) {
+            mediaRetryScheduled = true;
+            AndroidUtilities.runOnUIThread(mediaRetryRunnable, mediaRetryAttempts == 1 ? 2500 : 4000);
+        } else {
+            mediaRetryCandidates.clear();
+        }
+    }
+
     private void processNewMessages(ArrayList<MessageObject> arr) {
         long currentUserId = getUserConfig().getClientUserId();
         boolean updateChat = false;

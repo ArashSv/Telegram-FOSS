@@ -10267,6 +10267,18 @@ public class ChatActivityEnterView extends BlurredFrameLayout implements Notific
                             MediaDataController.getInstance(currentAccount).addRecentGif(document, (int) (System.currentTimeMillis() / 1000), true);
                             if (DialogObject.isEncryptedDialog(dialog_id)) {
                                 accountInstance.getMessagesController().saveGif(parent, document);
+                            } else if ("gif".equals(parent) && MediaDataController.getInstance(currentAccount).getRecentGifs().contains(document)) {
+                                // T48: USING a saved gif (tab tap / preview send,
+                                // parent == "gif") moves it to the FRONT of the
+                                // saved collection — Telegram recent semantics.
+                                // The gif is already in the collection, so this
+                                // is a server-side move-to-front: never a new
+                                // row, GIFS_LIMIT cannot fire, and the T47
+                                // saveGif force-reload converges the panel, the
+                                // web_recent cache and the user's other devices
+                                // on the new order. Locally addRecentGif above
+                                // already fronted it (same semantics).
+                                accountInstance.getMessagesController().saveGif(parent, document);
                             }
                         } else if (gif instanceof TLRPC.BotInlineResult) {
                             TLRPC.BotInlineResult result = (TLRPC.BotInlineResult) gif;

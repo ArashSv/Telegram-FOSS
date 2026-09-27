@@ -57,6 +57,7 @@ import org.telegram.tgnet.RequestDelegate;
 import org.telegram.tgnet.SerializedData;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.rest.RestDispatcher;
 import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.ActionBar.AlertDialog;
 import org.telegram.ui.ActionBar.BaseFragment;
@@ -6294,6 +6295,18 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             }
         }
         final TLRPC.Message newMsgObj = msgObj.messageOwner;
+        if (req instanceof TLRPC.TL_messages_sendMedia) {
+            // T48: the last-line thumb guarantee — run right before the wire
+            // request, so a video/gif is never sent without its preview even
+            // when the async thumb detour broke. The upload is NETWORK work:
+            // when thumb bytes are needed this call delegates the whole send
+            // to a background queue (returns true) instead of blocking the
+            // caller; the re-entrant send then carries the attached thumb.
+            if (ensureRestThumb((TLRPC.TL_messages_sendMedia) req, msgObj, () ->
+                    performSendMessageRequest(req, msgObj, originalPath, parentMessage, check, delayedMessage, parentObject, params, scheduled))) {
+                return;
+            }
+        }
         putToSendingMessages(newMsgObj, scheduled);
         newMsgObj.reqId = getConnectionsManager().sendRequest(req, (response, error) -> {
             if (error != null && (req instanceof TLRPC.TL_messages_sendMedia || req instanceof TLRPC.TL_messages_editMessage) && FileRefController.isFileRefError(error.text)) {
@@ -9116,6 +9129,156 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             } catch (Exception e) {
                 FileLog.e(e);
             }
+        }
+    }
+
+    /**
+     * T48: the last-line thumb guarantee for REST video/gif sends.
+     *
+     * <p>The upstream flow uploads the video first and only then attaches a
+     * thumb via a second async upload (fileUploaded → performSendDelayed-
+     * Message → messages/send with input.thumb). That detour has real-world
+     * failure modes on the REST transport (thumb jpg missing from cache,
+     * delayed-message replay after a process kill, error paths that push the
+     * send through before media.thumb lands) — and when it fails the video is
+     * SENT WITHOUT thumb_file_id, which on this backend means NO preview at
+     * all (no ffmpeg on the host to synthesize video thumbs server-side; the
+     * receiver is stuck with a dark bubble until a re-send).
+     *
+     * <p>Called immediately before the wire request in performSendMessage-
+     * Request. If the uploaded-document input carries no thumb and the message
+     * is a video/animated (gif) document, the thumb is re-obtained — first
+     * from the exact cache path performSendDelayedMessage uses (volume_id_
+     * local_id.jpg), otherwise freshly decoded from the video — and uploaded
+     * through {@link RestDispatcher#uploadSmallBlocking} (its WAF-pad contract
+     * included) on a BACKGROUND queue, because this path can run on the main
+     * thread and the upload is network I/O. The send itself is re-entered via
+     * the sendAgain callback once the thumb is (or is not) attached —
+     * ConnectionsManager.sendRequest is thread-safe and its REST callbacks
+     * are stage-queued either way. Any failure logs and lets the send proceed
+     * exactly as before (never blocks or fails a message over a preview).
+     *
+     * @return true when the send was DELEGATED to the background queue (the
+     *         caller must NOT send); false when nothing was needed/possible
+     *         and the caller should send inline.
+     */
+    private boolean ensureRestThumb(TLRPC.TL_messages_sendMedia req, MessageObject msgObj, Runnable sendAgain) {
+        try {
+            if (!(req.media instanceof TLRPC.TL_inputMediaUploadedDocument) || msgObj == null) {
+                return false;
+            }
+            TLRPC.TL_inputMediaUploadedDocument input = (TLRPC.TL_inputMediaUploadedDocument) req.media;
+            if (input.thumb != null) {
+                return false; // the async detour did its job — nothing to do
+            }
+            TLRPC.Document document = msgObj.getDocument();
+            if (document == null) {
+                return false;
+            }
+            boolean videoOrGif = document.mime_type != null && document.mime_type.startsWith("video/");
+            for (int a = 0; a < document.attributes.size(); a++) {
+                if (document.attributes.get(a) instanceof TLRPC.TL_documentAttributeAnimated) {
+                    videoOrGif = true;
+                }
+            }
+            if (!videoOrGif || msgObj.videoEditedInfo != null && msgObj.videoEditedInfo.isSticker) {
+                return false; // plain documents/audio and sticker webp thumbs keep their own flows
+            }
+            // one background attempt per message id — prevents a recursion loop
+            // when the re-entrant send arrives with the thumb attach failed
+            final long messageId = msgObj.getId();
+            if (!restThumbTriedMessageIds.add(messageId)) {
+                return false;
+            }
+            final byte[] thumbBytes = gatherRestThumb(msgObj, document);
+            if (thumbBytes == null || thumbBytes.length == 0) {
+                return false; // nothing recoverable — send exactly like before
+            }
+            final int account = currentAccount;
+            Utilities.globalQueue.postRunnable(() -> {
+                long treeId = RestDispatcher.uploadSmallBlocking(account, thumbBytes);
+                if (treeId != 0) {
+                    TLRPC.TL_inputFile inputFile = new TLRPC.TL_inputFile();
+                    inputFile.id = treeId;
+                    inputFile.parts = 1;
+                    inputFile.name = "thumb.jpg";
+                    input.thumb = inputFile;
+                    input.flags |= 4;
+                    FileLog.d("ensureRestThumb: attached a " + thumbBytes.length + "B video thumb at send time");
+                } else {
+                    FileLog.w("ensureRestThumb: background thumb upload failed, sending without it");
+                }
+                AndroidUtilities.runOnUIThread(sendAgain);
+            });
+            return true;
+        } catch (Throwable e) {
+            FileLog.e("ensureRestThumb failed (send continues without it)", e);
+            return false;
+        }
+    }
+
+    /** Message ids whose send already went through one ensureRestThumb attempt. */
+    private static final HashSet<Long> restThumbTriedMessageIds = new HashSet<>();
+
+    /**
+     * Re-obtains the thumb bytes for a video/gif about to be sent: the exact
+     * cache file the delayed-message flow uploads, or a fresh decode of the
+     * video (disk + MediaMetadataRetriever only — NO network, safe on any
+     * thread; upstream decodes video thumbs on the main thread the same way).
+     */
+    private static byte[] gatherRestThumb(MessageObject msgObj, TLRPC.Document document) {
+        TLRPC.PhotoSize size = null;
+        for (int a = 0; a < document.thumbs.size(); a++) {
+            TLRPC.PhotoSize ps = document.thumbs.get(a);
+            if (!(ps instanceof TLRPC.TL_photoStrippedSize) && ps.location != null
+                    && ps.location.volume_id != 0 && ps.location.local_id != 0) {
+                size = ps;
+                break;
+            }
+        }
+        if (size != null) {
+            String path = FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE) + "/"
+                    + size.location.volume_id + "_" + size.location.local_id + ".jpg";
+            File f = new File(path);
+            if (f.exists() && f.length() > 0 && f.length() <= 512 * 1024) {
+                byte[] buf = new byte[(int) f.length()];
+                try (FileInputStream in = new FileInputStream(f)) {
+                    int read = in.read(buf);
+                    if (read == buf.length) {
+                        return buf;
+                    }
+                } catch (Exception e) {
+                    FileLog.w("gatherRestThumb: cache thumb unreadable " + e.getMessage());
+                }
+            }
+        }
+        String videoPath = msgObj.messageOwner.attachPath;
+        if (videoPath == null || videoPath.length() == 0 || !new File(videoPath).exists()) {
+            videoPath = FileLoader.getDirectory(FileLoader.MEDIA_DIR_CACHE) + "/" + document.id + ".mp4";
+        }
+        if (!new File(videoPath).exists()) {
+            return null;
+        }
+        Bitmap thumb = createVideoThumbnail(videoPath, MediaStore.Video.Thumbnails.MINI_KIND);
+        if (thumb == null) {
+            return null;
+        }
+        try {
+            float scale = 320f / Math.max(thumb.getWidth(), thumb.getHeight());
+            if (scale < 1f) {
+                Bitmap scaled = Bitmap.createScaledBitmap(thumb,
+                        Math.max(1, (int) (thumb.getWidth() * scale)),
+                        Math.max(1, (int) (thumb.getHeight() * scale)), true);
+                if (scaled != thumb) {
+                    thumb.recycle();
+                }
+                thumb = scaled;
+            }
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            thumb.compress(Bitmap.CompressFormat.JPEG, 80, bos);
+            return bos.toByteArray();
+        } finally {
+            thumb.recycle();
         }
     }
 
