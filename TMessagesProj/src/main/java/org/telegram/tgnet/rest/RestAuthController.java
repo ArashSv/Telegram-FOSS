@@ -8,19 +8,20 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * T4: async bridge between LoginActivity and the blocking {@link RestGateway}.
+ * T4 → T50: async bridge between the login/privacy UI and the blocking
+ * {@link RestGateway}.
  *
  * <p>One private single-thread executor performs the blocking I/O; every
  * callback is marshalled to the UI thread, matching the
  * {@code sendRequest(..., (response, error) -> runOnUIThread(...))} shape the
  * LoginActivity call sites already use.
  *
- * <p>Failures are mapped to {@link TLRPC.TL_error} with the exact text codes
- * the existing LoginActivity error chains already handle (PHONE_CODE_INVALID,
- * PHONE_CODE_EXPIRED, FLOOD_WAIT_*, PHONE_NUMBER_INVALID) so the intercepted
- * sites keep their original UX (shake, alerts, view transitions) unchanged.
- * Transport failures surface as a generic error alert — the login flow has no
- * retry loop; the user taps again.
+ * <p>T50 (password-first auth): the OTP pair (sendCode/verify) is GONE — the
+ * bridge now exposes checkPhone / register / loginWithPassword /
+ * updateProfile (setDisplayName). Failures are mapped to {@link TLRPC.TL_error}
+ * whose text carries the backend code (PASSWORD_INVALID, ACCOUNT_EXISTS,
+ * VALIDATION_ERROR) or FLOOD_WAIT_60 for throttle lockouts; transport failures
+ * surface as code -1. The login flow has no retry loop — the user taps again.
  */
 public final class RestAuthController {
 
@@ -38,49 +39,94 @@ public final class RestAuthController {
     private RestAuthController() {
     }
 
-    /** POST /auth/send-code.php off the UI thread. */
-    public static void sendCode(int account, String phone, Callback<RestGateway.SendCodeResult> callback) {
+    /** POST /auth/check-phone.php off the UI thread (T50). */
+    public static void checkPhone(int account, String phone, Callback<RestGateway.CheckPhoneResult> callback) {
         IO_QUEUE.execute(() -> {
             try {
-                RestGateway.SendCodeResult result = RestGateway.getInstance(account).sendCode(phone);
+                RestGateway.CheckPhoneResult result = RestGateway.getInstance(account).checkPhone(phone);
                 AndroidUtilities.runOnUIThread(() -> callback.onResult(result));
             } catch (Exception e) {
-                FileLog.e("RestAuthController: sendCode failed", e);
+                FileLog.e("RestAuthController: checkPhone failed", e);
                 TLRPC.TL_error error = toTlError(e);
                 AndroidUtilities.runOnUIThread(() -> callback.onError(error));
             }
         });
     }
 
-    /** POST /auth/verify.php off the UI thread (single call does signIn AND signUp). */
-    public static void verify(int account, String phone, String phoneCodeHash, String code,
-                              String firstName, String lastName, Callback<RestGateway.VerifyResult> callback) {
+    /** POST /auth/register.php off the UI thread — new number + password setup (T50). */
+    public static void register(int account, String phone, String password, String hint,
+                                Callback<RestGateway.VerifyResult> callback) {
         IO_QUEUE.execute(() -> {
             try {
                 RestGateway.VerifyResult result = RestGateway.getInstance(account)
-                        .verify(phone, phoneCodeHash, code, firstName, lastName);
+                        .register(phone, password, hint);
                 AndroidUtilities.runOnUIThread(() -> callback.onResult(result));
             } catch (Exception e) {
-                FileLog.e("RestAuthController: verify failed", e);
+                FileLog.e("RestAuthController: register failed", e);
                 TLRPC.TL_error error = toTlError(e);
                 AndroidUtilities.runOnUIThread(() -> callback.onError(error));
             }
         });
     }
 
-    /**
-     * Synthetic {@code TL_auth_sentCode} (SMS type) so the existing
-     * {@code fillNextCodeParams} machinery routes to the standard code view
-     * untouched: phone_code_hash + length drive it, timeout drives the timer.
-     */
-    public static TLRPC.TL_auth_sentCode toSentCode(RestGateway.SendCodeResult result) {
-        TLRPC.TL_auth_sentCode sentCode = new TLRPC.TL_auth_sentCode();
-        TLRPC.TL_auth_sentCodeTypeSms type = new TLRPC.TL_auth_sentCodeTypeSms();
-        type.length = result.codeLength > 0 ? result.codeLength : 5;
-        sentCode.type = type;
-        sentCode.phone_code_hash = result.phoneCodeHash;
-        sentCode.timeout = result.expiresIn > 0 ? result.expiresIn : 300;
-        return sentCode;
+    /** POST /auth/login.php off the UI thread — existing number + password (T50). */
+    public static void loginWithPassword(int account, String phone, String password,
+                                         Callback<RestGateway.VerifyResult> callback) {
+        IO_QUEUE.execute(() -> {
+            try {
+                RestGateway.VerifyResult result = RestGateway.getInstance(account)
+                        .loginWithPassword(phone, password);
+                AndroidUtilities.runOnUIThread(() -> callback.onResult(result));
+            } catch (Exception e) {
+                FileLog.e("RestAuthController: loginWithPassword failed", e);
+                TLRPC.TL_error error = toTlError(e);
+                AndroidUtilities.runOnUIThread(() -> callback.onError(error));
+            }
+        });
+    }
+
+    /** POST /users/edit.php off the UI thread — the signup name page (T50). */
+    public static void updateProfile(int account, String displayName, Callback<RestGateway.VerifyResult> callback) {
+        IO_QUEUE.execute(() -> {
+            try {
+                RestGateway.VerifyResult result = RestGateway.getInstance(account).setDisplayName(displayName);
+                AndroidUtilities.runOnUIThread(() -> callback.onResult(result));
+            } catch (Exception e) {
+                FileLog.e("RestAuthController: updateProfile failed", e);
+                TLRPC.TL_error error = toTlError(e);
+                AndroidUtilities.runOnUIThread(() -> callback.onError(error));
+            }
+        });
+    }
+
+    /** POST /auth/verify-password.php off the UI thread (privacy step, T50). */
+    public static void verifyPassword(int account, String password, Callback<Boolean> callback) {
+        IO_QUEUE.execute(() -> {
+            try {
+                boolean ok = RestGateway.getInstance(account).verifyPassword(password);
+                AndroidUtilities.runOnUIThread(() -> callback.onResult(ok));
+            } catch (Exception e) {
+                FileLog.e("RestAuthController: verifyPassword failed", e);
+                TLRPC.TL_error error = toTlError(e);
+                AndroidUtilities.runOnUIThread(() -> callback.onError(error));
+            }
+        });
+    }
+
+    /** POST /auth/change-password.php off the UI thread (privacy wizard, T50). */
+    public static void changePassword(int account, String currentPassword, String newPassword, String hint,
+                                      Callback<RestGateway.VerifyResult> callback) {
+        IO_QUEUE.execute(() -> {
+            try {
+                RestGateway.VerifyResult result = RestGateway.getInstance(account)
+                        .changePassword(currentPassword, newPassword, hint);
+                AndroidUtilities.runOnUIThread(() -> callback.onResult(result));
+            } catch (Exception e) {
+                FileLog.e("RestAuthController: changePassword failed", e);
+                TLRPC.TL_error error = toTlError(e);
+                AndroidUtilities.runOnUIThread(() -> callback.onError(error));
+            }
+        });
     }
 
     /**
@@ -94,25 +140,24 @@ public final class RestAuthController {
         return authorization;
     }
 
-    /** Maps failures to the TL_error strings the LoginActivity chains understand. */
+    /**
+     * Maps failures to TL_error. The backend's own code becomes the text
+     * (PASSWORD_INVALID / ACCOUNT_EXISTS / VALIDATION_ERROR) so the password-era
+     * views can branch on it; throttling is surfaced as the legacy
+     * FLOOD_WAIT_60 shape the alert chains already understand.
+     */
     private static TLRPC.TL_error toTlError(Exception e) {
         TLRPC.TL_error error = new TLRPC.TL_error();
         if (e instanceof XoApiException) {
             XoApiException api = (XoApiException) e;
             error.code = api.httpStatus;
             String backend = api.errorCode;
-            if ("INVALID_CODE".equals(backend)) {
-                error.text = "PHONE_CODE_INVALID";
-            } else if ("CODE_EXPIRED".equals(backend)) {
-                error.text = "PHONE_CODE_EXPIRED";
-            } else if ("TOO_MANY_ATTEMPTS".equals(backend)) {
+            if ("TOO_MANY_ATTEMPTS".equals(backend)) {
                 error.text = "FLOOD_WAIT_60";
-            } else if ("VALIDATION_ERROR".equals(backend)) {
-                error.text = "PHONE_NUMBER_INVALID";
-            } else if (api.getMessage() != null && api.getMessage().length() > 0) {
-                error.text = api.getMessage();
+            } else if (backend != null && backend.length() > 0) {
+                error.text = backend;
             } else {
-                error.text = backend != null ? backend : "SERVER_ERROR";
+                error.text = api.getMessage() != null ? api.getMessage() : "SERVER_ERROR";
             }
         } else {
             error.code = -1; // transport-level (XoTransportException or unexpected)

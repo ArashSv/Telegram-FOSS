@@ -8758,6 +8758,30 @@
     <string name="ProfileUserIdCopied">ID copied to clipboard</string>
     <!-- T35: single-name contact model (server stores one name per contact) -->
     <string name="XoName">Name</string>
+    <!-- T50: password-first auth (two-step-verification password replaces the OTP).
+         These are the product's fixed Persian strings — shown verbatim. -->
+    <string name="XoPhoneHint">برای امنیت بیشتر، بجای شماره واقعی یک شماره فرضی ۵ رقمی وارد کنید.</string>
+    <string name="XoNumberTakenTitle">این شماره قبلا ثبت شده</string>
+    <string name="XoNumberTakenText">اگه این شماره متعلق به خودته، دکمه ادامه رو بزن و رمزت رو وارد کن.</string>
+    <string name="XoContinue">ادامه</string>
+    <string name="XoChangeNumber">تغییر شماره</string>
+    <string name="XoSignupPasswordTitle">یک رمز عبور امن برای ساخت حساب وارد کنید.</string>
+    <string name="XoSetupConfirmTitle">رمز را دوباره وارد کنید.</string>
+    <string name="XoSetupHintTitle">یک راهنما بنویس که رمزتان یادتان بماند (اختیاری).</string>
+    <string name="XoSetupFieldPassword">رمز دو مرحله‌ای</string>
+    <string name="XoSetupFieldConfirm">تأیید رمز</string>
+    <string name="XoSetupFieldHint">راهنما (اختیاری)</string>
+    <string name="XoPasswordTooShort">رمز باید حداقل ۴ کاراکتر باشد.</string>
+    <string name="XoPasswordsMismatch">رمزها یکسان نیستند. دوباره امتحان کنید.</string>
+    <string name="XoWrongPassword">رمز عبور اشتباه است.</string>
+    <string name="XoHintLine">راهنما: %1$s</string>
+    <string name="XoTooManyAttempts">تلاش‌های ناموفق زیاد بود. چند دقیقه بعد دوباره امتحان کنید.</string>
+    <string name="XoChangePhoneUnsupported">تغییر شماره در این نسخه پشتیبانی نمی‌شود.</string>
+    <string name="XoCurrentPasswordTitle">برای تغییر رمز، رمز فعلی را وارد کنید.</string>
+    <string name="XoPasswordCurrent">رمز فعلی</string>
+    <string name="XoNewPasswordTitle">رمز دو مرحله‌ای جدید را وارد کنید.</string>
+    <string name="XoPasswordSaved">رمز دو مرحله‌ای تغییر کرد.</string>
+    <string name="XoPasswordError">خطا در تغییر رمز. دوباره امتحان کنید.</string>
     <string name="EditProfileBioInfo">You can add a few lines about yourself. Choose who can see your bio in **Settings**.</string>
     <string name="EditProfileBirthday">Your birthday</string>
     <string name="EditProfileBirthdayText">Date of Birth</string>

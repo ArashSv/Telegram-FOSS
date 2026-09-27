@@ -62,29 +62,19 @@ public final class RestGateway {
         void onSessionInvalid(int account);
     }
 
-    /** Result of {@link #sendCode(String)} (API.md §3.1). */
-    public static final class SendCodeResult {
-        public final String phoneCodeHash;
-        public final int codeLength;
-        public final int expiresIn;
-        public final boolean testMode;
-        /** Phone already has an account (MTProto TL_auth_sentCode.registered semantics).
-         *  Default false when the backend predates the field: the register-name view
-         *  is shown, and the backend ignores the name for existing users — safe. */
+    /** Result of {@link #checkPhone(String)} (API.md §3.1, T50). */
+    public static final class CheckPhoneResult {
         public final boolean registered;
-        public final String devCode; // present in test mode only
+        /** Telegram-style hint, returned for REGISTERED numbers only (may be null). */
+        public final String passwordHint;
 
-        SendCodeResult(String phoneCodeHash, int codeLength, int expiresIn, boolean testMode, boolean registered, String devCode) {
-            this.phoneCodeHash = phoneCodeHash;
-            this.codeLength = codeLength;
-            this.expiresIn = expiresIn;
-            this.testMode = testMode;
+        CheckPhoneResult(boolean registered, String passwordHint) {
             this.registered = registered;
-            this.devCode = devCode;
+            this.passwordHint = passwordHint;
         }
     }
 
-    /** Result of {@link #verify(String, String, String, String, String)} (API.md §3.2). */
+    /** Result of the password login / register / change calls (API.md §3, T50). */
     public static final class VerifyResult {
         public final boolean isNewUser;
         public final TLRPC.TL_user user;
@@ -130,44 +120,74 @@ public final class RestGateway {
     // ------------------------------------------------------------------ auth API
 
     /**
-     * POST /auth/send-code.php — pre-auth, no bearer.
-     * Backend codes surfaced on failure: VALIDATION_ERROR, TOO_MANY_ATTEMPTS.
-     * {@code registered} lets the client pick sign-in vs register-name BEFORE
-     * verify — the code is consumed by the first successful verify, so the
-     * MTProto sign-in→signUpRequired→signUp re-verify flow cannot exist here.
+     * POST /auth/check-phone.php — pre-auth, no bearer (T50 password-first auth).
+     * The single gate that decides the next page: unregistered → password setup,
+     * registered → the "already registered" dialog → password entry. Backend
+     * codes surfaced on failure: VALIDATION_ERROR, TOO_MANY_ATTEMPTS.
      */
-    public SendCodeResult sendCode(String phone) {
+    public CheckPhoneResult checkPhone(String phone) {
         JSONObject body = put(new JSONObject(), "phone", phone);
-        JSONObject response = unauthenticatedRequest("POST", "auth/send-code.php", body);
-        return new SendCodeResult(
-                response.optString("phone_code_hash", null),
-                response.optInt("code_length", 5),
-                response.optInt("expires_in", 300),
-                response.optBoolean("test_mode", false),
+        JSONObject response = unauthenticatedRequest("POST", "auth/check-phone.php", body);
+        return new CheckPhoneResult(
                 response.optBoolean("registered", false),
-                response.optString("dev_code", null));
+                response.optString("password_hint", null));
     }
 
     /**
-     * POST /auth/verify.php — single call does signIn AND signUp (API.md §10).
-     * Persists the returned token pair on success. Backend codes: CODE_EXPIRED,
-     * INVALID_CODE, TOO_MANY_ATTEMPTS.
-     *
-     * @param firstName optional, used by the backend only on first signup
+     * POST /auth/register.php — creates the account for a NEW number with its
+     * two-step-verification password (API.md §3.2, T50). Persists the returned
+     * token pair on success. Backend codes: VALIDATION_ERROR (weak password /
+     * bad number), ACCOUNT_EXISTS (409), TOO_MANY_ATTEMPTS.
      */
-    public VerifyResult verify(String phone, String phoneCodeHash, String code, String firstName, String lastName) {
+    public VerifyResult register(String phone, String password, String hint) {
         JSONObject body = put(new JSONObject(), "phone", phone);
-        put(body, "phone_code_hash", phoneCodeHash);
-        put(body, "code", code);
-        if (firstName != null && firstName.length() > 0) {
-            put(body, "first_name", firstName);
+        put(body, "password", password);
+        if (hint != null && hint.length() > 0) {
+            put(body, "hint", hint);
         }
-        if (lastName != null && lastName.length() > 0) {
-            put(body, "last_name", lastName);
-        }
-        JSONObject response = unauthenticatedRequest("POST", "auth/verify.php", body);
+        JSONObject response = unauthenticatedRequest("POST", "auth/register.php", body);
         persistTokens(response);
-        return new VerifyResult(response.optBoolean("is_new_user", false), selfUser(response));
+        return new VerifyResult(true, selfUser(response));
+    }
+
+    /**
+     * POST /auth/login.php — existing number + password (API.md §3.3, T50).
+     * Persists the token pair on success. Backend codes: PASSWORD_INVALID (400,
+     * uniform for unknown numbers), TOO_MANY_ATTEMPTS (429 lockout).
+     */
+    public VerifyResult loginWithPassword(String phone, String password) {
+        JSONObject body = put(new JSONObject(), "phone", phone);
+        put(body, "password", password);
+        JSONObject response = unauthenticatedRequest("POST", "auth/login.php", body);
+        persistTokens(response);
+        return new VerifyResult(false, selfUser(response));
+    }
+
+    /**
+     * POST /auth/verify-password.php (bearer) — the privacy section's "current
+     * password" step before the change wizard (API.md §3.4, T50).
+     */
+    public boolean verifyPassword(String password) {
+        JSONObject body = put(new JSONObject(), "password", password);
+        authenticatedRequest("POST", "auth/verify-password.php", body);
+        return true;
+    }
+
+    /**
+     * POST /auth/change-password.php (bearer) — replaces the password, bumps
+     * the server-side session era and revokes every OTHER device (API.md §3.5,
+     * T50). The response carries a FRESH token pair for THIS device, which is
+     * persisted here. An optional hint param (may be null = keep stored).
+     */
+    public VerifyResult changePassword(String currentPassword, String newPassword, String hint) {
+        JSONObject body = put(new JSONObject(), "current_password", currentPassword);
+        put(body, "new_password", newPassword);
+        if (hint != null && hint.length() > 0) {
+            put(body, "hint", hint);
+        }
+        JSONObject response = authenticatedRequest("POST", "auth/change-password.php", body);
+        persistTokens(response);
+        return new VerifyResult(false, selfUser(response));
     }
 
     /**
@@ -705,6 +725,17 @@ public final class RestGateway {
             put(body, "bio", bio);
         }
         return authenticatedRequest("POST", "users/edit.php", body);
+    }
+
+    /**
+     * POST /users/edit.php {display_name} — the signup NAME page (T50): the
+     * account already exists (register.php issued the token pair); this only
+     * replaces the placeholder display name. Returns the same VerifyResult
+     * shape the password calls use so onAuthSuccess stays shared.
+     */
+    public VerifyResult setDisplayName(String displayName) {
+        JSONObject response = updateProfile(displayName, null);
+        return new VerifyResult(false, selfUser(response));
     }
 
     // ------------------------------------------------------------------ T35: group full info + group about + contacts

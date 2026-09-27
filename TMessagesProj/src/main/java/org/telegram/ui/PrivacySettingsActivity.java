@@ -410,25 +410,11 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
                         .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
                         .show();
             } else if (position == passwordRow) {
-                if (currentPassword == null) {
-                    return;
-                }
-                if (!TwoStepVerificationActivity.canHandleCurrentPassword(currentPassword, false)) {
-                    AlertsCreator.showUpdateAppAlert(getParentActivity(), LocaleController.getString("UpdateAppAlert", R.string.UpdateAppAlert), true);
-                }
-                if (currentPassword.has_password) {
-                    TwoStepVerificationActivity fragment = new TwoStepVerificationActivity();
-                    fragment.setPassword(currentPassword);
-                    presentFragment(fragment);
-                } else {
-                    int type;
-                    if (TextUtils.isEmpty(currentPassword.email_unconfirmed_pattern)) {
-                        type = TwoStepVerificationSetupActivity.TYPE_INTRO;
-                    } else {
-                        type = TwoStepVerificationSetupActivity.TYPE_EMAIL_CONFIRM;
-                    }
-                    presentFragment(new TwoStepVerificationSetupActivity(type, currentPassword));
-                }
+                // T50: password-first auth — every account HAS a two-step-
+                // verification password (it IS the login), so this row always
+                // opens the REST change-password wizard. The MTProto
+                // TwoStepVerificationActivity pair is dead in this fork.
+                presentFragment(new XoPasswordChangeFragment());
             } else if (position == passcodeRow) {
                 presentFragment(PasscodeActivity.determineOpenFragment());
             } else if (position == secretWebpageRow) {
@@ -768,16 +754,10 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
     }
 
     private void loadPasswordSettings() {
-        TLRPC.TL_account_getPassword req = new TLRPC.TL_account_getPassword();
-        getConnectionsManager().sendRequest(req, (response, error) -> {
-            if (response != null) {
-                TLRPC.account_Password password = (TLRPC.account_Password) response;
-                AndroidUtilities.runOnUIThread(() -> {
-                    currentPassword = password;
-                    initPassword();
-                });
-            }
-        }, ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin);
+        // T50: the password state is a server-side invariant (every account
+        // has a two-step-verification password — it IS the login), so the dead
+        // MTProto TL_account_getPassword probe is gone and the row always
+        // shows "On".
     }
 
     public static String formatRulesString(AccountInstance accountInstance, int rulesType) {
@@ -1205,14 +1185,9 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
                         textCell2.setPrioritizeTitleOverValue(true);
                         textCell2.setTextAndSpoilersValueAndIcon(LocaleController.getString(R.string.EmailLogin), val, R.drawable.msg2_email, true);
                     } else if (position == passwordRow) {
-                        value = "";
-                        if (currentPassword == null) {
-                            showLoading = true;
-                        } else if (currentPassword.has_password) {
-                            value = LocaleController.getString("PasswordOn", R.string.PasswordOn);
-                        } else {
-                            value = LocaleController.getString("PasswordOff", R.string.PasswordOff);
-                        }
+                        // T50: the two-step-verification password is ALWAYS set
+                        // (it is the login itself).
+                        value = LocaleController.getString("PasswordOn", R.string.PasswordOn);
                         textCell2.setTextAndValueAndIcon(LocaleController.getString("TwoStepVerification", R.string.TwoStepVerification), value, true, R.drawable.msg2_permissions, true);
                     } else if (position == passcodeRow) {
                         int icon;
