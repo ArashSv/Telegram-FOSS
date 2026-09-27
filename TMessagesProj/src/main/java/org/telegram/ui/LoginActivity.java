@@ -50,6 +50,7 @@ import android.os.Looper;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.text.Editable;
+import android.text.InputFilter;
 import android.text.InputType;
 import android.text.Layout;
 import android.text.Spannable;
@@ -1691,6 +1692,196 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
         return str.toUpperCase().replaceAll(" ", "_");
     }
 
+    private void fillNextCodeParams(Bundle params, TLRPC.auth_SentCode res) {
+        fillNextCodeParams(params, res, true);
+    }
+
+    private void fillNextCodeParams(Bundle params, TLRPC.auth_SentCode res, boolean animate) {
+        /*if (res.type instanceof TLRPC.TL_auth_sentCodeTypeFirebaseSms && !res.type.verifiedFirebase && !isRequestingFirebaseSms) {
+            if (PushListenerController.GooglePushListenerServiceProvider.INSTANCE.hasServices()) {
+                TLRPC.TL_auth_sentCodeTypeFirebaseSms r = (TLRPC.TL_auth_sentCodeTypeFirebaseSms) res.type;
+                needShowProgress(0);
+                isRequestingFirebaseSms = true;
+                final String phone = params.getString("phoneFormated");
+                if (r.play_integrity_nonce != null) {
+                    IntegrityManager integrityManager = IntegrityManagerFactory.create(getContext());
+                    final String nonce = new String(Base64.encode(r.play_integrity_nonce, Base64.URL_SAFE));
+                    FileLog.d("getting classic integrity with nonce = " + nonce);
+                    Task<IntegrityTokenResponse> integrityTokenResponse = integrityManager.requestIntegrityToken(IntegrityTokenRequest.builder().setNonce(nonce).setCloudProjectNumber(r.play_integrity_project_id).build());
+                    integrityTokenResponse
+                        .addOnSuccessListener(result -> {
+                            final String token = result.token();
+
+                            if (token == null) {
+                                FileLog.d("Resend firebase sms because integrity token = null");
+                                resendCodeFromSafetyNet(params, res, "PLAYINTEGRITY_TOKEN_NULL");
+                                return;
+                            }
+
+                            TLRPC.TL_auth_requestFirebaseSms req = new TLRPC.TL_auth_requestFirebaseSms();
+                            req.phone_number = phone;
+                            req.phone_code_hash = res.phone_code_hash;
+                            req.play_integrity_token = token;
+                            req.flags |= 4;
+
+                            ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> {
+                                if (response instanceof TLRPC.TL_boolTrue) {
+                                    needHideProgress(false);
+                                    isRequestingFirebaseSms = false;
+                                    res.type.verifiedFirebase = true;
+                                    AndroidUtilities.runOnUIThread(() -> fillNextCodeParams(params, res, animate));
+                                } else {
+                                    FileLog.d("{PLAYINTEGRITY_REQUESTFIREBASESMS_FALSE} Resend firebase sms because auth.requestFirebaseSms = false");
+                                    resendCodeFromSafetyNet(params, res, "PLAYINTEGRITY_REQUESTFIREBASESMS_FALSE");
+                                }
+                            }, ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin);
+                        })
+                        .addOnFailureListener(e -> {
+                            final String reason = "PLAYINTEGRITY_EXCEPTION_" + errorString(e);
+                            FileLog.e("{"+reason+"} Resend firebase sms because integrity threw error", e);
+                            resendCodeFromSafetyNet(params, res, reason);
+                        });
+                } else {
+                    SafetyNet.getClient(ApplicationLoader.applicationContext).attest(res.type.nonce, BuildVars.SAFETYNET_KEY)
+                    .addOnSuccessListener(attestationResponse -> {
+                        String jws = attestationResponse.getJwsResult();
+
+                        if (jws != null) {
+                            TLRPC.TL_auth_requestFirebaseSms req = new TLRPC.TL_auth_requestFirebaseSms();
+                            req.phone_number = phone;
+                            req.phone_code_hash = res.phone_code_hash;
+                            req.safety_net_token = jws;
+                            req.flags |= 1;
+
+                            String[] spl = jws.split("\\.");
+                            if (spl.length > 0) {
+                                try {
+                                    JSONObject obj = new JSONObject(new String(Base64.decode(spl[1].getBytes(StandardCharsets.UTF_8), 0)));
+                                    final boolean basicIntegrity = obj.optBoolean("basicIntegrity");
+                                    final boolean ctsProfileMatch = obj.optBoolean("ctsProfileMatch");
+                                    if (basicIntegrity && ctsProfileMatch) {
+                                        ConnectionsManager.getInstance(currentAccount).sendRequest(req, (response, error) -> {
+                                            if (response instanceof TLRPC.TL_boolTrue) {
+                                                needHideProgress(false);
+                                                isRequestingFirebaseSms = false;
+                                                res.type.verifiedFirebase = true;
+                                                AndroidUtilities.runOnUIThread(() -> fillNextCodeParams(params, res, animate));
+                                            } else {
+                                                FileLog.d("{SAFETYNET_REQUESTFIREBASESMS_FALSE} Resend firebase sms because auth.requestFirebaseSms = false");
+                                                resendCodeFromSafetyNet(params, res, "SAFETYNET_REQUESTFIREBASESMS_FALSE");
+                                            }
+                                        }, ConnectionsManager.RequestFlagFailOnServerErrors | ConnectionsManager.RequestFlagWithoutLogin);
+                                    } else {
+                                        if (!basicIntegrity && !ctsProfileMatch) {
+                                            FileLog.d("{SAFETYNET_BASICINTEGRITY_CTSPROFILEMATCH_FALSE} Resend firebase sms because ctsProfileMatch = false and basicIntegrity = false");
+                                            resendCodeFromSafetyNet(params, res, "SAFETYNET_BASICINTEGRITY_CTSPROFILEMATCH_FALSE");
+                                        } else if (!basicIntegrity) {
+                                            FileLog.d("{SAFETYNET_BASICINTEGRITY_FALSE} Resend firebase sms because basicIntegrity = false");
+                                            resendCodeFromSafetyNet(params, res, "SAFETYNET_BASICINTEGRITY_FALSE");
+                                        } else if (!ctsProfileMatch) {
+                                            FileLog.d("{SAFETYNET_CTSPROFILEMATCH_FALSE} Resend firebase sms because ctsProfileMatch = false");
+                                            resendCodeFromSafetyNet(params, res, "SAFETYNET_CTSPROFILEMATCH_FALSE");
+                                        }
+                                    }
+                                } catch (JSONException e) {
+                                    FileLog.e(e);
+
+                                    FileLog.d("{SAFETYNET_JSON_EXCEPTION} Resend firebase sms because of exception");
+                                    resendCodeFromSafetyNet(params, res, "SAFETYNET_JSON_EXCEPTION");
+                                }
+                            } else {
+                                FileLog.d("{SAFETYNET_CANT_SPLIT} Resend firebase sms because can't split JWS token");
+                                resendCodeFromSafetyNet(params, res, "SAFETYNET_CANT_SPLIT");
+                            }
+                        } else {
+                            FileLog.d("{SAFETYNET_NULL_JWS} Resend firebase sms because JWS = null");
+                            resendCodeFromSafetyNet(params, res, "SAFETYNET_NULL_JWS");
+                        }
+                    })
+                    .addOnFailureListener(e -> {
+                        FileLog.e(e);
+
+                        final String reason = "SAFETYNET_EXCEPTION_" + errorString(e);
+                        FileLog.d("{"+reason+"} Resend firebase sms because of safetynet exception");
+                        resendCodeFromSafetyNet(params, res, reason);
+                    });
+                }
+            } else {
+                FileLog.d("{GOOGLE_PLAY_SERVICES_NOT_AVAILABLE} Resend firebase sms because firebase is not available");
+                resendCodeFromSafetyNet(params, res, "GOOGLE_PLAY_SERVICES_NOT_AVAILABLE");
+            }
+            return;
+        }*/
+
+        params.putString("phoneHash", res.phone_code_hash);
+        if (res.next_type instanceof TLRPC.TL_auth_codeTypeCall) {
+            params.putInt("nextType", AUTH_TYPE_CALL);
+        } else if (res.next_type instanceof TLRPC.TL_auth_codeTypeFlashCall) {
+            params.putInt("nextType", AUTH_TYPE_FLASH_CALL);
+        } else if (res.next_type instanceof TLRPC.TL_auth_codeTypeSms) {
+            params.putInt("nextType", AUTH_TYPE_SMS);
+        } else if (res.next_type instanceof TLRPC.TL_auth_codeTypeMissedCall) {
+            params.putInt("nextType", AUTH_TYPE_MISSED_CALL);
+        } else if (res.next_type instanceof TLRPC.TL_auth_codeTypeFragmentSms) {
+            params.putInt("nextType", AUTH_TYPE_FRAGMENT_SMS);
+        }
+        if (res.type instanceof TLRPC.TL_auth_sentCodeTypeApp) {
+            params.putInt("type", AUTH_TYPE_MESSAGE);
+            params.putInt("length", res.type.length);
+            setPage(VIEW_CODE_MESSAGE, animate, params, false);
+        } else {
+            if (res.timeout == 0) {
+                res.timeout = BuildVars.DEBUG_PRIVATE_VERSION ? 5 : 60;
+            }
+            params.putInt("timeout", res.timeout * 1000);
+            if (res.type instanceof TLRPC.TL_auth_sentCodeTypeCall) {
+                params.putInt("type", AUTH_TYPE_CALL);
+                params.putInt("length", res.type.length);
+                setPage(VIEW_CODE_CALL, animate, params, false);
+            } else if (res.type instanceof TLRPC.TL_auth_sentCodeTypeFlashCall) {
+                params.putInt("type", AUTH_TYPE_FLASH_CALL);
+                params.putString("pattern", res.type.pattern);
+                setPage(VIEW_CODE_FLASH_CALL, animate, params, false);
+            } else if (res.type instanceof TLRPC.TL_auth_sentCodeTypeSms || res.type instanceof TLRPC.TL_auth_sentCodeTypeFirebaseSms) {
+                params.putInt("type", AUTH_TYPE_SMS);
+                params.putInt("length", res.type.length);
+                params.putBoolean("firebase", res.type instanceof TLRPC.TL_auth_sentCodeTypeFirebaseSms);
+                setPage(VIEW_CODE_SMS, animate, params, false);
+            } else if (res.type instanceof TLRPC.TL_auth_sentCodeTypeFragmentSms) {
+                params.putInt("type", AUTH_TYPE_FRAGMENT_SMS);
+                params.putString("url", res.type.url);
+                params.putInt("length", res.type.length);
+                setPage(VIEW_CODE_FRAGMENT_SMS, animate, params, false);
+            } else if (res.type instanceof TLRPC.TL_auth_sentCodeTypeMissedCall) {
+                params.putInt("type", AUTH_TYPE_MISSED_CALL);
+                params.putInt("length", res.type.length);
+                params.putString("prefix", res.type.prefix);
+                setPage(VIEW_CODE_MISSED_CALL, animate, params, false);
+            } else if (res.type instanceof TLRPC.TL_auth_sentCodeTypeSetUpEmailRequired) {
+                params.putBoolean("googleSignInAllowed", res.type.google_signin_allowed);
+                setPage(VIEW_ADD_EMAIL, animate, params, false);
+            } else if (res.type instanceof TLRPC.TL_auth_sentCodeTypeEmailCode) {
+                params.putBoolean("googleSignInAllowed", res.type.google_signin_allowed);
+                params.putString("emailPattern", res.type.email_pattern);
+                params.putInt("length", res.type.length);
+                params.putInt("nextPhoneLoginDate", res.type.next_phone_login_date);
+                params.putInt("resetAvailablePeriod", res.type.reset_available_period);
+                params.putInt("resetPendingDate", res.type.reset_pending_date);
+                setPage(VIEW_CODE_EMAIL, animate, params, false);
+            } else if (res.type instanceof TLRPC.TL_auth_sentCodeTypeSmsWord) {
+                if (res.type.beginning != null) {
+                    params.putString("beginning", res.type.beginning);
+                }
+                setPage(VIEW_CODE_WORD, animate, params, false);
+            } else if (res.type instanceof TLRPC.TL_auth_sentCodeTypeSmsPhrase) {
+                if (res.type.beginning != null) {
+                    params.putString("beginning", res.type.beginning);
+                }
+                setPage(VIEW_CODE_PHRASE, animate, params, false);
+            }
+        }
+    }
+
     private boolean isRequestingFirebaseSms;
 
     private TLRPC.TL_help_termsOfService currentTermsOfService;
@@ -1998,7 +2189,6 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
         }
 
         @Override
-        @Override
         public void onNextPressed(String code) {
             if (getParentActivity() == null || nextPressed) {
                 return;
@@ -2045,7 +2235,7 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             checkPhoneViaRest(phone);
         }
 
-        private static String normalizeDigits(String value) {
+        private String normalizeDigits(String value) {
             StringBuilder out = new StringBuilder(value.length());
             for (int i = 0; i < value.length(); i++) {
                 char c = value.charAt(i);
@@ -2591,6 +2781,109 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
         }
     }
 
+
+    public class LoadingTextView extends TextView {
+
+        private final Drawable rippleDrawable = Theme.createSelectorDrawable(Theme.multAlpha(Theme.getColor(Theme.key_windowBackgroundWhiteValueText), .10f), Theme.RIPPLE_MASK_ROUNDRECT_6DP);
+        public final LoadingDrawable loadingDrawable = new LoadingDrawable();
+
+        public LoadingTextView(Context context) {
+            super(context);
+            rippleDrawable.setCallback(this);
+            loadingDrawable.setAppearByGradient(true);
+            loadingDrawable.setSpeed(.8f);
+        }
+
+        @Override
+        public void setText(CharSequence text, BufferType type) {
+            super.setText(text, type);
+
+            updateLoadingLayout();
+        }
+
+        @Override
+        protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+            super.onLayout(changed, left, top, right, bottom);
+
+            updateLoadingLayout();
+        }
+
+        private void updateLoadingLayout() {
+            Layout layout = getLayout();
+            if (layout == null) {
+                return;
+            }
+            CharSequence text = layout.getText();
+            if (text == null) {
+                return;
+            }
+            LinkPath path = new LinkPath(true);
+            path.setInset(AndroidUtilities.dp(3), AndroidUtilities.dp(6));
+            int start = 0;
+            int end = text.length();
+            path.setCurrentLayout(layout, start, 0);
+            layout.getSelectionPath(start, end, path);
+            path.getBounds(AndroidUtilities.rectTmp);
+            rippleDrawable.setBounds((int) AndroidUtilities.rectTmp.left, (int) AndroidUtilities.rectTmp.top, (int) AndroidUtilities.rectTmp.right, (int) AndroidUtilities.rectTmp.bottom);
+            loadingDrawable.usePath(path);
+            loadingDrawable.setRadiiDp(4);
+
+            int color = getThemedColor(Theme.key_chat_linkSelectBackground);
+            loadingDrawable.setColors(
+                    Theme.multAlpha(color, 0.85f),
+                    Theme.multAlpha(color, 2f),
+                    Theme.multAlpha(color, 3.5f),
+                    Theme.multAlpha(color, 6f)
+            );
+
+            loadingDrawable.updateBounds();
+        }
+
+        protected boolean isResendingCode() {
+            return false;
+        }
+
+        @Override
+        protected void onDraw(Canvas canvas) {
+            canvas.save();
+            float offset = (getGravity() & Gravity.CENTER_VERTICAL) != 0 && getLayout() != null ? getPaddingTop() + (getHeight() - getPaddingTop() - getPaddingBottom() - getLayout().getHeight()) / 2f : getPaddingTop();
+            canvas.translate(getPaddingLeft(), offset);
+            rippleDrawable.draw(canvas);
+            canvas.restore();
+
+            super.onDraw(canvas);
+
+            if (isResendingCode() || loadingDrawable.isDisappearing()) {
+                canvas.save();
+                canvas.translate(getPaddingLeft(), offset);
+                loadingDrawable.draw(canvas);
+                canvas.restore();
+                invalidate();
+            }
+        }
+
+        @Override
+        protected boolean verifyDrawable(@NonNull Drawable who) {
+            return who == rippleDrawable || super.verifyDrawable(who);
+        }
+
+        @Override
+        public boolean onTouchEvent(MotionEvent event) {
+            if (isRippleEnabled() && event.getAction() == MotionEvent.ACTION_DOWN) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    rippleDrawable.setHotspot(event.getX(), event.getY());
+                }
+                rippleDrawable.setState(new int[]{android.R.attr.state_enabled, android.R.attr.state_pressed});
+            } else if (event.getAction() == MotionEvent.ACTION_UP || event.getAction() == MotionEvent.ACTION_UP) {
+                rippleDrawable.setState(new int[]{});
+            }
+            return super.onTouchEvent(event);
+        }
+
+        protected boolean isRippleEnabled() {
+            return true;
+        }
+    }
 
     public class LoginActivityPasswordView extends SlideView {
 
@@ -5520,7 +5813,6 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             currentParams = params;
         }
 
-        @Override
         @Override
         public void onNextPressed(String code) {
             if (nextPressed) {
