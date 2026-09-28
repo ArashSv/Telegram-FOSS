@@ -8862,57 +8862,47 @@ public class MessagesController extends BaseController implements NotificationCe
         }
     }
 
+    /**
+     * T54 — "Save to GIFs" / send-path auto-collect, routed through the
+     * MediaDataController completion chain (single-flight save → convergence
+     * load; transport retries with the optimistic entry kept, definitive
+     * rejections rolled back there).
+     *
+     * Contract changes vs the T47 fire-and-forget request:
+     *  - NO silent returns. The old {@code parentObject == null ||
+     *    !isGifDocument → return} silently stranded the caller's optimistic
+     *    add (a phantom tab entry that evaporated on the next sync — the
+     *    "sometimes it doesn't save" class). An invalid document now fires
+     *    {@code onError} with a synthetic GIF_INVALID error so every call
+     *    site rolls back; {@code parentObject} is no longer a gate at all
+     *    (REST needs no file-reference parent).
+     *  - {@code onError} receives ONLY failures, at most once, on the UI
+     *    thread. Success converges via the chain's own load.
+     */
     public void saveGif(Object parentObject, TLRPC.Document document) {
         saveGif(parentObject, document, null);
     }
 
-    /**
-     * T47 — "Save to GIFs" with an outcome callback. The REST backend is the
-     * collection's single source of truth (per-user saved_gifs, durable across
-     * logout and devices), so the save must be OBSERVED, not fire-and-forget:
-     * on success the server collection is force-reloaded (bypasses the
-     * loadRecents one-hour throttle — every open panel + the web_recent_v3
-     * cache converge on the server list, and the gif's bytes warm the media
-     * cache); on failure (GIFS_LIMIT, FILE_ACCESS_DENIED, transport) the
-     * caller rolls back its optimistic local add and tells the user instead
-     * of silently pretending the gif was saved.
-     *
-     * @param onError receives the TL_error (null callback = the old silent
-     *                fire-and-forget behavior)
-     */
     public void saveGif(Object parentObject, TLRPC.Document document, Utilities.Callback<TLRPC.TL_error> onError) {
-        if (parentObject == null || !MessageObject.isGifDocument(document)) {
+        if (document == null) {
             return;
         }
-        TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
-        req.id = new TLRPC.TL_inputDocument();
-        req.id.id = document.id;
-        req.id.access_hash = document.access_hash;
-        req.id.file_reference = document.file_reference;
-        if (req.id.file_reference == null) {
-            req.id.file_reference = new byte[0];
-        }
-        req.unsave = false;
-        getConnectionsManager().sendRequest(req, (response, error) -> {
-            if (error != null) {
-                if (FileRefController.isFileRefError(error.text)) {
-                    getFileRefController().requestReference(parentObject, req);
-                } else if (onError != null) {
-                    AndroidUtilities.runOnUIThread(() -> onError.run(error));
-                }
-                return;
+        if (!MessageObject.isGifDocument(document) || document.id <= 0) {
+            if (onError != null) {
+                AndroidUtilities.runOnUIThread(() -> {
+                    TLRPC.TL_error error = new TLRPC.TL_error();
+                    error.code = 400;
+                    error.text = "GIF_INVALID";
+                    onError.run(error);
+                });
+            } else {
+                FileLog.e("saveGif: invalid gif document (id=" + document.id + ") — nothing saved");
             }
-            // success: converge every surface on the server collection NOW
-            // (the push event only covers OTHER devices; this device just
-            // saved and must not wait for the next panel-open throttle slot).
-            AndroidUtilities.runOnUIThread(() -> {
-                try {
-                    getMediaDataController().loadRecents(MediaDataController.TYPE_IMAGE, true, false, true);
-                } catch (Throwable e) {
-                    FileLog.e(e);
-                }
-            });
-        });
+            return;
+        }
+        // quiet (onError == null) = the send-path auto-collect: a refusal
+        // (e.g. GIFS_LIMIT) rolls back silently instead of nagging mid-send.
+        getMediaDataController().saveGifToCollection(document, onError == null, onError);
     }
 
     public void saveRecentSticker(Object parentObject, TLRPC.Document document, boolean asMask) {
@@ -19391,7 +19381,19 @@ public class MessagesController extends BaseController implements NotificationCe
                             save = true;
                         }
                         if (save) {
-                            getMediaDataController().addRecentGif(message.messageOwner.media.document, message.messageOwner.date, message.wasJustSent);
+                            // T54: observed quiet auto-collect, COLLECT-IF-
+                            // MISSING semantics (was LOCAL-ONLY — own gif
+                            // messages were dropped from the tab by the next
+                            // authoritative sync). This path also fires on
+                            // interface restores (history loads), so an
+                            // already-collected gif must NOT be re-saved: that
+                            // would move-to-front on every chat open and churn
+                            // the server order. Only real usage (tab tap /
+                            // send completion) reorders.
+                            if (!getMediaDataController().isGifCollected(message.messageOwner.media.document.id)) {
+                                getMediaDataController().addRecentGif(message.messageOwner.media.document, message.messageOwner.date, false);
+                                saveGif(null, message.messageOwner.media.document);
+                            }
                         }
                     } else if (!message.isAnimatedEmoji() && (message.isSticker() || message.isAnimatedSticker())) {
                         getMediaDataController().addRecentSticker(MediaDataController.TYPE_IMAGE, message, message.messageOwner.media.document, message.messageOwner.date, false);

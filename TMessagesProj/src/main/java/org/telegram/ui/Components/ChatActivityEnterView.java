@@ -10260,29 +10260,25 @@ public class ChatActivityEnterView extends BlurredFrameLayout implements Notific
                             TLRPC.Document document = (TLRPC.Document) gif;
                             SendMessagesHelper.getInstance(currentAccount).sendSticker(document, query, dialog_id, replyingMessageObject, getThreadMessage(), storyItem, replyingQuote, null, notify, scheduleDate, false, parent, parentFragment != null ? parentFragment.quickReplyShortcut : null, parentFragment != null ? parentFragment.getQuickReplyId() : 0);
                             MediaDataController.getInstance(currentAccount).addRecentGif(document, (int) (System.currentTimeMillis() / 1000), true);
-                            if (DialogObject.isEncryptedDialog(dialog_id)) {
-                                accountInstance.getMessagesController().saveGif(parent, document);
-                            } else if ("gif".equals(parent) && MediaDataController.getInstance(currentAccount).getRecentGifs().contains(document)) {
-                                // T48: USING a saved gif (tab tap / preview send,
-                                // parent == "gif") moves it to the FRONT of the
-                                // saved collection — Telegram recent semantics.
-                                // The gif is already in the collection, so this
-                                // is a server-side move-to-front: never a new
-                                // row, GIFS_LIMIT cannot fire, and the T47
-                                // saveGif force-reload converges the panel, the
-                                // web_recent cache and the user's other devices
-                                // on the new order. Locally addRecentGif above
-                                // already fronted it (same semantics).
-                                accountInstance.getMessagesController().saveGif(parent, document);
-                            }
+                            // T54: EVERY sent gif is auto-collected on the
+                            // server through the observed pipeline — insert or
+                            // move-to-front (idempotent by id), quiet on
+                            // refusals. The old code only fronted gifs whose
+                            // parent was the GIF tab and left every OTHER send
+                            // (attach gallery, search, inline) as a LOCAL-ONLY
+                            // entry that the next authoritative sync dropped —
+                            // the reported "sometimes it doesn't save" and
+                            // "the second gif I save replaces the first".
+                            accountInstance.getMessagesController().saveGif(parent, document);
                         } else if (gif instanceof TLRPC.BotInlineResult) {
                             TLRPC.BotInlineResult result = (TLRPC.BotInlineResult) gif;
 
                             if (result.document != null) {
                                 MediaDataController.getInstance(currentAccount).addRecentGif(result.document, (int) (System.currentTimeMillis() / 1000), false);
-                                if (DialogObject.isEncryptedDialog(dialog_id)) {
-                                    accountInstance.getMessagesController().saveGif(parent, result.document);
-                                }
+                                // T54: observed quiet auto-collect (was an
+                                // encrypted-dialog-only save — a local-only
+                                // add everywhere else).
+                                accountInstance.getMessagesController().saveGif(parent, result.document);
                             }
 
                             TLRPC.User bot = (TLRPC.User) parent;

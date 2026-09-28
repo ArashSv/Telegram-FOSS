@@ -6871,7 +6871,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         save = true;
                     }
                     if (save) {
-                        getMediaDataController().addRecentGif(sentMedia.document, sentMessage.date, true);
+                        // T54: the auto-collect of a sent gif is now an
+                        // OBSERVED server save through the completion chain
+                        // (was a LOCAL-ONLY addRecentGif — the entry was
+                        // dropped by the next authoritative sync, the reported
+                        // "sometimes it doesn't save"). The local add stays for
+                        // instant tab feedback; saveGif (quiet) makes it
+                        // durable across devices and restarts.
+                        getMediaDataController().addRecentGif(sentMedia.document, sentMessage.date, false);
+                        getMessagesController().saveGif(null, sentMedia.document);
                     }
                 } else if (MessageObject.isStickerDocument(sentMedia.document) || MessageObject.isAnimatedStickerDocument(sentMedia.document, true)) {
                     getMediaDataController().addRecentSticker(MediaDataController.TYPE_IMAGE, sentMessage, sentMedia.document, sentMessage.date, false);
