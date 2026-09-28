@@ -23,6 +23,9 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.TextView;
 
+import android.text.TextUtils;
+import org.telegram.PhoneFormat.PhoneFormat;
+
 import androidx.annotation.NonNull;
 
 import org.telegram.messenger.AndroidUtilities;
@@ -608,7 +611,21 @@ public class UserCell extends FrameLayout implements NotificationCenter.Notifica
                     statusTextView.setText(LocaleController.getString("Online", R.string.Online));
                 } else {
                     statusTextView.setTextColor(statusColor);
-                    statusTextView.setText(LocaleController.formatUserStatus(currentAccount, currentUser));
+                    // T49 (task 10): phone numbers are visible secondary user
+                    // info in this product (they are hypothetical/test
+                    // numbers, no privacy hiding). When the REST model knows
+                    // the user's phone, the cell shows the formatted number
+                    // as the second line (name stays the first line) —
+                    // covering contacts lists, group member lists and every
+                    // other UserCell surface in one place.
+                    CharSequence statusText = LocaleController.formatUserStatus(currentAccount, currentUser);
+                    if (!TextUtils.isEmpty(currentUser.phone)) {
+                        String phonePretty = PhoneFormat.getInstance().format("+" + currentUser.phone);
+                        if (!TextUtils.isEmpty(phonePretty) && phonePretty.contains("+") && !phonePretty.equals("+")) {
+                            statusText = phonePretty;
+                        }
+                    }
+                    statusTextView.setText(statusText);
                 }
             }
         }

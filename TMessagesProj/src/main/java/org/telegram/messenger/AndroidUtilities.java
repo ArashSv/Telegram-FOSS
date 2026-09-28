@@ -55,7 +55,6 @@ import android.os.Environment;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.os.Vibrator;
-import android.provider.CallLog;
 import android.provider.DocumentsContract;
 import android.provider.MediaStore;
 import android.provider.Settings;
@@ -134,7 +133,6 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.viewpager.widget.ViewPager;
 
-import com.android.internal.telephony.ITelephony;
 import com.google.android.exoplayer2.util.Consumer;
 
 import org.telegram.PhoneFormat.PhoneFormat;
@@ -2163,25 +2161,8 @@ public class AndroidUtilities {
         return value;
     }
 
-    private static CallReceiver callReceiver;
-
     public static void setWaitingForCall(boolean value) {
         synchronized (callLock) {
-            try {
-                if (value) {
-                    if (callReceiver == null) {
-                        final IntentFilter filter = new IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED);
-                        ApplicationLoader.applicationContext.registerReceiver(callReceiver = new CallReceiver(), filter);
-                    }
-                } else {
-                    if (callReceiver != null) {
-                        ApplicationLoader.applicationContext.unregisterReceiver(callReceiver);
-                        callReceiver = null;
-                    }
-                }
-            } catch (Exception ignore) {
-
-            }
             waitingForCall = value;
         }
     }
@@ -2678,63 +2659,12 @@ public class AndroidUtilities {
     }*/
 
     private static Runnable unregisterRunnable;
-    private static boolean hasCallPermissions = Build.VERSION.SDK_INT >= 23;
 
-    @SuppressWarnings("unchecked")
-    public static void endIncomingCall() {
-        if (!hasCallPermissions) {
-            return;
-        }
-        try {
-            TelephonyManager tm = (TelephonyManager) ApplicationLoader.applicationContext.getSystemService(Context.TELEPHONY_SERVICE);
-            Class c = Class.forName(tm.getClass().getName());
-            Method m = c.getDeclaredMethod("getITelephony");
-            m.setAccessible(true);
-            ITelephony telephonyService = (ITelephony) m.invoke(tm);
-            telephonyService = (ITelephony) m.invoke(tm);
-            telephonyService.silenceRinger();
-            telephonyService.endCall();
-        } catch (Throwable e) {
-            FileLog.e(e);
-        }
-    }
-
-    public static String obtainLoginPhoneCall(String pattern) {
-        if (!hasCallPermissions) {
-            return null;
-        }
-        String order;
-        Bundle selectionArgs;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            order = "date DESC";
-        } else {
-            order = "date DESC LIMIT 5";
-        }
-        try (Cursor cursor = ApplicationLoader.applicationContext.getContentResolver().query(
-                CallLog.Calls.CONTENT_URI,
-                new String[]{CallLog.Calls.NUMBER, CallLog.Calls.DATE},
-                CallLog.Calls.TYPE + " IN (" + CallLog.Calls.MISSED_TYPE + "," + CallLog.Calls.INCOMING_TYPE + "," + CallLog.Calls.REJECTED_TYPE + ")",
-                null,
-                order
-        )) {
-            while (cursor.moveToNext()) {
-                String number = cursor.getString(0);
-                long date = cursor.getLong(1);
-                if (BuildVars.LOGS_ENABLED) {
-                    FileLog.e("number = " + number);
-                }
-                if (Math.abs(System.currentTimeMillis() - date) >= 60 * 60 * 1000) {
-                    continue;
-                }
-                if (checkPhonePattern(pattern, number)) {
-                    return number;
-                }
-            }
-        } catch (Exception e) {
-            FileLog.e(e);
-        }
-        return null;
-    }
+    // T53 (task 3): the call / call-log permission family is removed from the
+    // product — endIncomingCall() (hidden ITelephony.endCall reflection) and
+    // obtainLoginPhoneCall() (READ_CALL_LOG query) are deleted, and the
+    // PHONE_STATE receiver is no longer registered. setWaitingForCall keeps
+    // its flag for the (dead) flash-call call sites.
 
     public static boolean checkPhonePattern(String pattern, String phone) {
         if (TextUtils.isEmpty(pattern) || pattern.equals("*")) {

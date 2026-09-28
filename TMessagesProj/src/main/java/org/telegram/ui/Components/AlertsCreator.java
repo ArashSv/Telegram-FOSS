@@ -5503,9 +5503,8 @@ public class AlertsCreator {
         builder.setTopViewAspectRatio(aspectRatio);
         builder.setMessage(AndroidUtilities.replaceTags(LocaleController.getString(R.string.PermissionBackgroundLocation)));
         builder.setPositiveButton(LocaleController.getString(R.string.Continue), (dialog, which) -> {
-            if (activity.checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                activity.requestPermissions(new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION}, 30);
-            }
+            // T49 (task 3): background location permission is removed — no
+            // runtime request. The dialog's Continue now simply closes it.
         });
         builder.setNegativeButton(LocaleController.getString("Cancel", R.string.Cancel), ((dialog, which) -> cancelRunnable.run()));
         return builder;

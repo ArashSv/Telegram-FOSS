@@ -1332,11 +1332,10 @@ public class PopupNotificationActivity extends Activity implements NotificationC
             return;
         }
         if (currentUser.id / 1000 != 777 && currentUser.id / 1000 != 333 && ContactsController.getInstance(currentMessageObject.currentAccount).contactsDict.get(currentUser.id) == null && (ContactsController.getInstance(currentMessageObject.currentAccount).contactsDict.size() != 0 || !ContactsController.getInstance(currentMessageObject.currentAccount).isLoadingContacts())) {
-            if (currentUser.phone != null && currentUser.phone.length() != 0) {
-                nameTextView.setText(PhoneFormat.getInstance().format("+" + currentUser.phone));
-            } else {
-                nameTextView.setText(UserObject.getUserName(currentUser));
-            }
+            // T49 (task 10): the phone number must never REPLACE the display
+            // name — the real name is always shown (the number appears as
+            // secondary info on the other surfaces).
+            nameTextView.setText(UserObject.getUserName(currentUser));
         } else {
             nameTextView.setText(UserObject.getUserName(currentUser));
         }

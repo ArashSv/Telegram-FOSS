@@ -501,6 +501,14 @@ public class ProfileSearchCell extends BaseCell implements NotificationCenter.No
                     }
                     isOnline[0] = false;
                     statusString = LocaleController.formatUserStatus(currentAccount, user, isOnline);
+                    // T49 (task 10): show the phone number as the secondary
+                    // line in search results when the model knows it.
+                    if (user != null && !TextUtils.isEmpty(user.phone)) {
+                        String phonePretty = PhoneFormat.getInstance().format("+" + user.phone);
+                        if (!TextUtils.isEmpty(phonePretty) && phonePretty.contains("+") && !phonePretty.equals("+")) {
+                            statusString = phonePretty;
+                        }
+                    }
                     if (isOnline[0]) {
                         currentStatusPaint = Theme.dialogs_onlinePaint;
                     }

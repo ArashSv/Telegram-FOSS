@@ -9914,13 +9914,8 @@ public class ChatActivityEnterView extends BlurredFrameLayout implements Notific
             builder.setTitle(getString("ShareYouLocationTitle", R.string.ShareYouLocationTitle));
             builder.setMessage(getString("ShareYouLocationInfo", R.string.ShareYouLocationInfo));
             builder.setPositiveButton(getString("OK", R.string.OK), (dialogInterface, i) -> {
-                if (Build.VERSION.SDK_INT >= 23 && parentActivity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                    parentActivity.requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION}, 2);
-                    pendingMessageObject = messageObject;
-                    pendingLocationButton = button;
-                    return;
-                }
-                SendMessagesHelper.getInstance(currentAccount).sendCurrentLocation(messageObject, button);
+                // T49 (task 3): location permissions are removed — no runtime
+                // request; a bot geo request can no longer send a location.
             });
             builder.setNegativeButton(getString("Cancel", R.string.Cancel), null);
             parentFragment.showDialog(builder.create());

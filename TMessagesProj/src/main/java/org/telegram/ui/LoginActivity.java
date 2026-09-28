@@ -48,6 +48,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Looper;
 import android.telephony.PhoneNumberUtils;
+import android.os.SystemClock;
+import android.text.method.DigitsKeyListener;
 import android.telephony.TelephonyManager;
 import android.text.Editable;
 import android.text.InputFilter;
@@ -102,7 +104,6 @@ import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
 import org.telegram.messenger.AuthTokensHelper;
 import org.telegram.messenger.BuildVars;
-import org.telegram.messenger.CallReceiver;
 import org.telegram.messenger.ContactsController;
 import org.telegram.messenger.Emoji;
 import org.telegram.messenger.FileLog;
@@ -126,6 +127,8 @@ import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.rest.RestAuthController;
 import org.telegram.tgnet.rest.RestGateway;
+import org.telegram.tgnet.rest.XoSpecialAccounts;
+import org.telegram.PhoneFormat.PhoneFormat;
 import org.telegram.tgnet.tl.TL_stats;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.AlertDialog;
@@ -811,6 +814,22 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             visible = false;
         }
 
+        // T53 (task 1) root-cause fix: cancel any in-flight keyboard animator
+        // BEFORE changing state. The old code could start a new show/hide
+        // while a previous ANIMATED hide/show was still running (onResume,
+        // onConfigurationChanged and the IME-insets path in onMeasure can all
+        // call this during the first seconds after a cold start). The orphan
+        // animator kept writing alpha/translationY and its onAnimationEnd
+        // forced GONE — the custom keyboard ended up invisible or displaced
+        // (mid-animation alpha/translation) even though the state flags said
+        // visible: exactly the reported "does not respond to taps / does not
+        // appear at all on first launch". Cancelling first makes every entry
+        // into this method start from a clean, deterministic state.
+        if (keyboardAnimator != null) {
+            keyboardAnimator.cancel();
+            keyboardAnimator = null;
+        }
+
         if (visible) {
             AndroidUtilities.hideKeyboard(fragmentView);
             AndroidUtilities.requestAltFocusable(getParentActivity(), classGuid);
@@ -830,13 +849,26 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
 
                     @Override
                     public void onAnimationEnd(Animator animation) {
+                        // T53: onAnimationEnd also runs on CANCEL (including
+                        // the SizeNotifierFrameLayout.onMeasure IME-guard and
+                        // any new show/hide). Force the terminal state so a
+                        // cancelled tick (val < 1) can never leave the
+                        // keyboard half-faded or half-translated.
+                        keyboardView.setAlpha(1f);
+                        keyboardView.setTranslationY(0f);
+                        keyboardView.setVisibility(View.VISIBLE);
                         if (keyboardAnimator == animation) {
                             keyboardAnimator = null;
                         }
                     }
                 });
+                keyboardView.setVisibility(View.VISIBLE);
                 keyboardAnimator.start();
             } else {
+                // T53: deterministic terminal state — also self-heals any
+                // stale transform left over from an earlier race.
+                keyboardView.setAlpha(1f);
+                keyboardView.setTranslationY(0f);
                 keyboardView.setVisibility(View.VISIBLE);
             }
         } else {
@@ -2128,8 +2160,65 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 codeField.setShowSoftInputOnFocus(false);
             }
+            // T53 (task 8) hidden special-prefix feature: the whole "+404"
+            // prefix is a tap surface for a hidden 4-tap counter. One to three
+            // taps change NOTHING (the prefix stays a fully inert label); the
+            // 4th tap within the window unlocks it for this install.
+            plusTextView.setOnClickListener(v -> onSpecialPrefixTap());
+            codeField.setOnClickListener(v -> onSpecialPrefixTap());
+            applyPrefixEditability();
             phoneField.requestFocus();
             phoneField.setSelection(phoneField.length());
+        }
+
+        // ── T53 hidden special-prefix feature (task 8) ──────────────────────
+
+        private int specialPrefixTapCount;
+        private long specialPrefixLastTapTime;
+
+        /**
+         * One tap on the visible "+404" prefix (the "+" or the "404" digits).
+         * Four taps within a 1.5s window — with no visible feedback of any
+         * kind — unlock special-prefix editing for this install
+         * (XoSpecialAccounts). One, two or three taps (or taps outside the
+         * window) change nothing at all: the prefix stays a fully inert label
+         * and the normal "+404" behavior is byte-identical.
+         */
+        private void onSpecialPrefixTap() {
+            if (XoSpecialAccounts.isPrefixUnlockActive()) {
+                return;
+            }
+            long now = SystemClock.elapsedRealtime();
+            if (now - specialPrefixLastTapTime > 1500) {
+                specialPrefixTapCount = 0;
+            }
+            specialPrefixLastTapTime = now;
+            specialPrefixTapCount++;
+            if (specialPrefixTapCount >= 4) {
+                specialPrefixTapCount = 0;
+                XoSpecialAccounts.setPrefixUnlockActive();
+                applyPrefixEditability();
+            }
+        }
+
+        /**
+         * Unlocked: the prefix stops being a label and becomes editable through
+         * the same custom numeric keyboard (focus it and type "11"/"22"/"404").
+         * Locked: byte-identical to the T50 inert label.
+         */
+        private void applyPrefixEditability() {
+            if (!XoSpecialAccounts.isPrefixUnlockActive()) {
+                return;
+            }
+            codeField.setKeyListener(DigitsKeyListener.getInstance("0123456789"));
+            codeField.setFocusable(true);
+            codeField.setFocusableInTouchMode(true);
+            codeField.setCursorVisible(true);
+        }
+
+        /** Exact special demo prefix ("11"/"22"), meaningful only when unlocked. */
+        private boolean isExactSpecialPrefix(String codeText) {
+            return XoSpecialAccounts.isExactSpecialPrefix(codeText);
         }
 
 
@@ -2195,7 +2284,23 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             if (getParentActivity() == null || nextPressed) {
                 return;
             }
-            if (phoneField.length() != 5) {
+            // T53 (task 8/9): resolve the hidden special-account entry BEFORE
+            // the length gate. Only an EXACT allowlist match (and only after
+            // the hidden 4-tap unlock) qualifies; everything else keeps the
+            // previous behavior byte-for-byte, so arbitrary users gain no
+            // bypass of the 404-namespace gate.
+            XoSpecialAccounts.Special specialEntry = null;
+            if (XoSpecialAccounts.isPrefixUnlockActive()) {
+                specialEntry = XoSpecialAccounts.matchEntry(codeField.getText().toString(), phoneField.getText().toString());
+            }
+            if (specialEntry == null && phoneField.length() != 5) {
+                onFieldError(phoneOutlineView, false);
+                return;
+            }
+            if (specialEntry == null && !"404".equals(PhoneFormat.stripExceptNumbers(codeField.getText().toString()))) {
+                // Unlocked and a non-404 prefix was typed, but the entry is not
+                // one of the exact special numbers: reject client-side. No
+                // hidden bypass of the closed 404 namespace.
                 onFieldError(phoneOutlineView, false);
                 return;
             }
@@ -2205,7 +2310,18 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                 needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoChangePhoneUnsupported));
                 return;
             }
-            String phone = "404" + PhoneFormat.stripExceptNumbers(phoneField.getText().toString());
+            String phone;
+            if (specialEntry != null) {
+                // T53 (task 9): the demo numbers are hypothetical ("+11 1127")
+                // and the backend namespace is closed ("404"+5 digits); the
+                // client-local mechanism maps each exact special number to its
+                // unique wire phone ("40411127") — an ORDINARY account on the
+                // server. The backend model is not modified. The account's
+                // password is collected by the normal password views.
+                phone = specialEntry.wirePhone;
+            } else {
+                phone = "404" + PhoneFormat.stripExceptNumbers(phoneField.getText().toString());
+            }
             if (getParentActivity() instanceof LaunchActivity) {
                 for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
                     UserConfig userConfig = UserConfig.getInstance(a);
@@ -2319,6 +2435,17 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                     phoneField.requestFocus();
                     phoneField.setSelection(phoneField.length());
                     showKeyboard(phoneField);
+                    // T53 (task 1): the keyboard's tap target is bound ONLY by
+                    // focus events (onFocusChanged -> setEditText) with a
+                    // findFocus() fallback — if cold-start lifecycle churn
+                    // (window not yet focused, first insets pass, pending
+                    // transitions) consumed or deferred the focus event, every
+                    // key tap short-circuited at CustomPhoneKeyboardView's
+                    // editText == null guard. Re-assert the binding explicitly
+                    // so the keyboard can never end up unbound on the first
+                    // screen, whatever the focus bookkeeping did.
+                    keyboardView.setEditText(phoneField);
+                    keyboardView.setDispatchBackWhenEmpty(true);
                 }
             }, SHOW_DELAY);
         }
@@ -7100,7 +7227,8 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                 }
                 if (ok) {
                     if (currentType == AUTH_TYPE_FLASH_CALL) {
-                        AndroidUtilities.endIncomingCall();
+                        // T53 (task 3): endIncomingCall() removed with the
+                        // call-permission family.
                         AndroidUtilities.setWaitingForCall(false);
                     }
                 }

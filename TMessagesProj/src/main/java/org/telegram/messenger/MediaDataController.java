@@ -298,6 +298,18 @@ public class MediaDataController extends BaseController {
     private ArrayList<TLRPC.Document> recentGifs = new ArrayList<>();
     private boolean loadingRecentGifs;
     private boolean recentGifsLoaded;
+    // T49 — gif-collection consistency across in-flight list.php responses.
+    // recentGifsLocalRevision: bumped on every LOCAL mutation (optimistic add,
+    // local remove, server unsave). recentGifsFetchRevision: the revision
+    // captured when the server fetch was issued. If the two differ when the
+    // response lands, the response is a PRE-mutation snapshot and must not be
+    // applied (it would wipe the just-saved gif — the reported "first gif on
+    // an empty list disappears"). pendingRecentGifsReload: a forced reload
+    // that arrived while a load was in flight (MessagesController.saveGif
+    // convergence) and must be re-issued when that load finishes.
+    private volatile int recentGifsLocalRevision;
+    private volatile int recentGifsFetchRevision;
+    private boolean pendingRecentGifsReload;
 
     private boolean loadingPremiumGiftStickers;
     private boolean loadingGenericAnimations;
@@ -1057,6 +1069,9 @@ public class MediaDataController extends BaseController {
                 break;
             }
         }
+        // T49: any local gif-collection mutation invalidates an in-flight
+        // server snapshot (see processLoadedRecentDocuments).
+        recentGifsLocalRevision++;
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
             try {
                 getMessagesStorage().getDatabase().executeFast("DELETE FROM web_recent_v3 WHERE id = '" + documentId + "' AND type = 2").stepThis().dispose();
@@ -1074,6 +1089,8 @@ public class MediaDataController extends BaseController {
                 break;
             }
         }
+        // T49: invalidates an in-flight server snapshot.
+        recentGifsLocalRevision++;
         TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
         req.id = new TLRPC.TL_inputDocument();
         req.id.id = document.id;
@@ -1113,6 +1130,10 @@ public class MediaDataController extends BaseController {
         if (document == null) {
             return;
         }
+        // T49: every optimistic local add bumps the revision so a list.php
+        // response that was already in flight (computed from the PRE-save
+        // server state) can never wipe this entry.
+        recentGifsLocalRevision++;
         boolean found = false;
         for (int a = 0; a < recentGifs.size(); a++) {
             TLRPC.Document image = recentGifs.get(a);
@@ -1859,6 +1880,14 @@ public class MediaDataController extends BaseController {
     public void loadRecents(int type, boolean gif, boolean cache, boolean force) {
         if (gif) {
             if (loadingRecentGifs) {
+                if (force) {
+                    // T49: a forced reload (the post-save convergence call
+                    // from MessagesController.saveGif) used to be silently
+                    // DROPPED here whenever a load was already in flight —
+                    // exactly the first-save-on-empty-list race. Queue it;
+                    // it is re-issued when the in-flight load applies.
+                    pendingRecentGifsReload = true;
+                }
                 return;
             }
             loadingRecentGifs = true;
@@ -1923,6 +1952,11 @@ public class MediaDataController extends BaseController {
                         }
                         getNotificationCenter().postNotificationName(NotificationCenter.recentDocumentsDidLoad, gif, type);
                         loadRecents(type, gif, false, false);
+                        if (gif) {
+                            // T49: a queued forced reload is re-issued after
+                            // the cache apply if the server leg bailed out.
+                            maybeRunPendingGifReload();
+                        }
                     });
                 } catch (Throwable e) {
                     getMessagesStorage().checkSQLException(e);
@@ -1957,6 +1991,9 @@ public class MediaDataController extends BaseController {
                 }
             }
             if (gif) {
+                // T49: snapshot the local revision so a response computed from
+                // a PRE-mutation server state is detected and discarded.
+                recentGifsFetchRevision = recentGifsLocalRevision;
                 TLRPC.TL_messages_getSavedGifs req = new TLRPC.TL_messages_getSavedGifs();
                 req.hash = calcDocumentsHash(recentGifs);
                 getConnectionsManager().sendRequest(req, (response, error) -> {
@@ -2043,83 +2080,120 @@ public class MediaDataController extends BaseController {
                     loadingRecentStickers[type] = false;
                 }
                 FileLog.e("processLoadedRecentDocuments: null list (type=" + type + " gif=" + gif + ") — keeping current");
+                if (gif) {
+                    // T49: honor a queued forced reload even when this load
+                    // failed — otherwise the post-save convergence request is
+                    // lost forever and the empty list stays empty.
+                    maybeRunPendingGifReload();
+                }
             });
             return;
         }
-        if (documents != null) {
-            getMessagesStorage().getStorageQueue().postRunnable(() -> {
-                try {
-                    SQLiteDatabase database = getMessagesStorage().getDatabase();
-                    int maxCount;
-                    if (gif) {
-                        maxCount = getMessagesController().maxRecentGifsCount;
-                    } else {
-                        if (type == TYPE_GREETINGS || type == TYPE_PREMIUM_STICKERS) {
-                            maxCount = 200;
-                        } else if (type == TYPE_FAVE) {
-                            maxCount = getMessagesController().maxFaveStickersCount;
-                        } else {
-                            maxCount = getMessagesController().maxRecentStickersCount;
-                        }
-                    }
-                    database.beginTransaction();
-
-                    SQLitePreparedStatement state = database.executeFast("REPLACE INTO web_recent_v3 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-                    int count = documents.size();
-                    int cacheType;
-                    if (gif) {
-                        cacheType = 2;
-                    } else if (type == TYPE_IMAGE) {
-                        cacheType = 3;
-                    } else if (type == TYPE_MASK) {
-                        cacheType = 4;
-                    } else if (type == TYPE_GREETINGS) {
-                        cacheType = 6;
-                    } else if (type == TYPE_EMOJIPACKS) {
-                        cacheType = 7;
-                    } else if (type == TYPE_PREMIUM_STICKERS) {
-                        cacheType = 8;
-                    } else {
-                        cacheType = 5;
-                    }
-                    if (replace) {
-                        database.executeFast("DELETE FROM web_recent_v3 WHERE type = " + cacheType).stepThis().dispose();
-                    }
-                    for (int a = 0; a < count; a++) {
-                        if (a == maxCount) {
-                            break;
-                        }
-                        TLRPC.Document document = documents.get(a);
-                        state.requery();
-                        state.bindString(1, "" + document.id);
-                        state.bindInteger(2, cacheType);
-                        state.bindString(3, "");
-                        state.bindString(4, "");
-                        state.bindString(5, "");
-                        state.bindInteger(6, 0);
-                        state.bindInteger(7, 0);
-                        state.bindInteger(8, 0);
-                        state.bindInteger(9, date != 0 ? date : count - a);
-                        NativeByteBuffer data = new NativeByteBuffer(document.getObjectSize());
-                        document.serializeToStream(data);
-                        state.bindByteBuffer(10, data);
-                        state.step();
-                        data.reuse();
-                    }
-                    state.dispose();
-                    database.commitTransaction();
-                    if (!replace && documents.size() >= maxCount) {
-                        database.beginTransaction();
-                        for (int a = maxCount; a < documents.size(); a++) {
-                            database.executeFast("DELETE FROM web_recent_v3 WHERE id = '" + documents.get(a).id + "' AND type = " + cacheType).stepThis().dispose();
-                        }
-                        database.commitTransaction();
-                    }
-                } catch (Exception e) {
-                    FileLog.e(e);
+        // T49 — THE empty-list first-save defect. A server response is a
+        // SNAPSHOT taken when list.php was served; with the 3-thread REST pool
+        // the save request can commit AFTER that snapshot was computed. With
+        // replace=true the old code deleted every web_recent_v3 row and
+        // replaced the in-memory list — the just-saved first gif evaporated
+        // and the 1h throttle locked the empty state in. The revision guard
+        // discards any snapshot that predates a local mutation and re-requests
+        // the authoritative list instead. Applies to the server-response path
+        // only (date == 0 && replace); the local optimistic upsert
+        // (addRecentGif, date != 0) is untouched.
+        if (gif && replace && date == 0) {
+            AndroidUtilities.runOnUIThread(() -> {
+                if (recentGifsLocalRevision != recentGifsFetchRevision) {
+                    loadingRecentGifs = false;
+                    pendingRecentGifsReload = true;
+                    FileLog.e("processLoadedRecentDocuments: stale gif snapshot (fetch rev " + recentGifsFetchRevision + " != local rev " + recentGifsLocalRevision + ") — ignored, re-requesting");
+                    maybeRunPendingGifReload();
+                    return;
                 }
+                putRecentDocumentsToStorage(type, documents, gif, date, replace);
+                applyRecentDocumentsToUi(type, documents, gif, date, replace);
+                maybeRunPendingGifReload();
             });
+            return;
         }
+        putRecentDocumentsToStorage(type, documents, gif, date, replace);
+        applyRecentDocumentsToUi(type, documents, gif, date, replace);
+    }
+
+    private void putRecentDocumentsToStorage(int type, ArrayList<TLRPC.Document> documents, boolean gif, int date, boolean replace) {
+        getMessagesStorage().getStorageQueue().postRunnable(() -> {
+            try {
+                SQLiteDatabase database = getMessagesStorage().getDatabase();
+                int maxCount;
+                if (gif) {
+                    maxCount = getMessagesController().maxRecentGifsCount;
+                } else {
+                    if (type == TYPE_GREETINGS || type == TYPE_PREMIUM_STICKERS) {
+                        maxCount = 200;
+                    } else if (type == TYPE_FAVE) {
+                        maxCount = getMessagesController().maxFaveStickersCount;
+                    } else {
+                        maxCount = getMessagesController().maxRecentStickersCount;
+                    }
+                }
+                database.beginTransaction();
+
+                SQLitePreparedStatement state = database.executeFast("REPLACE INTO web_recent_v3 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+                int count = documents.size();
+                int cacheType;
+                if (gif) {
+                    cacheType = 2;
+                } else if (type == TYPE_IMAGE) {
+                    cacheType = 3;
+                } else if (type == TYPE_MASK) {
+                    cacheType = 4;
+                } else if (type == TYPE_GREETINGS) {
+                    cacheType = 6;
+                } else if (type == TYPE_EMOJIPACKS) {
+                    cacheType = 7;
+                } else if (type == TYPE_PREMIUM_STICKERS) {
+                    cacheType = 8;
+                } else {
+                    cacheType = 5;
+                }
+                if (replace) {
+                    database.executeFast("DELETE FROM web_recent_v3 WHERE type = " + cacheType).stepThis().dispose();
+                }
+                for (int a = 0; a < count; a++) {
+                    if (a == maxCount) {
+                        break;
+                    }
+                    TLRPC.Document document = documents.get(a);
+                    state.requery();
+                    state.bindString(1, "" + document.id);
+                    state.bindInteger(2, cacheType);
+                    state.bindString(3, "");
+                    state.bindString(4, "");
+                    state.bindString(5, "");
+                    state.bindInteger(6, 0);
+                    state.bindInteger(7, 0);
+                    state.bindInteger(8, 0);
+                    state.bindInteger(9, date != 0 ? date : count - a);
+                    NativeByteBuffer data = new NativeByteBuffer(document.getObjectSize());
+                    document.serializeToStream(data);
+                    state.bindByteBuffer(10, data);
+                    state.step();
+                    data.reuse();
+                }
+                state.dispose();
+                database.commitTransaction();
+                if (!replace && documents.size() >= maxCount) {
+                    database.beginTransaction();
+                    for (int a = maxCount; a < documents.size(); a++) {
+                        database.executeFast("DELETE FROM web_recent_v3 WHERE id = '" + documents.get(a).id + "' AND type = " + cacheType).stepThis().dispose();
+                    }
+                    database.commitTransaction();
+                }
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+        });
+    }
+
+    private void applyRecentDocumentsToUi(int type, ArrayList<TLRPC.Document> documents, boolean gif, int date, boolean replace) {
         if (date == 0) {
             AndroidUtilities.runOnUIThread(() -> {
                 SharedPreferences.Editor editor = MessagesController.getEmojiSettings(currentAccount).edit();
@@ -2159,6 +2233,14 @@ public class MediaDataController extends BaseController {
 
                 }
             });
+        }
+    }
+
+    /** T49 — UI thread only: run a queued forced gif reload, if any. */
+    private void maybeRunPendingGifReload() {
+        if (pendingRecentGifsReload && !loadingRecentGifs) {
+            pendingRecentGifsReload = false;
+            loadRecents(TYPE_IMAGE, true, false, true);
         }
     }
 

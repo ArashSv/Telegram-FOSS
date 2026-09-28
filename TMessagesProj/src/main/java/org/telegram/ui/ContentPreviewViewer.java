@@ -80,6 +80,8 @@ import org.telegram.ui.Components.AlertsCreator;
 import org.telegram.ui.Components.AnimatedEmojiDrawable;
 import org.telegram.ui.Components.AnimatedEmojiSpan;
 import org.telegram.ui.Components.BackupImageView;
+import org.telegram.ui.Components.Bulletin;
+import org.telegram.ui.Components.BulletinFactory;
 import org.telegram.ui.Components.CubicBezierInterpolator;
 import org.telegram.ui.Components.EmojiPacksAlert;
 import org.telegram.ui.Components.EmojiView;
@@ -854,8 +856,30 @@ public class ContentPreviewViewer {
                         MediaDataController.getInstance(currentAccount).removeRecentGif(currentDocument);
                         delegate.gifAddedOrDeleted();
                     } else if (actions.get(which) == 2) {
+                        // T49 (task 5): this was the last fire-and-forget save
+                        // entry point — on a server refusal (collection full,
+                        // access, transport) the optimistic add evaporated on
+                        // the next sync with no feedback. Observe the outcome
+                        // and roll back + surface the error like ChatActivity
+                        // and PhotoViewer already do. (saveGif already invokes
+                        // the callback on the UI thread.)
                         MediaDataController.getInstance(currentAccount).addRecentGif(currentDocument, (int) (System.currentTimeMillis() / 1000), true);
-                        MessagesController.getInstance(currentAccount).saveGif("gif", currentDocument);
+                        MessagesController.getInstance(currentAccount).saveGif("gif", currentDocument, error -> {
+                            if (error != null) {
+                                MediaDataController.getInstance(currentAccount).removeLocalRecentGif(currentDocument.id);
+                                if (parentActivity != null) {
+                                    BulletinFactory bulletinFactory = BulletinFactory.of(Bulletin.BulletinWindow.make(parentActivity), resourcesProvider);
+                                    if ("GIFS_LIMIT".equals(error.text)) {
+                                        bulletinFactory.createErrorBulletin(
+                                                LocaleController.formatString(R.string.GifsLimitReached, MessagesController.getInstance(currentAccount).savedGifsLimitDefault),
+                                                resourcesProvider).show();
+                                    } else {
+                                        bulletinFactory.createErrorBulletin(
+                                                LocaleController.getString(R.string.ErrorOccurred), resourcesProvider).show();
+                                    }
+                                }
+                            }
+                        });
                         delegate.gifAddedOrDeleted();
                     } else if (actions.get(which) == 3) {
                         TLRPC.Document document = currentDocument;

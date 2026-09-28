@@ -123,9 +123,17 @@ public class MessagePrivateSeenView extends FrameLayout {
                     valueTextView.setText(LocaleController.getString(R.string.PmRead));
                     premiumTextView.setText(LocaleController.getString(R.string.PmReadShowWhen));
                 } else {
-                    valueTextView.setText(LocaleController.getString("UnknownError"));
+                    // T49 (task 7): this fork's REST backend does not route
+                    // TL_messages_getOutboxReadDate, so tapping an own message
+                    // always landed in this generic-error branch and the
+                    // narrow seen section above the first action button showed
+                    // the localized "Unknown error". The product decision for
+                    // this element is the literal state text "seened" instead
+                    // (no backend seen-by system, no global string change —
+                    // only this view's displayed text). The raw error bulletin
+                    // (an internal XO_NOT_ROUTED error) is not shown anymore.
+                    valueTextView.setText("seened");
                     premiumTextView.setVisibility(View.GONE);
-                    BulletinFactory.of(Bulletin.BulletinWindow.make(getContext()), resourcesProvider).showForError(err);
                 }
             } else if (res instanceof TLRPC.TL_outboxReadDate) {
                 TLRPC.TL_outboxReadDate r = (TLRPC.TL_outboxReadDate) res;

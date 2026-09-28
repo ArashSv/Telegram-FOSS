@@ -1406,11 +1406,15 @@ public class ThemeActivity extends BaseFragment implements NotificationCenter.No
         LocationManager locationManager = (LocationManager) ApplicationLoader.applicationContext.getSystemService(Context.LOCATION_SERVICE);
         if (Build.VERSION.SDK_INT >= 23) {
             Activity activity = getParentActivity();
-            if (activity != null) {
-                if (activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                    activity.requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION}, 2);
-                    return;
-                }
+            // T49 (task 3): location permissions are removed from the product —
+            // no runtime request is issued anymore. The "auto-night by
+            // location" schedule simply never acquires a fix; the
+            // schedule-by-sunrise / system options remain functional.
+            if (activity == null) {
+                return;
+            }
+            if (activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+                return;
             }
         }
         if (getParentActivity() != null) {

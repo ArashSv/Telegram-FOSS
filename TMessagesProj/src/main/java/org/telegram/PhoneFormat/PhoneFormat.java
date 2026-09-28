@@ -203,6 +203,18 @@ public class PhoneFormat {
         try {
             String str = strip(orig);
 
+            // T53 (task 9/10): the hidden special/demo accounts live at unique
+            // wire phones inside the 404 namespace ("40411127" <-> "+11 1127").
+            // Checked BEFORE the generic namespace rule so every phone display
+            // site (profile, contacts, cells, drawer, chat info, search) shows
+            // the pretty special form. Exact-match only — real 404 numbers the
+            // table does not list keep the standard "+404 00000" rendering.
+            String special = org.telegram.tgnet.rest.XoSpecialAccounts.prettyForWireDigits(
+                    str.replaceAll("[^0-9]", ""));
+            if (special != null) {
+                return special;
+            }
+
             java.util.regex.Matcher ns = xoNamespaceMatcher(str);
             if (ns.matches()) {
                 return "+404 " + ns.group(1);

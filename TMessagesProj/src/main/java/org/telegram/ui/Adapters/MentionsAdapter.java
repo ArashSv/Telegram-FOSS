@@ -702,16 +702,9 @@ public class MentionsAdapter extends RecyclerListView.SelectionAdapter implement
     }
 
     private void checkLocationPermissionsOrStart() {
-        if (parentFragment == null || parentFragment.getParentActivity() == null) {
-            return;
-        }
-        if (Build.VERSION.SDK_INT >= 23 && parentFragment.getParentActivity().checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            parentFragment.getParentActivity().requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION}, 2);
-            return;
-        }
-        if (foundContextBot != null && foundContextBot.bot_inline_geo) {
-            locationProvider.start();
-        }
+        // T49 (task 3): location permissions are removed — no runtime request;
+        // inline-bot geo requests can no longer start the location provider
+        // (it would throw without the permission).
     }
 
     public void setSearchingMentions(boolean value) {

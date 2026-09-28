@@ -142,7 +142,10 @@ jobs:
       # the build cache — the gate is nearly free.
       - name: "Fast-fail Java gate (compile app+library, no native)"
         run: |
-          ./gradlew :TMessagesProj_App:compileAfatDebugJavaWithJavac \
+          # T53 (task 6): the gate now compiles the RELEASE variant — the
+          # variant that ships (release additionally exercises the
+          # signing-config wiring).
+          ./gradlew :TMessagesProj_App:compileAfatReleaseJavaWithJavac \
             --build-cache \
             --stacktrace
 
@@ -174,19 +177,46 @@ jobs:
           ./patch_boringssl.sh
           ./build_boringssl.sh arm64
 
-      - name: Build assembleAfatDebug
+      - name: Build assembleAfatRelease (signed, non-debuggable)
+        env:
+          RELEASE_KEYSTORE_FILE: ${{ github.workspace }}/hermes-release.keystore
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
         run: |
+          # T53 (task 6): exit DEBUG mode — CI now ships the signed RELEASE
+          # build (debuggable=false, DEBUG_VERSION=false, LOGS_ENABLED=false
+          # via BuildConfig). The keystore rides the repo secrets as base64.
+          if [ -z "$RELEASE_STORE_PASSWORD" ]; then
+            echo "RELEASE signing secrets missing — refusing to build an unsigned 'release'" >&2
+            exit 1
+          fi
+          echo "${{ secrets.RELEASE_KEYSTORE }}" | base64 -d > hermes-release.keystore
+          test -s hermes-release.keystore
           # --build-cache: explicit twin of org.gradle.caching=true (gradle.properties).
           # Memory policy comes from gradle.properties (single daemon config).
-          ./gradlew :TMessagesProj_App:assembleAfatDebug \
+          ./gradlew :TMessagesProj_App:assembleAfatRelease \
             --build-cache \
             --stacktrace
+
+      - name: Verify the APK is a real release build (not debuggable)
+        run: |
+          APK="$(ls TMessagesProj_App/build/outputs/apk/afat/release/*.apk | head -n 1)"
+          echo "checking: $APK"
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort | tail -n 1)
+          "$AAPT2" dump xmltree --file AndroidManifest.xml "$APK" > /tmp/manifest.txt
+          grep -E 'android:debuggable|android:versionName|android:targetSdkVersion' /tmp/manifest.txt || true
+          # aapt2 encodes boolean true as 0xffffffff and false as 0x0
+          if grep "android:debuggable" /tmp/manifest.txt | grep -q "0xffffffff"; then
+            echo "FATAL: the release APK is debuggable" >&2; exit 1
+          fi
+          echo "OK: manifest has no debuggable=true flag"
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-${{ github.run_number }}
-          path: TMessagesProj_App/build/outputs/apk/afat/debug/*.apk
+          name: app-release-${{ github.run_number }}
+          path: TMessagesProj_App/build/outputs/apk/afat/release/*.apk
           retention-days: 14
           if-no-files-found: error
 
@@ -194,8 +224,8 @@ jobs:
         if: success()
         run: |
           mkdir -p release
-          APK="$(ls TMessagesProj_App/build/outputs/apk/afat/debug/*.apk | head -n 1)"
-          cp "$APK" "release/Hermes-debug-arm64-build-${GITHUB_RUN_NUMBER}.apk"
+          APK="$(ls TMessagesProj_App/build/outputs/apk/afat/release/*.apk | head -n 1)"
+          cp "$APK" "release/Hermes-release-arm64-build-${GITHUB_RUN_NUMBER}.apk"
           sha256sum release/Hermes-*.apk > release/SHA256SUMS.txt
 
       - name: Publish APK to GitHub Releases (installable build for testing)
@@ -204,13 +234,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="build-${GITHUB_RUN_NUMBER}"
-          NOTES="Automated debug build of develop @ ${GITHUB_SHA::7} (afat/debug, arm64-v8a). Install: download APK, allow unknown sources, install. sha256 in SHA256SUMS.txt."
+          NOTES="Automated RELEASE build of develop @ ${GITHUB_SHA::7} (afat/release, arm64-v8a, signed, non-debuggable, targetSdk 34). Install: download APK, allow unknown sources, install. sha256 in SHA256SUMS.txt."
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" release/* --clobber -R "$GITHUB_REPOSITORY"
           else
             gh release create "$TAG" release/* \
               --target "$GITHUB_SHA" \
-              --title "Debug build ${GITHUB_RUN_NUMBER} (arm64-v8a, installable)" \
+              --title "Hermes release ${GITHUB_RUN_NUMBER} (arm64-v8a, installable)" \
               --notes "$NOTES" \
               --prerelease \
               -R "$GITHUB_REPOSITORY"
