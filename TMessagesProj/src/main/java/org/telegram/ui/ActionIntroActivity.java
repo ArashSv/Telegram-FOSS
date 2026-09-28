@@ -632,7 +632,9 @@ public class ActionIntroActivity extends BaseFragment implements LocationControl
                     break;
                 }
                 case ACTION_TYPE_NEARBY_LOCATION_ACCESS: {
-                    getParentActivity().requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION}, BasePermissionsActivity.REQUEST_CODE_GEOLOCATION);
+                    // T49 (task 3): location permissions are removed from the
+                    // product — no runtime request is issued anymore. (These
+                    // NEARBY modes are already unreachable in this fork.)
                     break;
                 }
                 case ACTION_TYPE_NEARBY_LOCATION_ENABLED: {

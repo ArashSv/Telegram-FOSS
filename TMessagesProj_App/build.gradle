@@ -16,14 +16,34 @@ configurations.all {
 dependencies {
     implementation project(':TMessagesProj')
     implementation 'androidx.multidex:multidex:2.0.1'
-    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:1.1.5'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:1.2.2'
 }
 
 android {
-    compileSdkVersion 33
-    buildToolsVersion '33.0.0'
+    compileSdkVersion 34
+    buildToolsVersion '34.0.0'
 
     defaultConfig.applicationId = APP_PACKAGE
+
+    // T49 (task 6) — release signing. The keystore + credentials come from the
+    // CI environment (GitHub Actions secrets: RELEASE_KEYSTORE_FILE path,
+    // RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD) or from
+    // a local keystore at TMessagesProj/config/release.keystore. When neither
+    // exists the release build produces an UNSIGNED APK instead of failing
+    // configuration (fresh-clone / local-javac-gate friendly).
+    def releaseKeystorePath = System.getenv("RELEASE_KEYSTORE_FILE") ?: "../TMessagesProj/config/release.keystore"
+    def hasReleaseCredentials = file(releaseKeystorePath).exists() && System.getenv("RELEASE_STORE_PASSWORD") != null
+
+    signingConfigs {
+        if (hasReleaseCredentials) {
+            hermesRelease {
+                storeFile file(releaseKeystorePath)
+                storePassword System.getenv("RELEASE_STORE_PASSWORD")
+                keyAlias System.getenv("RELEASE_KEY_ALIAS") ?: "hermes"
+                keyPassword System.getenv("RELEASE_KEY_PASSWORD") ?: System.getenv("RELEASE_STORE_PASSWORD")
+            }
+        }
+    }
 
     sourceSets.main.jniLibs.srcDirs = ['../TMessagesProj/jni/']
 
@@ -69,11 +89,19 @@ android {
         release {
             debuggable false
             jniDebuggable false
-            minifyEnabled true
+            // T49 (task 6): minification stays OFF for this first release —
+            // R8 has never run over the fork's REST layer (TL serializers,
+            // reflection-sensitive paths) and a stripped-class runtime crash
+            // would be undetectable in CI. Re-enable after a soak test with
+            // proguard rules for org/telegram/tgnet/rest/**.
+            minifyEnabled false
             shrinkResources false
             multiDexEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), '../TMessagesProj/proguard-rules.pro'
             ndk.debugSymbolLevel = 'FULL'
+            if (hasReleaseCredentials) {
+                signingConfig signingConfigs.hermesRelease
+            }
         }
     }
 
@@ -152,7 +180,7 @@ android {
 
     defaultConfig {
         minSdkVersion 19
-        targetSdkVersion 33
+        targetSdkVersion 34
         versionName APP_VERSION_NAME
         ndkVersion "21.4.7075529"
 

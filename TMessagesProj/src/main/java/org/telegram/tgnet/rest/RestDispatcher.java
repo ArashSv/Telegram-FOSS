@@ -1601,7 +1601,11 @@ public final class RestDispatcher {
                 for (int i = 0; i < book.size(); i++) {
                     TLRPC.TL_inputPhoneContact input = book.get(i);
                     entries[i] = new JSONObject();
-                    entries[i].put("phone", input.phone != null && input.phone.length() > 0 ? input.phone : ("+" + input.client_id));
+                    // T49: map hidden special/demo numbers to their wire form
+                    // (no-op for every ordinary number) so backend joins match.
+                    entries[i].put("phone", input.phone != null && input.phone.length() > 0
+                            ? XoSpecialAccounts.toWire(input.phone)
+                            : ("+" + input.client_id));
                     String first = input.first_name != null ? input.first_name.trim() : "";
                     String last = input.last_name != null ? input.last_name.trim() : "";
                     String name = (first + (first.length() > 0 && last.length() > 0 ? " " : "") + last).trim();
@@ -1626,6 +1630,8 @@ public final class RestDispatcher {
                     name = "Contact";
                 }
                 String phone = input.phone != null && input.phone.length() > 0 ? input.phone : ("+" + input.client_id);
+                // T49: special/demo wire mapping (no-op for ordinary numbers).
+                phone = XoSpecialAccounts.toWire(phone);
                 // DELIBERATE add: the save contract (upsert + un-tombstone +
                 // resolve). save.php answers {contact, user?, saved_count}.
                 JSONObject answer = RestGateway.getInstance(account).contactsSave(null, phone, name);

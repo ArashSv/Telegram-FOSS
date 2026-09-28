@@ -679,6 +679,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         }
 
         public void start() {
+            // T49 (task 3): location permissions are removed — never request
+            // location updates without them (SecurityException guard).
+            if (Build.VERSION.SDK_INT >= 23 && ApplicationLoader.applicationContext.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                return;
+            }
             if (locationManager == null) {
                 locationManager = (LocationManager) ApplicationLoader.applicationContext.getSystemService(Context.LOCATION_SERVICE);
             }

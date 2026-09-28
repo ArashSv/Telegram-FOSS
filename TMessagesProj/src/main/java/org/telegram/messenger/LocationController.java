@@ -681,6 +681,13 @@ public class LocationController extends BaseController implements NotificationCe
     }
 
     private void startService() {
+        // T49 (task 3): location permissions are removed — never start the
+        // location-typed foreground service without them (Android 14 +
+        // targetSdk 34 would reject the foreground start). Unreachable via UI
+        // anyway (all location entry points are permission-gated upstream).
+        if (Build.VERSION.SDK_INT >= 23 && ApplicationLoader.applicationContext.checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            return;
+        }
         try {
             /*if (Build.VERSION.SDK_INT >= 26) {
                 ApplicationLoader.applicationContext.startForegroundService(new Intent(ApplicationLoader.applicationContext, LocationSharingService.class));

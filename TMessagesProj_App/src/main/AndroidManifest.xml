@@ -3,5 +3,25 @@
     xmlns:tools="http://schemas.android.com/tools"
     package="org.telegram.messenger.regular"
     android:installLocation="auto">
+
+    <!-- T49 (task 3): location permissions are removed from the product.
+         The osmdroid AAR manifest would re-inject ACCESS_COARSE_LOCATION /
+         ACCESS_FINE_LOCATION at merge time — strip them from the merged
+         manifest explicitly. The final APK declares NO location / call /
+         call-log permission. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_MEDIA_LOCATION" tools:node="remove" />
+    <uses-permission android:name="android.permission.CALL_PHONE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_CALL_LOG" tools:node="remove" />
+    <uses-permission android:name="android.permission.PROCESS_OUTGOING_CALLS" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_PHONE_NUMBERS" tools:node="remove" />
+    <uses-permission android:name="android.permission.SEND_SMS" tools:node="remove" />
+    <uses-permission android:name="android.permission.RECEIVE_SMS" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_SMS" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" tools:node="remove" />
+
     <application android:name="org.telegram.messenger.ApplicationLoaderImpl" tools:replace="name" />
 </manifest>

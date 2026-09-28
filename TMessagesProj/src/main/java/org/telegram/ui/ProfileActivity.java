@@ -8666,6 +8666,15 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
             } else {
                 isOnline[0] = false;
                 newString2 = LocaleController.formatUserStatus(currentAccount, user, isOnline, shortStatus ? new boolean[1] : null);
+                // T53 (task 10): when the model knows this user's phone, the
+                // profile subtitle shows the formatted number (secondary info
+                // under the real name) — it never replaces the display name.
+                if (user.id != getUserConfig().getClientUserId() && user.id / 1000 != 777 && user.id / 1000 != 333 && !TextUtils.isEmpty(user.phone)) {
+                    String phoneString = PhoneFormat.getInstance().format("+" + user.phone);
+                    if (!TextUtils.isEmpty(phoneString) && phoneString.contains("+") && !phoneString.equals("+")) {
+                        newString2 = phoneString;
+                    }
+                }
                 hiddenStatusButton = user != null && !isOnline[0] && !getUserConfig().isPremium() && user.status != null && (user.status instanceof TLRPC.TL_userStatusRecently || user.status instanceof TLRPC.TL_userStatusLastMonth || user.status instanceof TLRPC.TL_userStatusLastWeek) && user.status.by_me;
                 if (onlineTextView[1] != null && !mediaHeaderVisible) {
                     int key = isOnline[0] && peerColor == null ? Theme.key_profile_status : Theme.key_avatar_subtitleInProfileBlue;
@@ -8684,13 +8693,11 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 if (nameTextView[a] == null) {
                     continue;
                 }
-                if (a == 0 && user.id != getUserConfig().getClientUserId() && user.id / 1000 != 777 && user.id / 1000 != 333 && user.phone != null && user.phone.length() != 0 && getContactsController().contactsDict.get(user.id) == null &&
-                        (getContactsController().contactsDict.size() != 0 || !getContactsController().isLoadingContacts())) {
-                    String phoneString = PhoneFormat.getInstance().format("+" + user.phone);
-                    nameTextView[a].setText(phoneString);
-                } else {
-                    nameTextView[a].setText(newString);
-                }
+                // T53 (task 10): the phone number must never REPLACE the
+                // display name ("John / +11 1127", not "+11 1127"). The name
+                // always renders; the phone rides the profile subtitle (set
+                // into newString2 above) and the profile's phone row.
+                nameTextView[a].setText(newString);
                 if (a == 0 && onlineTextOverride != null) {
                     onlineTextView[a].setText(onlineTextOverride);
                 } else {

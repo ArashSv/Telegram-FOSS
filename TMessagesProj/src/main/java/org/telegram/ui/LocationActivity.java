@@ -2969,9 +2969,9 @@ public class LocationActivity extends BaseFragment implements NotificationCenter
             Activity activity = getParentActivity();
             if (activity != null) {
                 checkPermission = false;
-                if (activity.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                    activity.requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION}, 2);
-                }
+                // T49 (task 3): location permissions are removed from the
+                // product — no runtime request is issued anymore; the map
+                // surface simply runs without a user location fix.
             }
         }
         if (markAsReadRunnable != null) {
