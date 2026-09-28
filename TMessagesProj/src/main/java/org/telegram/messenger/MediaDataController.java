@@ -79,6 +79,7 @@ import org.telegram.ui.PremiumPreviewFragment;
 import org.telegram.ui.Stories.StoriesStorage;
 
 import java.io.File;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
@@ -311,6 +312,57 @@ public class MediaDataController extends BaseController {
     private volatile int recentGifsFetchRevision;
     private boolean pendingRecentGifsReload;
 
+    // T54 — the gif collection is a SERVER-AUTHORITATIVE, completion-chained
+    // pipeline. Every durable mutation (save / unsave) and every server load
+    // is an OP on a single-flight chain: op N+1 issues its request only after
+    // op N's RESPONSE was handled, so a convergence load can never snapshot
+    // the server before the preceding save committed (the architectural race
+    // behind "the second gif I save replaces the first": a pre-commit list.php
+    // snapshot applied over a newer optimistic list). All chain bookkeeping
+    // happens on the UI thread — no locks; the T49 revision guard above stays
+    // as belt-and-braces for callers that bypass the chain.
+    private final ArrayDeque<Runnable> gifOpQueue = new ArrayDeque<>();
+    private boolean gifOpRunning;
+    private int gifSavesInFlight;
+
+    /** T54 — transport/gateway failures (outcome UNKNOWN), as opposed to definitive server rejections (code > 0). */
+    public static boolean isGifTransportError(TLRPC.TL_error error) {
+        return error != null && error.code <= 0;
+    }
+
+    private void enqueueGifOp(Runnable op) {
+        AndroidUtilities.runOnUIThread(() -> {
+            gifOpQueue.addLast(op);
+            if (!gifOpRunning) {
+                runNextGifOp();
+            }
+        });
+    }
+
+    private void runNextGifOp() {
+        Runnable op = gifOpQueue.pollFirst();
+        if (op == null) {
+            gifOpRunning = false;
+            return;
+        }
+        gifOpRunning = true;
+        op.run(); // every op MUST terminate by calling gifOpDone()
+    }
+
+    private void gifOpDone() {
+        AndroidUtilities.runOnUIThread(() -> {
+            if (!gifOpRunning) {
+                // stale completion (cleanup() reset the chain while the op's
+                // response was in flight) — nothing to advance
+                return;
+            }
+            gifOpRunning = false;
+            if (!gifOpQueue.isEmpty()) {
+                runNextGifOp();
+            }
+        });
+    }
+
     private boolean loadingPremiumGiftStickers;
     private boolean loadingGenericAnimations;
     private boolean loadingDefaultTopicIcons;
@@ -380,6 +432,13 @@ public class MediaDataController extends BaseController {
         featuredStickersLoaded[1] = false;
         loadingRecentGifs = false;
         recentGifsLoaded = false;
+        // T54: drop the completion-chain state — queued ops belong to the
+        // logged-out session; in-flight marks must not leak into the next
+        // account (a parked load would otherwise never fire).
+        gifOpQueue.clear();
+        gifOpRunning = false;
+        gifSavesInFlight = 0;
+        pendingRecentGifsReload = false;
 
         // T47: lastGifLoadTime (and the sticker load stamps) live in the GLOBAL
         // "emoji" preferences file, which is NOT wiped on logout — unlike the
@@ -1091,20 +1150,6 @@ public class MediaDataController extends BaseController {
         }
         // T49: invalidates an in-flight server snapshot.
         recentGifsLocalRevision++;
-        TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
-        req.id = new TLRPC.TL_inputDocument();
-        req.id.id = document.id;
-        req.id.access_hash = document.access_hash;
-        req.id.file_reference = document.file_reference;
-        if (req.id.file_reference == null) {
-            req.id.file_reference = new byte[0];
-        }
-        req.unsave = true;
-        getConnectionsManager().sendRequest(req, (response, error) -> {
-            if (error != null && FileRefController.isFileRefError(error.text)) {
-                getFileRefController().requestReference("gif", req);
-            }
-        });
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
             try {
                 getMessagesStorage().getDatabase().executeFast("DELETE FROM web_recent_v3 WHERE id = '" + document.id + "' AND type = 2").stepThis().dispose();
@@ -1112,6 +1157,54 @@ public class MediaDataController extends BaseController {
                 FileLog.e(e);
             }
         });
+        // T54: the unsave is an OBSERVED op on the completion chain (was
+        // fire-and-forget): bounded retries on transport failures, and on a
+        // definitive server rejection the entry is restored so the panel
+        // never lies about what the server holds.
+        enqueueGifOp(new GifUnsaveOp(document));
+    }
+
+    /** T54 — one observed unsave on the completion chain (see removeRecentGif). */
+    private final class GifUnsaveOp implements Runnable {
+        private final TLRPC.Document document;
+        private int attempt;
+
+        private GifUnsaveOp(TLRPC.Document document) {
+            this.document = document;
+        }
+
+        @Override
+        public void run() {
+            TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
+            req.id = new TLRPC.TL_inputDocument();
+            req.id.id = document.id;
+            req.id.access_hash = document.access_hash;
+            req.id.file_reference = document.file_reference == null ? new byte[0] : document.file_reference;
+            req.unsave = true;
+            getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+                if (error != null && isGifTransportError(error) && attempt < GIF_SAVE_MAX_ATTEMPTS - 1) {
+                    attempt++;
+                    AndroidUtilities.runOnUIThread(this::requeue, GIF_SAVE_RETRY_DELAY_MS * attempt);
+                    return;
+                }
+                if (error != null && !isGifTransportError(error)) {
+                    // definitive rejection: restore the entry + cache row so
+                    // the panel matches the server again
+                    recentGifs.add(0, document);
+                    recentGifsLocalRevision++;
+                    ArrayList<TLRPC.Document> arrayList = new ArrayList<>();
+                    arrayList.add(document);
+                    processLoadedRecentDocuments(0, arrayList, true, (int) (System.currentTimeMillis() / 1000), false);
+                    getNotificationCenter().postNotificationName(NotificationCenter.recentDocumentsDidLoad, true, TYPE_IMAGE);
+                    FileLog.e("gif unsave refused (id=" + document.id + " code=" + error.code + " " + error.text + ") — restored");
+                }
+                gifOpDone();
+            }));
+        }
+
+        private void requeue() {
+            enqueueGifOp(this);
+        }
     }
 
     public boolean hasRecentGif(TLRPC.Document document) {
@@ -1120,6 +1213,21 @@ public class MediaDataController extends BaseController {
             if (image.id == document.id) {
                 recentGifs.remove(a);
                 recentGifs.add(0, image);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * T54 — pure membership query by id (NO front-move side effect, unlike
+     * {@link #hasRecentGif}). Used by the interface-restore auto-collect: a
+     * gif that is merely DISPLAYED again must be collected if missing, never
+     * reordered — only real usage (tab tap / send) moves an entry to front.
+     */
+    public boolean isGifCollected(long documentId) {
+        for (int a = 0, N = recentGifs.size(); a < N; a++) {
+            if (recentGifs.get(a).id == documentId) {
                 return true;
             }
         }
@@ -1166,6 +1274,181 @@ public class MediaDataController extends BaseController {
         arrayList.add(document);
         processLoadedRecentDocuments(0, arrayList, true, date, false);
     }
+
+    /**
+     * T54 — the OBSERVED save behind every "this gif belongs in my collection"
+     * action: the GIF-tab long-press menus (ChatActivity / PhotoViewer /
+     * ContentPreviewViewer) AND the send-path auto-collect (a sent gif must
+     * appear in the GIF tab on every device, durably — the old send paths only
+     * added the gif to the LOCAL list, so the next authoritative sync dropped
+     * it, which the user experienced as "sometimes it doesn't save" and "the
+     * second gif I save replaces the first").
+     *
+     * Behavior (all through the single-flight chain, see gifOpQueue):
+     *  - idempotent by document id (insert or move-to-front server-side,
+     *    matching GifsController::save);
+     *  - transport failures RETRY (outcome unknown — the request may have
+     *    committed, so the optimistic entry stays); after the final attempt
+     *    the entry is rolled back;
+     *  - definitive server rejections (GIFS_LIMIT / FILE_ACCESS_DENIED /
+     *    VALIDATION_ERROR / NOT_FOUND) roll the optimistic entry back
+     *    immediately;
+     *  - success enqueues the convergence load, which — by chain order —
+     *    cannot predate this save's server commit;
+     *  - {@code onError} receives ONLY failures (null is never passed); quiet
+     *    auto-collect passes null and stays silent on every refusal.
+     *
+     * @param onError called on the UI thread, at most once, never with null
+     */
+    public void saveGifToCollection(TLRPC.Document document, boolean quiet, Utilities.Callback<TLRPC.TL_error> onError) {
+        if (document == null || document.id <= 0) {
+            // T54: never silent — callers hold an optimistic add that MUST be
+            // undone, and the user must learn the save did not happen.
+            if (onError != null) {
+                AndroidUtilities.runOnUIThread(() -> {
+                    TLRPC.TL_error error = new TLRPC.TL_error();
+                    error.code = 400;
+                    error.text = "GIF_INVALID";
+                    onError.run(error);
+                });
+            } else {
+                FileLog.e("saveGifToCollection: invalid document (id=" + (document == null ? -1 : document.id) + ") — nothing saved");
+            }
+            return;
+        }
+        // dedupe + front by ID (the callers' optimistic addRecentGif already
+        // did the instant UI feedback; keep both idempotent and consistent)
+        boolean found = false;
+        for (int a = 0; a < recentGifs.size(); a++) {
+            if (recentGifs.get(a).id == document.id) {
+                TLRPC.Document image = recentGifs.remove(a);
+                recentGifs.add(0, image);
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            recentGifs.add(0, document);
+        }
+        recentGifsLocalRevision++;
+        enqueueGifOp(new GifSaveOp(document, quiet, onError));
+    }
+
+    /**
+     * T54 — a single save on the completion chain. Stays "in flight"
+     * (gifSavesInFlight) across transport retries so concurrent loads keep
+     * parking instead of snapshotting a half-committed state.
+     */
+    private final class GifSaveOp implements Runnable {
+        private final TLRPC.Document document;
+        private final boolean quiet;
+        private final Utilities.Callback<TLRPC.TL_error> onError;
+        private int attempt;
+
+        private GifSaveOp(TLRPC.Document document, boolean quiet, Utilities.Callback<TLRPC.TL_error> onError) {
+            this.document = document;
+            this.quiet = quiet;
+            this.onError = onError;
+        }
+
+        private void requeue() {
+            enqueueGifOp(this);
+        }
+
+        @Override
+        public void run() {
+            TLRPC.TL_messages_saveGif req = new TLRPC.TL_messages_saveGif();
+            req.id = new TLRPC.TL_inputDocument();
+            req.id.id = document.id;
+            req.id.access_hash = document.access_hash;
+            req.id.file_reference = document.file_reference == null ? new byte[0] : document.file_reference;
+            req.unsave = false;
+            gifSavesInFlight++;
+            getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+                if (error != null && isGifTransportError(error) && attempt < GIF_SAVE_MAX_ATTEMPTS - 1) {
+                    // transport failure = UNKNOWN outcome: keep the optimistic
+                    // entry and the in-flight mark, retry later on the chain
+                    attempt++;
+                    AndroidUtilities.runOnUIThread(this::requeue, GIF_SAVE_RETRY_DELAY_MS * attempt);
+                    return;
+                }
+                gifSavesInFlight--;
+                if (error != null) {
+                    // definitive rejection (4xx) OR retries exhausted: the
+                    // optimistic entry must not linger — remove it and tell
+                    // the user (unless this is a quiet auto-collect).
+                    removeLocalRecentGif(document.id);
+                    if (!quiet && onError != null) {
+                        onError.run(error);
+                    } else {
+                        FileLog.e("gif save refused (id=" + document.id + " code=" + error.code + " " + error.text + ") — rolled back");
+                    }
+                } else {
+                    // committed — the chained convergence load cannot predate
+                    // this commit (single-flight guarantee)
+                    enqueueGifOp(new GifLoadOp(true, 0));
+                }
+                gifOpDone();
+            }));
+        }
+    }
+
+    /**
+     * T54 — one authoritative gifs/list.php load on the completion chain.
+     * Parks (pendingRecentGifsReload) while any save is in flight — the save's
+     * own convergence load fires when the chain drains, and it is guaranteed
+     * to observe the save. Transport failures retry bounded; a failed load
+     * never stamps lastGifLoadTime (the next panel open retries).
+     */
+    private final class GifLoadOp implements Runnable {
+        private final boolean force;
+        private int attempt;
+
+        private GifLoadOp(boolean force, int attempt) {
+            this.force = force;
+            this.attempt = attempt;
+        }
+
+        private void requeue() {
+            enqueueGifOp(this);
+        }
+
+        @Override
+        public void run() {
+            if (gifSavesInFlight > 0) {
+                // a save is mid-flight: loading NOW would snapshot the server
+                // before that save committed — park behind it
+                pendingRecentGifsReload = true;
+                gifOpDone();
+                return;
+            }
+            loadingRecentGifs = true;
+            recentGifsFetchRevision = recentGifsLocalRevision;
+            TLRPC.TL_messages_getSavedGifs req = new TLRPC.TL_messages_getSavedGifs();
+            req.hash = calcDocumentsHash(recentGifs);
+            getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
+                ArrayList<TLRPC.Document> arrayList = null;
+                if (response instanceof TLRPC.TL_messages_savedGifs) {
+                    arrayList = ((TLRPC.TL_messages_savedGifs) response).gifs;
+                }
+                if (arrayList == null && attempt < GIF_LOAD_MAX_ATTEMPTS - 1) {
+                    // transport/malformed — retry on the chain; the list stays
+                    // untouched and lastGifLoadTime stays unstamped
+                    attempt++;
+                    loadingRecentGifs = false;
+                    AndroidUtilities.runOnUIThread(this::requeue, GIF_SAVE_RETRY_DELAY_MS * attempt);
+                    return;
+                }
+                processLoadedRecentDocuments(MediaDataController.TYPE_IMAGE, arrayList, true, 0, true);
+                gifOpDone();
+            }));
+        }
+    }
+
+    /** T54 — bounded retries for the chained gif ops. */
+    private static final int GIF_SAVE_MAX_ATTEMPTS = 3;
+    private static final int GIF_LOAD_MAX_ATTEMPTS = 3;
+    private static final long GIF_SAVE_RETRY_DELAY_MS = 1200;
 
     public boolean isLoadingStickers(int type) {
         return loadingStickers[type];
@@ -1991,19 +2274,11 @@ public class MediaDataController extends BaseController {
                 }
             }
             if (gif) {
-                // T49: snapshot the local revision so a response computed from
-                // a PRE-mutation server state is detected and discarded.
-                recentGifsFetchRevision = recentGifsLocalRevision;
-                TLRPC.TL_messages_getSavedGifs req = new TLRPC.TL_messages_getSavedGifs();
-                req.hash = calcDocumentsHash(recentGifs);
-                getConnectionsManager().sendRequest(req, (response, error) -> {
-                    ArrayList<TLRPC.Document> arrayList = null;
-                    if (response instanceof TLRPC.TL_messages_savedGifs) {
-                        TLRPC.TL_messages_savedGifs res = (TLRPC.TL_messages_savedGifs) response;
-                        arrayList = res.gifs;
-                    }
-                    processLoadedRecentDocuments(type, arrayList, true, 0, true);
-                });
+                // T54: the server load is an op on the completion chain — it
+                // issues only after any in-flight save's RESPONSE, so its
+                // snapshot can never predate a committed save (the T49
+                // revision guard below stays as belt-and-braces).
+                enqueueGifOp(new GifLoadOp(force, 0));
             } else {
                 TLObject request;
                 if (type == TYPE_FAVE) {
