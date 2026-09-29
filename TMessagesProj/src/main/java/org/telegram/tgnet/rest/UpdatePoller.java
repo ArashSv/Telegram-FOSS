@@ -313,6 +313,14 @@ public final class UpdatePoller {
                     // the panel re-reads on the next open and while visible.
                     handleGifsChanged();
                     break;
+                case "dialog_pin":
+                    // T56: MY dialog pin state changed on another device
+                    // (backend v2.7 owner-only event). Rides the upstream
+                    // TL_updateDialogPinned machinery — processUpdateArray
+                    // applies it via pinDialog(did, pinned, null, -1), which
+                    // is the no-network local branch (no event echo loop).
+                    handleDialogPin(update, tlUpdates);
+                    break;
                 default:
                     break;
             }
@@ -344,6 +352,42 @@ public final class UpdatePoller {
      * serializes exactly that field, and formatUserStatus/formatDateOnline
      * render "last seen at …" from it.
      */
+    /**
+     * T56: map a REST {@code dialog_pin} update (my pin state changed on
+     * another device; payload {chat_id, pinned, pinned_at}) onto the upstream
+     * {@link TLRPC.TL_updateDialogPinned}. processUpdateArray turns it into
+     * pinDialog(dialogId, pinned, null, -1) — the local-only branch, so the
+     * sync event never echoes back to the backend.
+     */
+    private void handleDialogPin(JSONObject update, ArrayList<TLRPC.Update> tlUpdates) {
+        long chatId = update.optLong("chat_id", 0);
+        if (chatId <= 0) {
+            return;
+        }
+        RestChatIndex index = RestChatIndex.getInstance(account);
+        long dialogId;
+        boolean isGroup;
+        long peerUserId = index.userForPrivateChat(chatId);
+        if (peerUserId != 0) {
+            dialogId = peerUserId;
+            isGroup = false;
+        } else {
+            dialogId = -chatId;
+            isGroup = true;
+        }
+        TLRPC.TL_updateDialogPinned tl = new TLRPC.TL_updateDialogPinned();
+        tl.pinned = update.optBoolean("pinned", false);
+        tl.peer = new TLRPC.TL_dialogPeer();
+        if (isGroup) {
+            tl.peer.peer = new TLRPC.TL_peerChat();
+            tl.peer.peer.chat_id = chatId;
+        } else {
+            tl.peer.peer = new TLRPC.TL_peerUser();
+            tl.peer.peer.user_id = peerUserId;
+        }
+        tlUpdates.add(tl);
+    }
+
     private void handleUserStatus(JSONObject update, ArrayList<TLRPC.Update> tlUpdates) {
         long userId = update.optLong("user_id", 0);
         if (userId <= 0 || userId == UserConfig.getInstance(account).clientUserId) {

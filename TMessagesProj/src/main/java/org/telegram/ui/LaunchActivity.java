@@ -546,6 +546,13 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 switchToAccount(((DrawerUserCell) view).getAccountNumber(), true);
                 drawerLayoutContainer.closeDrawer(false);
             } else if (view instanceof DrawerAddCell) {
+                // T56: defense-in-depth — the row itself is hidden by the
+                // adapter gate; this click gate guarantees no free-slot login
+                // can ever fire without the multi-account entitlement.
+                if (!org.telegram.tgnet.rest.XoSpecialAccounts.isMultiAccountAllowedForCurrent()) {
+                    drawerLayoutContainer.closeDrawer(false);
+                    return;
+                }
                 int freeAccounts = 0;
                 Integer availableAccount = null;
                 for (int a = UserConfig.MAX_ACCOUNT_COUNT - 1; a >= 0; a--) {

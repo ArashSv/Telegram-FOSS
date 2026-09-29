@@ -166,6 +166,13 @@ public final class RestRouter {
     public static final int ROUTE_SAVE_GIF = 39;          // TL_messages_saveGif -> POST /gifs/save.php {file_id, unsave} (TL_boolTrue)
     public static final int ROUTE_UPDATE_PROFILE_PHOTO = 40; // TL_photos_updateProfilePhoto -> POST /users/delete-photo.php {} (TL_inputPhotoEmpty = delete; TL_photos_photo)
 
+    // T56 — albums, forward, dialog pin (backend v2.7.0)
+    public static final int ROUTE_FORWARD = 41;             // TL_messages_forwardMessages -> POST /messages/forward.php {to_chat_id, message_ids[], drop_author}
+    public static final int ROUTE_UPLOAD_MEDIA = 42;        // TL_messages_uploadMedia -> per-item finalize (response MessageMedia with the backend file id planted)
+    public static final int ROUTE_SEND_MULTI_MEDIA = 43;    // TL_messages_sendMultiMedia -> POST /messages/send-multi.php {chat_id, items[]} (server assigns one group_id)
+    public static final int ROUTE_TOGGLE_DIALOG_PIN = 44;   // TL_messages_toggleDialogPin -> POST /chats/pin.php {chat_id, pinned} (TL_boolTrue)
+    public static final int ROUTE_REORDER_PINNED = 45;      // TL_messages_reorderPinnedDialogs -> POST /chats/pin-order.php {chat_ids[]} (full pin-set sync, TL_boolTrue)
+
     // constructor ints (TLRPC.java, this tree): TL_upload_getFile = 0xbe5335be,
     // TL_upload_saveFilePart = 0xb304a621, TL_upload_saveBigFilePart = 0xde7b673d,
     // TL_messages_sendMedia = 0x7852834e
@@ -253,6 +260,18 @@ public final class RestRouter {
         // users/get and other devices never saw the removal. (Set-as-main with
         // a real TL_inputPhoto is a no-op success on this single-avatar backend.)
         ROUTES.put(TLRPC.TL_photos_updateProfilePhoto.class, ROUTE_UPDATE_PROFILE_PHOTO);
+        // T56 — albums, forward, dialog pin. All five were default-denied:
+        // the album pair killed every multi-photo send mid-pipeline (uploads
+        // succeeded, the group then died on XO_NOT_ROUTED in uploadMedia —
+        // the reported "photos upload but no message ever appears"), the
+        // forward pair answered every forward with an error alert, and the
+        // pin pair made pinning local-only (every server dialogs load
+        // reverted it). Consumers are documented on the handlers.
+        ROUTES.put(TLRPC.TL_messages_forwardMessages.class, ROUTE_FORWARD);
+        ROUTES.put(TLRPC.TL_messages_uploadMedia.class, ROUTE_UPLOAD_MEDIA);
+        ROUTES.put(TLRPC.TL_messages_sendMultiMedia.class, ROUTE_SEND_MULTI_MEDIA);
+        ROUTES.put(TLRPC.TL_messages_toggleDialogPin.class, ROUTE_TOGGLE_DIALOG_PIN);
+        ROUTES.put(TLRPC.TL_messages_reorderPinnedDialogs.class, ROUTE_REORDER_PINNED);
     }
 
     private RestRouter() {

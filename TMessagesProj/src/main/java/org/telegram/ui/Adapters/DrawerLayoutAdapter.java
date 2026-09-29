@@ -22,6 +22,7 @@ import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessagesController;
 import org.telegram.messenger.R;
 import org.telegram.messenger.UserConfig;
+import org.telegram.tgnet.rest.XoSpecialAccounts;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.ui.ActionBar.DrawerLayoutContainer;
 import org.telegram.ui.ActionBar.Theme;
@@ -52,7 +53,13 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
         mContext = context;
         mDrawerLayoutContainer = drawerLayoutContainer;
         itemAnimator = animator;
-        accountsShown = UserConfig.getActivatedAccountsCount() > 1 && MessagesController.getGlobalMainSettings().getBoolean("accountsShown", true);
+        // T56: multi-account is hidden for everyone but the privileged demo
+        // account (+11 1130 / wire 40411130) — the accounts section (switch
+        // rows AND the Add Account row) never renders without it, regardless
+        // of the persisted "accountsShown" preference.
+        accountsShown = XoSpecialAccounts.isMultiAccountAllowedForCurrent()
+                && UserConfig.getActivatedAccountsCount() > 1
+                && MessagesController.getGlobalMainSettings().getBoolean("accountsShown", true);
         Theme.createCommonDialogResources(context);
         resetItems();
         try {
@@ -80,6 +87,11 @@ public class DrawerLayoutAdapter extends RecyclerListView.SelectionAdapter {
     }
 
     public void setAccountsShown(boolean value, boolean animated) {
+        // T56: the section can never be expanded without the multi-account
+        // entitlement (the DrawerProfileCell arrow tap funnels through here).
+        if (value && !XoSpecialAccounts.isMultiAccountAllowedForCurrent()) {
+            return;
+        }
         if (accountsShown == value || itemAnimator.isRunning()) {
             return;
         }

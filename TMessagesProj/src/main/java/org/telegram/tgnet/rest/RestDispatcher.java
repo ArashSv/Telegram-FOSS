@@ -246,6 +246,21 @@ public final class RestDispatcher {
                 case RestRouter.ROUTE_UPDATE_PROFILE_PHOTO:
                     response = handleUpdateProfilePhoto(account, (TLRPC.TL_photos_updateProfilePhoto) object);
                     break;
+                case RestRouter.ROUTE_FORWARD:
+                    response = handleForward(account, (TLRPC.TL_messages_forwardMessages) object);
+                    break;
+                case RestRouter.ROUTE_UPLOAD_MEDIA:
+                    response = handleUploadMedia(account, (TLRPC.TL_messages_uploadMedia) object);
+                    break;
+                case RestRouter.ROUTE_SEND_MULTI_MEDIA:
+                    response = handleSendMultiMedia(account, (TLRPC.TL_messages_sendMultiMedia) object);
+                    break;
+                case RestRouter.ROUTE_TOGGLE_DIALOG_PIN:
+                    response = handleToggleDialogPin(account, (TLRPC.TL_messages_toggleDialogPin) object);
+                    break;
+                case RestRouter.ROUTE_REORDER_PINNED:
+                    response = handleReorderPinned(account, (TLRPC.TL_messages_reorderPinnedDialogs) object);
+                    break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
                     break;
@@ -838,6 +853,309 @@ public final class RestDispatcher {
         updates.seq = 0;
         updates.users.addAll(hydrateSenders(account, java.util.Collections.singletonList(message)));
         return updates;
+    }
+
+    // ------------------------------------------------------------------ T56: albums + forward + pin (backend v2.7.0)
+
+    /**
+     * TL_messages_uploadMedia — the upstream ALBUM finalization step. For a
+     * grouped send the tree uploads every item, then REPLACES each
+     * TL_inputMediaUploaded* with a reference media via this request before
+     * the group may dispatch (sendReadyToSendGroup refuses to fire while any
+     * item still holds an Uploaded* media). Default-deny killed the album
+     * right here: newInputMedia stayed null → DelayedMessage.markAsError()
+     * on ALL items → "photos upload but no message ever appears".
+     *
+     * Answer contract (consumed by SendMessagesHelper.uploadMultiMedia's
+     * callback): a MessageMedia whose photo.id / document.id IS the backend
+     * file id — the consumer wraps it into TL_inputMediaPhoto/Document and
+     * the later sendMultiMedia handler reads the id back as the file
+     * reference. finalize runs here (identical contract to handleSendMedia),
+     * so items arrive at send-multi with ready backend files.
+     */
+    private static TLObject handleUploadMedia(int account, TLRPC.TL_messages_uploadMedia req) {
+        RestFileBridge bridge = RestFileBridge.getInstance(account);
+        long treeUploadId;
+        int parts = 0;
+        String mime = null;
+        String name = null;
+        Integer width = null, height = null, duration = null;
+        boolean asGif = false;
+        long thumbTreeId = 0;
+
+        if (req.media instanceof TLRPC.TL_inputMediaUploadedPhoto) {
+            TLRPC.InputFile file = ((TLRPC.TL_inputMediaUploadedPhoto) req.media).file;
+            treeUploadId = file.id;
+            parts = file.parts;
+            name = file.name;
+        } else if (req.media instanceof TLRPC.TL_inputMediaUploadedDocument) {
+            TLRPC.TL_inputMediaUploadedDocument input = (TLRPC.TL_inputMediaUploadedDocument) req.media;
+            treeUploadId = input.file.id;
+            parts = input.file.parts;
+            name = input.file.name;
+            mime = input.mime_type;
+            if (input.thumb instanceof TLRPC.TL_inputFile || input.thumb instanceof TLRPC.TL_inputFileBig) {
+                thumbTreeId = input.thumb.id;
+            }
+            for (int a = 0; a < input.attributes.size(); a++) {
+                TLRPC.DocumentAttribute attribute = input.attributes.get(a);
+                if (attribute instanceof TLRPC.TL_documentAttributeFilename) {
+                    name = ((TLRPC.TL_documentAttributeFilename) attribute).file_name;
+                } else if (attribute instanceof TLRPC.TL_documentAttributeImageSize) {
+                    width = ((TLRPC.TL_documentAttributeImageSize) attribute).w;
+                    height = ((TLRPC.TL_documentAttributeImageSize) attribute).h;
+                } else if (attribute instanceof TLRPC.TL_documentAttributeVideo) {
+                    TLRPC.TL_documentAttributeVideo video = (TLRPC.TL_documentAttributeVideo) attribute;
+                    duration = (int) Math.round(video.duration);
+                    if (video.w > 0) {
+                        width = video.w;
+                    }
+                    if (video.h > 0) {
+                        height = video.h;
+                    }
+                } else if (attribute instanceof TLRPC.TL_documentAttributeAudio) {
+                    duration = (int) Math.round(((TLRPC.TL_documentAttributeAudio) attribute).duration);
+                } else if (attribute instanceof TLRPC.TL_documentAttributeAnimated) {
+                    asGif = true;
+                }
+            }
+        } else {
+            throw new XoApiException(400, "MEDIA_INVALID", "unsupported input media for uploadMedia");
+        }
+        if (treeUploadId == 0) {
+            throw new XoApiException(400, "FILE_ID_INVALID", "upload carries no file id");
+        }
+
+        long declaredBytes = bridge.uploadedBytesFor(treeUploadId);
+        JSONObject finalizeEnvelope = bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes, asGif);
+        RestFileBridge.noteFileMetaFromJson(finalizeEnvelope == null ? null : finalizeEnvelope.optJSONObject("file"));
+        if (finalizeEnvelope == null || finalizeEnvelope.optJSONObject("file") == null) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "finalize response lacks the file object");
+        }
+        JSONObject fileJson = finalizeEnvelope.optJSONObject("file");
+        if (thumbTreeId != 0) {
+            try {
+                JSONObject thumbEnvelope = bridge.finalizeUpload(thumbTreeId, 1, "image/jpeg", null, null, null, null, bridge.uploadedBytesFor(thumbTreeId));
+                RestFileBridge.noteFileMetaFromJson(thumbEnvelope == null ? null : thumbEnvelope.optJSONObject("file"));
+            } catch (Exception e) {
+                // a thumb must never fail the item; the server-side link falls
+                // back to whatever the file row already carries
+                FileLog.w("RestDispatcher: uploadMedia thumb finalize failed, continuing", e);
+            }
+        }
+        // parseMedia maps the finalize file json onto the exact MessageMedia
+        // shapes the tree expects (photo/document objects with VIRTUAL_DC
+        // locations, gif-aware) — the consumer only reads photo/document id.
+        return TlJsonMapper.parseMedia(fileJson, (int) (System.currentTimeMillis() / 1000L));
+    }
+
+    /**
+     * TL_messages_sendMultiMedia — the ALBUM dispatch. By the time the group
+     * fires, uploadMedia replaced every item's media with a reference
+     * (TL_inputMediaPhoto/Document whose id IS the backend file id), so all
+     * items travel BY REFERENCE in one request. The backend endpoint treats
+     * the whole request as ONE album (server-assigned shared group_id — the
+     * Telegram server contract), inserts everything atomically and answers
+     * in item order.
+     *
+     * Response contract (consumed by SendMessagesHelper's multi callback
+     * ~:6099-6252): TL_updates carrying ONE TL_updateMessageID per
+     * req.multi_media.random_id (order-paired) + ONE TL_updateNewMessage per
+     * returned row. The parsed rows carry the server group_id, so the ack
+     * re-keys the UI group and every receiver groups identically.
+     */
+    private static TLObject handleSendMultiMedia(int account, TLRPC.TL_messages_sendMultiMedia req) {
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        PeerRef peer = resolvePeer(account, req.peer);
+        if (peer == null) {
+            throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable peer for send-multi-media");
+        }
+        long chatId = requireChatId(account, peer);
+
+        JSONArray items = new JSONArray();
+        for (int a = 0; a < req.multi_media.size(); a++) {
+            TLRPC.TL_inputSingleMedia single = req.multi_media.get(a);
+            long mediaFileId;
+            if (single.media instanceof TLRPC.TL_inputMediaPhoto) {
+                mediaFileId = mediaPhotoTreeId((TLRPC.TL_inputMediaPhoto) single.media);
+            } else if (single.media instanceof TLRPC.TL_inputMediaDocument) {
+                TLRPC.InputDocument inputDoc = ((TLRPC.TL_inputMediaDocument) single.media).id;
+                mediaFileId = inputDoc instanceof TLRPC.TL_inputDocument ? ((TLRPC.TL_inputDocument) inputDoc).id : 0;
+            } else {
+                throw new XoApiException(400, "MEDIA_INVALID", "sendMultiMedia item " + a + " was never finalized through uploadMedia");
+            }
+            if (mediaFileId == 0) {
+                throw new XoApiException(400, "FILE_ID_INVALID", "sendMultiMedia item " + a + " carries no backend file id");
+            }
+            JSONObject item = new JSONObject();
+            try {
+                item.put("media_file_id", mediaFileId);
+                item.put("content", single.message == null ? "" : single.message);
+            } catch (org.json.JSONException e) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "item json build failed: " + e.getMessage());
+            }
+            items.put(item);
+        }
+
+        JSONObject sent = RestGateway.getInstance(account).sendMultiMedia(chatId, items);
+        JSONArray messagesJson = sent.optJSONArray("messages");
+        if (messagesJson == null || messagesJson.length() != req.multi_media.size()) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "send-multi response rows do not pair with the request items");
+        }
+
+        TLRPC.TL_updates updates = new TLRPC.TL_updates();
+        ArrayList<TLRPC.Message> parsed = new ArrayList<>();
+        for (int a = 0; a < messagesJson.length(); a++) {
+            JSONObject msgJson = messagesJson.optJSONObject(a);
+            if (msgJson == null) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "send-multi row " + a + " is not an object");
+            }
+            TLRPC.TL_message message;
+            try {
+                message = TlJsonMapper.parseMessage(msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+            } catch (org.json.JSONException e) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed send-multi row: " + e.getMessage());
+            }
+            parsed.add(message);
+
+            // random_id pairing: the tree matches its placeholder messages to
+            // the server ids THROUGH these echoes (newIds.get(random_id)).
+            TLRPC.TL_updateMessageID idUpdate = new TLRPC.TL_updateMessageID();
+            idUpdate.id = message.id;
+            idUpdate.random_id = req.multi_media.get(a).random_id;
+            updates.updates.add(idUpdate);
+
+            TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
+            update.message = message;
+            update.pts = 0;
+            update.pts_count = 0;
+            updates.updates.add(update);
+        }
+        RestChatIndex.getInstance(account).rememberMessages(chatId, parsed);
+        updates.date = nowSeconds();
+        updates.seq = 0;
+        updates.users.addAll(hydrateSenders(account, parsed));
+        return updates;
+    }
+
+    /**
+     * TL_messages_forwardMessages — Telegram-style forwarding (single AND
+     * multi: the tree batches up to 100 source ids per request, splitting on
+     * source-dialog changes). The backend copies by reference, resolves the
+     * forward origin (including forward-of-forward inheritance) and answers
+     * {messages:[...]} in EXACT request order.
+     *
+     * Response contract (consumed by SendMessagesHelper's forward callback
+     * ~:2311-2435): TL_updates with ONE TL_updateMessageID per
+     * req.random_id (order-paired) + ONE TL_updateNewMessage per copy.
+     * drop_author strips the header server-side ("forward without sender").
+     */
+    private static TLObject handleForward(int account, TLRPC.TL_messages_forwardMessages req) {
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        PeerRef peer = resolvePeer(account, req.to_peer);
+        if (peer == null) {
+            throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable forward target");
+        }
+        long toChatId = requireChatId(account, peer);
+        if (req.id == null || req.id.isEmpty()) {
+            throw new XoApiException(400, "VALIDATION_ERROR", "forward carries no message ids");
+        }
+        int[] ids = new int[req.id.size()];
+        for (int a = 0; a < ids.length; a++) {
+            ids[a] = req.id.get(a);
+        }
+
+        JSONObject sent = RestGateway.getInstance(account).forward(toChatId, ids, req.drop_author);
+        JSONArray messagesJson = sent.optJSONArray("messages");
+        if (messagesJson == null || messagesJson.length() != ids.length) {
+            throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "forward response rows do not pair with the request ids");
+        }
+
+        TLRPC.TL_updates updates = new TLRPC.TL_updates();
+        ArrayList<TLRPC.Message> parsed = new ArrayList<>();
+        for (int a = 0; a < messagesJson.length(); a++) {
+            JSONObject msgJson = messagesJson.optJSONObject(a);
+            if (msgJson == null) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "forward row " + a + " is not an object");
+            }
+            TLRPC.TL_message message;
+            try {
+                message = TlJsonMapper.parseMessage(msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+            } catch (org.json.JSONException e) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed forward row: " + e.getMessage());
+            }
+            parsed.add(message);
+
+            TLRPC.TL_updateMessageID idUpdate = new TLRPC.TL_updateMessageID();
+            idUpdate.id = message.id;
+            idUpdate.random_id = req.random_id.get(a);
+            updates.updates.add(idUpdate);
+
+            TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
+            update.message = message;
+            update.pts = 0;
+            update.pts_count = 0;
+            updates.updates.add(update);
+        }
+        RestChatIndex.getInstance(account).rememberMessages(toChatId, parsed);
+        updates.date = nowSeconds();
+        updates.seq = 0;
+        updates.users.addAll(hydrateSenders(account, parsed));
+        return updates;
+    }
+
+    /**
+     * TL_messages_toggleDialogPin — the pin/unpin sync (per-USER dialog
+     * state). Sent by MessagesController.pinDialog whenever taskId != -1;
+     * the answer only clears the pending task (TL_boolTrue), the local state
+     * was applied before the request. Other devices converge through the
+     * owner-only dialog_pin sync event.
+     */
+    private static TLObject handleToggleDialogPin(int account, TLRPC.TL_messages_toggleDialogPin req) {
+        TLRPC.InputPeer inputPeer = req.peer instanceof TLRPC.TL_inputDialogPeer
+                ? ((TLRPC.TL_inputDialogPeer) req.peer).peer
+                : null;
+        if (inputPeer == null) {
+            throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable dialog pin peer");
+        }
+        PeerRef peer = resolvePeer(account, inputPeer);
+        if (peer == null) {
+            throw new XoApiException(400, "PEER_ID_INVALID", "unresolvable dialog pin peer");
+        }
+        long chatId = requireChatId(account, peer);
+        RestGateway.getInstance(account).toggleDialogPin(chatId, req.pinned);
+        return new TLRPC.TL_boolTrue();
+    }
+
+    /**
+     * TL_messages_reorderPinnedDialogs — the FULL pinned-set sync. Fired by
+     * DialogsActivity after every preview-menu pin/unpin (and by drag
+     * reorder): req.order lists the pinned dialogs topmost-first, so the
+     * backend endpoint replaces the user's whole dialog_pins set with
+     * exactly this order (rows not listed get unpinned). Empty order (no
+     * pins at all) is answered locally — nothing to sync.
+     */
+    private static TLObject handleReorderPinned(int account, TLRPC.TL_messages_reorderPinnedDialogs req) {
+        if (req.order == null || req.order.isEmpty()) {
+            return new TLRPC.TL_boolTrue();
+        }
+        int[] chatIds = new int[req.order.size()];
+        for (int a = 0; a < req.order.size(); a++) {
+            TLRPC.InputDialogPeer dialogPeer = req.order.get(a);
+            TLRPC.InputPeer inputPeer = dialogPeer instanceof TLRPC.TL_inputDialogPeer
+                    ? ((TLRPC.TL_inputDialogPeer) dialogPeer).peer
+                    : null;
+            if (inputPeer == null) {
+                throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable dialog peer in pin order");
+            }
+            PeerRef peer = resolvePeer(account, inputPeer);
+            if (peer == null) {
+                throw new XoApiException(400, "PEER_ID_INVALID", "unresolvable dialog peer in pin order");
+            }
+            chatIds[a] = (int) requireChatId(account, peer);
+        }
+        RestGateway.getInstance(account).pinOrder(chatIds);
+        return new TLRPC.TL_boolTrue();
     }
 
     /**

@@ -4,6 +4,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.telegram.messenger.FileLog;
+import org.telegram.messenger.Utilities;
 import org.telegram.tgnet.TLRPC;
 
 import java.util.ArrayList;
@@ -429,6 +430,70 @@ public final class TlJsonMapper {
             message.flags |= 32768;
         }
 
+        // T56: album grouping. The backend assigns one 64-bit group id per
+        // album request (send-multi) / preserved per forwarded album and
+        // echoes it on every member row — string on the wire (the value is a
+        // full 64-bit long). Flag 131072 (MESSAGE_FLAG_HAS_GROUP_ID) must ride
+        // along or the MessagesStorage round-trip drops it (T11 lesson).
+        if (!msg.isNull("group_id")) {
+            String groupIdStr = msg.optString("group_id", null);
+            long groupId = groupIdStr == null ? 0L : Utilities.parseLong(groupIdStr);
+            if (groupId == 0L && groupIdStr != null) {
+                try {
+                    groupId = Long.parseLong(groupIdStr.trim());
+                } catch (NumberFormatException ignore) {
+                }
+            }
+            if (groupId != 0L) {
+                message.grouped_id = groupId;
+                message.flags |= 131072;
+            }
+        }
+
+        // T56: forward metadata — the "Forwarded from X" header. Flag-coherent
+        // like every header here: from_id needs bit 1, channel_post bit 4,
+        // from_name bit 32, and the message itself MESSAGE_FLAG_FWD (4) or the
+        // storage round-trip drops the whole block.
+        JSONObject fwdJson = msg.optJSONObject("fwd");
+        if (fwdJson != null) {
+            TLRPC.TL_messageFwdHeader header = new TLRPC.TL_messageFwdHeader();
+            boolean any = false;
+            long fwdUserId = fwdJson.optLong("from_user_id", 0L);
+            long fwdChatId = fwdJson.optLong("from_chat_id", 0L);
+            if (fwdChatId > 0) {
+                header.from_id = new TLRPC.TL_peerChat();
+                header.from_id.chat_id = fwdChatId;
+                header.flags |= 1;
+                any = true;
+            } else if (fwdUserId > 0) {
+                header.from_id = new TLRPC.TL_peerUser();
+                header.from_id.user_id = fwdUserId;
+                header.flags |= 1;
+                any = true;
+            }
+            String fwdName = fwdJson.isNull("from_name") ? null : fwdJson.optString("from_name", null);
+            if (fwdName != null && !fwdName.isEmpty()) {
+                header.from_name = fwdName;
+                header.flags |= 32;
+                any = true;
+            }
+            long fwdMsgId = fwdJson.optLong("msg_id", 0L);
+            if (fwdMsgId > 0) {
+                header.channel_post = (int) fwdMsgId;
+                header.flags |= 4;
+                any = true;
+            }
+            long fwdDate = fwdJson.optLong("date", 0L);
+            if (fwdDate > 0) {
+                header.date = (int) fwdDate;
+                any = true;
+            }
+            if (any) {
+                message.fwd_from = header;
+                message.flags |= 4; // MESSAGE_FLAG_FWD
+            }
+        }
+
         // media must never be null (legacy UI paths deref it) and must stay
         // coherent with the flag bit so storage round-trips survive
         JSONObject mediaJson = msg.optJSONObject("media");
@@ -789,6 +854,19 @@ public final class TlJsonMapper {
                     }
                     dialog.unread_count = chat.optInt("unread_count", 0);
                     dialog.notify_settings = new TLRPC.TL_peerNotifySettings();
+
+                    // T56: per-user dialog pin (backend v2.7.0 chats/list.php).
+                    // pinned_order = pinned_at unix ts; the client comparator
+                    // sorts pinned first + pinnedNum DESC, so the newest pin
+                    // (largest order) lands on top — exactly Telegram's
+                    // "new pin goes above the others" behavior.
+                    if (chat.optInt("pinned", 0) != 0) {
+                        dialog.pinned = true;
+                        dialog.pinnedNum = chat.optInt("pinned_order", 1);
+                        if (dialog.pinnedNum == 0) {
+                            dialog.pinnedNum = 1;
+                        }
+                    }
 
                     JSONObject lastJson = chat.optJSONObject("last_message");
                     if (lastJson != null) {

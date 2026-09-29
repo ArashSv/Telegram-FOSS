@@ -157,6 +157,7 @@ import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.tl.TL_fragment;
 import org.telegram.tgnet.tl.TL_stories;
+import org.telegram.tgnet.rest.XoSpecialAccounts;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.ActionBarMenu;
 import org.telegram.ui.ActionBar.ActionBarMenuItem;
@@ -11242,6 +11243,10 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 new SearchResult(500, LocaleController.getString("EditName", R.string.EditName), 0, () -> presentFragment(new ChangeNameActivity(resourcesProvider))),
                 new SearchResult(501, LocaleController.getString("ChangePhoneNumber", R.string.ChangePhoneNumber), 0, () -> presentFragment(new ActionIntroActivity(ActionIntroActivity.ACTION_TYPE_CHANGE_PHONE_NUMBER))),
                 new SearchResult(502, LocaleController.getString("AddAnotherAccount", R.string.AddAnotherAccount), 0, () -> {
+                    // T56: hidden for everyone but the privileged demo account.
+                    if (!XoSpecialAccounts.isMultiAccountAllowedForCurrent()) {
+                        return;
+                    }
                     int freeAccount = -1;
                     for (int a = 0; a < UserConfig.MAX_ACCOUNT_COUNT; a++) {
                         if (!UserConfig.getInstance(a).isClientActivated()) {

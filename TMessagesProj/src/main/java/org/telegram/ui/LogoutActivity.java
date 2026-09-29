@@ -70,7 +70,10 @@ public class LogoutActivity extends BaseFragment {
 
         rowCount = 0;
         alternativeHeaderRow = rowCount++;
-        if (UserConfig.getActivatedAccountsCount() < UserConfig.MAX_ACCOUNT_COUNT) {
+        // T56: the "Add another account" row needs the multi-account
+        // entitlement (only the +11 1130 demo account has it).
+        if (XoSpecialAccounts.isMultiAccountAllowedForCurrent()
+                && UserConfig.getActivatedAccountsCount() < UserConfig.MAX_ACCOUNT_COUNT) {
             addAccountRow = rowCount++;
         } else {
             addAccountRow = -1;
@@ -152,6 +155,7 @@ public class LogoutActivity extends BaseFragment {
                     return;
                 }
                 showDialog(makeLogOutDialog(getParentActivity(), currentAccount));
+import org.telegram.tgnet.rest.XoSpecialAccounts;
             }
         });
 

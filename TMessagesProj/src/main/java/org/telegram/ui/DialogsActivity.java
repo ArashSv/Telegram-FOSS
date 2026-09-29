@@ -3639,7 +3639,8 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             });
         }
 
-        if (allowSwitchAccount && UserConfig.getActivatedAccountsCount() > 1) {
+        if (allowSwitchAccount && UserConfig.getActivatedAccountsCount() > 1
+                && org.telegram.tgnet.rest.XoSpecialAccounts.isMultiAccountAllowedForCurrent()) {
             switchItem = menu.addItemWithWidth(1, 0, dp(56));
             AvatarDrawable avatarDrawable = new AvatarDrawable();
             avatarDrawable.setTextSize(dp(12));
@@ -9385,7 +9386,12 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             updated = true;
         } else {
-            updated = getMessagesController().pinDialog(selectedDialog, pin, null, -1);
+            // T56: taskId 0 (was -1) — with -1 the TL_messages_toggleDialogPin
+            // block inside pinDialog never ran, so pinning was LOCAL-ONLY and
+            // every server dialogs load reverted it (backend v2.7 wires the
+            // real pin sync). taskId 0 sends the request AND creates the
+            // storage pending task (retry-on-restart machinery unchanged).
+            updated = getMessagesController().pinDialog(selectedDialog, pin, null, 0);
         }
 
 

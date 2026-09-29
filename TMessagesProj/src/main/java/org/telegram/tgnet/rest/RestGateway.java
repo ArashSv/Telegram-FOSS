@@ -597,6 +597,81 @@ public final class RestGateway {
         return authenticatedRequest("POST", "messages/send.php", body);
     }
 
+    // ------------------------------------------------------------------ T56: albums + forward + pin (backend v2.7.0)
+
+    /**
+     * POST /messages/forward.php {to_chat_id, message_ids[], drop_author} —
+     * Telegram-style forwarding, up to 100 source messages per call (the
+     * tree batches them in TL_messages_forwardMessages). The backend copies
+     * by reference (media shared, no re-upload), stamps the forward header
+     * (origin-resolution + forward-of-forward inheritance server-side) and
+     * answers {messages:[...]} in EXACT request order — the dispatcher pairs
+     * each row with req.random_id for the TL_updateMessageID echoes.
+     */
+    public JSONObject forward(long toChatId, int[] messageIds, boolean dropAuthor) {
+        JSONObject body = putNumber(new JSONObject(), "to_chat_id", toChatId);
+        JSONArray ids = new JSONArray();
+        for (int id : messageIds) {
+            ids.put(id);
+        }
+        try {
+            body.put("message_ids", ids);
+            body.put("drop_author", dropAuthor);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for forward body", e);
+        }
+        return authenticatedRequest("POST", "messages/forward.php", body);
+    }
+
+    /**
+     * POST /messages/send-multi.php {chat_id, items:[{media_file_id,
+     * content}...]} — the album contract. The whole request IS one album:
+     * the SERVER assigns one fresh 64-bit group_id shared by every copy
+     * (exactly what a Telegram server does for sendMultiMedia), inserts all
+     * rows atomically and answers {group_id, messages:[...]} in item order —
+     * the dispatcher pairs each row with the request's random_id.
+     */
+    public JSONObject sendMultiMedia(long chatId, JSONArray items) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        try {
+            body.put("items", items);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for send-multi body", e);
+        }
+        return authenticatedRequest("POST", "messages/send-multi.php", body);
+    }
+
+    /** POST /chats/pin.php {chat_id, pinned} — per-user dialog pin toggle (TL_boolTrue). */
+    public JSONObject toggleDialogPin(long chatId, boolean pinned) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        try {
+            body.put("pinned", pinned);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for pin body", e);
+        }
+        return authenticatedRequest("POST", "chats/pin.php", body);
+    }
+
+    /**
+     * POST /chats/pin-order.php {chat_ids[]} — FULL sync of the pinned set
+     * in display order (first = topmost); rows not listed get unpinned
+     * server-side. Feeds from TL_messages_reorderPinnedDialogs, so drag-
+     * reorder and the preview-menu pin/unpin converge on every device.
+     */
+    public JSONObject pinOrder(int[] chatIds) {
+        JSONObject body = new JSONObject();
+        JSONArray ids = new JSONArray();
+        for (int id : chatIds) {
+            ids.put(id);
+        }
+        try {
+            body.put("chat_ids", ids);
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for pin-order body", e);
+        }
+        return authenticatedRequest("POST", "chats/pin-order.php", body);
+    }
+
     // ------------------------------------------------------------------ T32: groups + avatars + profile (backend v1.5.0)
 
     /**

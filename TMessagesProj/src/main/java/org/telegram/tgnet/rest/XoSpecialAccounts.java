@@ -185,6 +185,35 @@ public final class XoSpecialAccounts {
         return null;
     }
 
+    // ── multi-account entitlement (T56: hidden everywhere except one demo) ──
+
+    /**
+     * The ONLY account allowed to use multi-account (the drawer "Add
+     * Account" row, account switching, the settings search entry, the logout
+     * screen entry): the demo account "+11 1130". Every other account —
+     * including the other seven specials — gets the whole account section
+     * hidden; the backend has no multi-account surface to begin with
+     * (sessions are independent JWTs), so this client gate IS the product
+     * rule, not a cosmetic one.
+     */
+    public static final String MULTI_ACCOUNT_WIRE = "40411130";
+
+    /** True when the given wire phone (UserConfig phone digits) is the privileged demo account. */
+    public static boolean isMultiAccountWire(String wireDigits) {
+        return MULTI_ACCOUNT_WIRE.equals(digitsOnly(wireDigits));
+    }
+
+    /** True when the CURRENTLY selected account may use multi-account. */
+    public static boolean isMultiAccountAllowedForCurrent() {
+        try {
+            org.telegram.messenger.UserConfig config = org.telegram.messenger.UserConfig.getInstance(org.telegram.messenger.UserConfig.selectedAccount);
+            org.telegram.tgnet.TLRPC.User user = config == null ? null : config.getCurrentUser();
+            return user != null && isMultiAccountWire(user.phone);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     private static String digitsOnly(String s) {
         if (s == null) {
             return "";

@@ -5929,7 +5929,8 @@ public class AlertsCreator {
     }
 
     public static AlertDialog createAccountSelectDialog(Activity parentActivity, final AccountSelectDelegate delegate) {
-        if (UserConfig.getActivatedAccountsCount() < 2) {
+        // T56: multi-account is entitlement-gated (+11 1130 demo only).
+        if (UserConfig.getActivatedAccountsCount() < 2 || !org.telegram.tgnet.rest.XoSpecialAccounts.isMultiAccountAllowedForCurrent()) {
             return null;
         }
 
