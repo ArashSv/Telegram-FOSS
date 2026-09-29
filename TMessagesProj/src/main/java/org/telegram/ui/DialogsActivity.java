@@ -402,9 +402,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     private AnimatorSet speedAnimator;
     private ActionBarMenuItem doneItem;
     private ProxyDrawable proxyDrawable;
-    private HintView2 storyHint;
-    private boolean canShowStoryHint;
-    private boolean storyHintShown;
+    // T56: the StoryCameraHint bubble ("storyhint" pref) is removed — it was
+    // a first-run camera hint pointing at the floating pencil button, a
+    // leftover from before the story camera stopped owning that button.
     private RLottieImageView floatingButton;
     private FrameLayout floatingButtonContainer;
     private RLottieImageView floatingButton2;
@@ -520,7 +520,10 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     private boolean dialogsListFrozen;
 
     private AlertDialog permissionDialog;
-    private boolean askAboutContacts = true;
+    // T56: the contacts permission machinery (askAboutContacts pref, the
+    // pre-permission dialog and the READ/WRITE_CONTACTS/GET_ACCOUNTS request)
+    // is removed — contacts in Hermes are fictional (server-side), the
+    // manifest no longer declares the Contacts group and no dialog is shown.
 
     private boolean closeSearchFieldOnHide;
     private long searchDialogId;
@@ -2713,7 +2716,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         }
 
         if (initialDialogsType == DIALOGS_TYPE_DEFAULT) {
-            askAboutContacts = MessagesController.getGlobalNotificationsSettings().getBoolean("askAboutContacts", true);
             SharedConfig.loadProxyList();
         }
 
@@ -3151,9 +3153,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         floatingButtonContainer.setVisibility(View.GONE);
                         if (floatingButton2Container != null) {
                             floatingButton2Container.setVisibility(View.GONE);
-                        }
-                        if (storyHint != null) {
-                            storyHint.hide();
                         }
                     }
                 }
@@ -4549,19 +4548,11 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         });
 
         if (!isArchive() && initialDialogsType == DIALOGS_TYPE_DEFAULT) {
-            if (MessagesController.getInstance(currentAccount).getMainSettings().getBoolean("storyhint", true)) {
-                storyHint = new HintView2(context, HintView2.DIRECTION_RIGHT)
-                        .setRounding(8)
-                        .setDuration(8_000)
-                        .setCloseButton(true)
-                        .setMaxWidth(165)
-                        .setMultilineText(true)
-                        .setText(AndroidUtilities.replaceCharSequence("%s", LocaleController.getString(R.string.StoryCameraHint), StoryRecorder.cameraBtnSpan(context)))
-                        .setJoint(1, -40)
-                        .setBgColor(getThemedColor(Theme.key_undo_background))
-                        .setOnHiddenListener(() -> MessagesController.getInstance(currentAccount).getMainSettings().edit().putBoolean("storyhint", false).commit());
-                contentView.addView(storyHint, LayoutHelper.createFrame(LayoutHelper.MATCH_PARENT, 160, Gravity.BOTTOM | Gravity.FILL_HORIZONTAL, 0, 0, 80, 0));
-            }
+            // T56: the first-run StoryCameraHint bubble is removed. The hint
+            // talked about the story CAMERA while pointing at the floating
+            // button, which has been the plain pencil (Contacts) since T37 —
+            // a leftover that showed exactly once per install and confused
+            // users. Nothing replaces it: the pencil needs no tutorial.
         }
 
         floatingButton = new RLottieImageView(context);
@@ -6819,7 +6810,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             Activity activity = getParentActivity();
             if (activity != null) {
                 checkPermission = false;
-                boolean hasNotContactsPermission = activity.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED;
+                // T56: the contacts permission dialog and request are removed —
+                // contacts are fictional (server-side); the manifest no longer
+                // declares the Contacts group so nothing can be asked for it.
                 boolean hasNotStoragePermission = (Build.VERSION.SDK_INT <= 28 || BuildVars.NO_SCOPED_STORAGE) && activity.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED;
                 boolean hasNotNotificationsPermission = Build.VERSION.SDK_INT >= 33 && activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED;
                 AndroidUtilities.runOnUIThread(() -> {
@@ -6827,7 +6820,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                         return;
                     }
                     afterSignup = false;
-                    if (hasNotNotificationsPermission || hasNotContactsPermission || hasNotStoragePermission) {
+                    if (hasNotNotificationsPermission || hasNotStoragePermission) {
                         askingForPermissions = true;
                         if (hasNotNotificationsPermission && NotificationPermissionDialog.shouldAsk(activity)) {
                             NotificationPermissionDialog sheet = new NotificationPermissionDialog(activity, granted -> {
@@ -6842,13 +6835,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                                     FileLog.e(throwable);
                                 }
                             }
-                        } else if (hasNotContactsPermission && askAboutContacts && getUserConfig().syncContacts && activity.shouldShowRequestPermissionRationale(Manifest.permission.READ_CONTACTS)) {
-                            AlertDialog.Builder builder = AlertsCreator.createContactsPermissionDialog(activity, param -> {
-                                askAboutContacts = param != 0;
-                                MessagesController.getGlobalNotificationsSettings().edit().putBoolean("askAboutContacts", askAboutContacts).apply();
-                                askForPermissons(false);
-                            });
-                            showDialog(permissionDialog = builder.create());
                         } else if (hasNotStoragePermission && activity.shouldShowRequestPermissionRationale(Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
                             if (activity instanceof BasePermissionsActivity) {
                                 BasePermissionsActivity basePermissionsActivity = (BasePermissionsActivity) activity;
@@ -6858,7 +6844,7 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             askForPermissons(true);
                         }
                     }
-                }, afterSignup && (hasNotContactsPermission || hasNotNotificationsPermission) ? 4000 : 0);
+                }, afterSignup && hasNotNotificationsPermission ? 4000 : 0);
             }
         } else if (!onlySelect && XiaomiUtilities.isMIUI() && Build.VERSION.SDK_INT >= 19 && !XiaomiUtilities.isCustomPermissionGranted(XiaomiUtilities.OP_SHOW_WHEN_LOCKED)) {
             if (getParentActivity() == null) {
@@ -6955,9 +6941,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                     viewPages[a].dialogsAdapter.pause();
                 }
             }
-        }
-        if (storyHint != null) {
-            storyHint.hide();
         }
         Bulletin.hideVisible();
         return b;
@@ -7064,7 +7047,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             blurredView.setBackground(null);
         }
         super.onBecomeFullyHidden();
-        canShowStoryHint = true;
     }
 
     @Override
@@ -7091,11 +7073,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
         }
         updateFloatingButtonOffset();
-        if (canShowStoryHint && !storyHintShown && storyHint != null && storiesEnabled) {
-            storyHintShown = true;
-            canShowStoryHint = false;
-            storyHint.show();
-        }
         AndroidUtilities.runOnUIThread(this::createSearchViewPager, 200);
     }
 
@@ -8615,9 +8592,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
     private void updateFloatingButtonOffset() {
         if (floatingButtonContainer != null) {
             floatingButtonContainer.setTranslationY(floatingButtonTranslation - floatingButtonPanOffset - Math.max(additionalFloatingTranslation, additionalFloatingTranslation2) * (1f - floatingButtonHideProgress));
-            if (storyHint != null) {
-                storyHint.setTranslationY(floatingButtonContainer.getTranslationY());
-            }
         }
         if (floatingButton2Container != null) {
             floatingButton2Container.setTranslationY(floatingButtonTranslation - floatingButtonPanOffset - Math.max(additionalFloatingTranslation, additionalFloatingTranslation2) * (1f - floatingButtonHideProgress) + dp(44) * floatingButtonHideProgress);
@@ -8632,9 +8606,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                 floatingButton2Container.setVisibility(onlySelect && initialDialogsType != 10 || folderId != 0 || !storiesEnabled || (searchItem != null && searchItem.isSearchFieldVisible()) || isInPreviewMode() ? View.GONE : View.VISIBLE);
             }
             updateFloatingButtonOffset();
-            if (!this.storiesEnabled && storiesEnabled && storyHint != null) {
-                storyHint.show();
-            }
             this.storiesEnabled = storiesEnabled;
         }
 
@@ -10147,20 +10118,9 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
             }
             permissons.add(Manifest.permission.POST_NOTIFICATIONS);
         }
-        if (getUserConfig().syncContacts && askAboutContacts && activity.checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-            if (alert) {
-                AlertDialog.Builder builder = AlertsCreator.createContactsPermissionDialog(activity, param -> {
-                    askAboutContacts = param != 0;
-                    MessagesController.getGlobalNotificationsSettings().edit().putBoolean("askAboutContacts", askAboutContacts).commit();
-                    askForPermissons(false);
-                });
-                showDialog(permissionDialog = builder.create());
-                return;
-            }
-            permissons.add(Manifest.permission.READ_CONTACTS);
-            permissons.add(Manifest.permission.WRITE_CONTACTS);
-            permissons.add(Manifest.permission.GET_ACCOUNTS);
-        }
+        // T56: the contacts block (READ/WRITE_CONTACTS + GET_ACCOUNTS behind the
+        // createContactsPermissionDialog pre-dialog) is removed — the Contacts
+        // permission group no longer exists in this product.
         if (Build.VERSION.SDK_INT >= 33) {
             if (activity.checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
                 permissons.add(Manifest.permission.READ_MEDIA_IMAGES);
@@ -10231,14 +10191,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
                             NotificationsController.getInstance(currentAccount).showNotifications();
                         } else {
                             NotificationPermissionDialog.askLater();
-                        }
-                        break;
-                    case Manifest.permission.READ_CONTACTS:
-                        if (grantResults[a] == PackageManager.PERMISSION_GRANTED) {
-                            AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.forceImportContactsStart));
-                            getContactsController().forceImportContacts();
-                        } else {
-                            MessagesController.getGlobalNotificationsSettings().edit().putBoolean("askAboutContacts", askAboutContacts = false).commit();
                         }
                         break;
                     case Manifest.permission.WRITE_EXTERNAL_STORAGE:
@@ -11060,12 +11012,6 @@ public class DialogsActivity extends BaseFragment implements NotificationCenter.
         animatorSet.setInterpolator(floatingInterpolator);
         floatingButtonContainer.setClickable(!hide);
         animatorSet.start();
-
-        if (hide) {
-            if (storyHint != null) {
-                storyHint.hide();
-            }
-        }
     }
 
     public float getContactsAlpha() {

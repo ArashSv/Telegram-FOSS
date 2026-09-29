@@ -5635,14 +5635,9 @@ public class AlertsCreator {
         return builder;
     }
 
-    public static AlertDialog.Builder createContactsPermissionDialog(Activity parentActivity, MessagesStorage.IntCallback callback) {
-        AlertDialog.Builder builder = new AlertDialog.Builder(parentActivity);
-        builder.setTopAnimation(R.raw.permission_request_contacts, PERMISSIONS_REQUEST_TOP_ICON_SIZE, false, Theme.getColor(Theme.key_dialogTopBackground));
-        builder.setMessage(AndroidUtilities.replaceTags(LocaleController.getString("ContactsPermissionAlert", R.string.ContactsPermissionAlert)));
-        builder.setPositiveButton(LocaleController.getString("ContactsPermissionAlertContinue", R.string.ContactsPermissionAlertContinue), (dialog, which) -> callback.run(1));
-        builder.setNegativeButton(LocaleController.getString("ContactsPermissionAlertNotNow", R.string.ContactsPermissionAlertNotNow), (dialog, which) -> callback.run(0));
-        return builder;
-    }
+    // T56: createContactsPermissionDialog is removed — the Contacts permission
+    // group no longer exists in this product, so its pre-permission dialog can
+    // never be shown.
 
     public static Dialog createFreeSpaceDialog(final LaunchActivity parentActivity) {
         AlertDialog.Builder builder = new AlertDialog.Builder(parentActivity);

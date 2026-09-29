@@ -160,6 +160,11 @@ public class XoPasswordChangeFragment extends BaseFragment {
         fragmentView = parent;
 
         applyStage(STAGE_CURRENT);
+        // T56-fix: apply the theme colors on FIRST render, not only on later
+        // theme switches. updateColors() was only wired into
+        // getThemeDescriptions(), so titleView and the password field kept
+        // the platform default (black) — unreadable in night mode.
+        updateColors();
         return fragmentView;
     }
 
@@ -308,7 +313,8 @@ public class XoPasswordChangeFragment extends BaseFragment {
     public ArrayList<ThemeDescription> getThemeDescriptions() {
         return SimpleThemeDescription.createThemeDescriptions(this::updateColors,
                 Theme.key_windowBackgroundWhiteBlackText, Theme.key_windowBackgroundWhiteGrayText6,
-                Theme.key_text_RedRegular, Theme.key_chats_actionBackground, Theme.key_chats_actionIcon);
+                Theme.key_text_RedRegular, Theme.key_chats_actionBackground, Theme.key_chats_actionIcon,
+                Theme.key_windowBackgroundWhiteHintText);
     }
 
     private void updateColors() {

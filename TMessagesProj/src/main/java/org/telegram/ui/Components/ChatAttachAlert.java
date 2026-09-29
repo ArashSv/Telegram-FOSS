@@ -2347,30 +2347,12 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
                     if (!plainTextEnabled && checkCanRemoveRestrictionsByBoosts()) {
                         return;
                     }
-                    if (Build.VERSION.SDK_INT >= 23 && plainTextEnabled) {
-                        if (getContext().checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
-                            AndroidUtilities.findActivity(getContext()).requestPermissions(new String[]{Manifest.permission.READ_CONTACTS}, BasePermissionsActivity.REQUEST_CODE_ATTACH_CONTACT);
-                            return;
-                        }
-                    }
+                    // T56: the READ_CONTACTS gate is removed — the Contacts
+                    // permission group no longer exists in the manifest and
+                    // the contact list is server-side (fictional contacts).
+                    // Requesting an undeclared permission would be instantly
+                    // denied and would brick this button.
                     openContactsLayout();
-                } else if (num == 6) {
-                    if (!plainTextEnabled && checkCanRemoveRestrictionsByBoosts()) {
-                        return;
-                    }
-                    if (!AndroidUtilities.isMapsInstalled(baseFragment)) {
-                        return;
-                    }
-                    if (!plainTextEnabled) {
-                        restrictedLayout = new ChatAttachRestrictedLayout(6, this, getContext(), resourcesProvider);
-                        showLayout(restrictedLayout);
-                    } else {
-                        if (locationLayout == null) {
-                            layouts[5] = locationLayout = new ChatAttachAlertLocationLayout(this, getContext(), resourcesProvider);
-                            locationLayout.setDelegate((location, live, notify, scheduleDate) -> ((ChatActivity) baseFragment).didSelectLocation(location, live, notify, scheduleDate));
-                        }
-                        showLayout(locationLayout);
-                    }
                 } else if (num == 9) {
                     if (!pollsEnabled && checkCanRemoveRestrictionsByBoosts()) {
                         return;
@@ -3682,9 +3664,9 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
     }
 
     public void onRequestPermissionsResultFragment(int requestCode, String[] permissions, int[] grantResults) {
-        if (requestCode == BasePermissionsActivity.REQUEST_CODE_ATTACH_CONTACT && grantResults != null && grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            openContactsLayout();
-        } else if (requestCode == 30 && locationLayout != null && currentAttachLayout == locationLayout && isShowing()) {
+        // T56: the REQUEST_CODE_ATTACH_CONTACT branch is removed — the
+        // contact-attach button no longer requests anything.
+        if (requestCode == 30 && locationLayout != null && currentAttachLayout == locationLayout && isShowing()) {
             locationLayout.openShareLiveLocation();
         }
     }
@@ -5020,9 +5002,11 @@ public class ChatAttachAlert extends BottomSheet implements NotificationCenter.N
                 }
                 documentButton = buttonsCount++;
 
-                if (plainTextEnabled) {
-                    locationButton = buttonsCount++;
-                }
+                // T56: the Location attach button is removed from the root.
+                // Location permissions were removed from the product (T49) and
+                // the backend has no location-message support, so the button
+                // could only lead to a permanent "permission denied" state —
+                // a dialog for a permission that does not exist.
 
                 if (pollsEnabled) {
                     pollButton = buttonsCount++;

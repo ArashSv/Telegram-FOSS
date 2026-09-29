@@ -11,7 +11,6 @@ package org.telegram.ui;
 import static org.telegram.ui.Components.Premium.LimitReachedBottomSheet.TYPE_ACCOUNTS;
 import static org.telegram.ui.Components.Premium.LimitReachedBottomSheet.TYPE_BOOSTS_FOR_USERS;
 
-import android.Manifest;
 import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.animation.ObjectAnimator;
@@ -55,7 +54,6 @@ import android.text.style.ClickableSpan;
 import android.util.Base64;
 import android.util.Log;
 import android.util.SparseArray;
-import android.util.SparseIntArray;
 import android.view.ActionMode;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -75,7 +73,6 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.arch.core.util.Function;
-import androidx.core.app.ActivityCompat;
 import androidx.core.content.pm.ShortcutInfoCompat;
 import androidx.core.content.pm.ShortcutManagerCompat;
 import androidx.core.graphics.ColorUtils;
@@ -323,9 +320,13 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
 
     public static final int SCREEN_CAPTURE_REQUEST_CODE = 520;
 
-    public static final int BLUETOOTH_CONNECT_TYPE = 0;
-    private SparseIntArray requestedPermissions = new SparseIntArray();
-    private int requsetPermissionsPointer = 5934;
+    // T56: the custom permission-request channel (BLUETOOTH_CONNECT_TYPE ->
+    // NotificationCenter.requestPermissions -> requestedPermissions map ->
+    // NotificationCenter.permissionsGranted) is removed from the root. It was
+    // DEAD code: nothing ever posted requestPermissions after the calls
+    // feature was removed, and permissionsGranted had zero listeners.
+    // Nearby Devices (BLUETOOTH/BLUETOOTH_CONNECT) is likewise gone from the
+    // manifest, so it can no longer appear in the app permission list.
     public static boolean systemBlurEnabled;
     private Consumer<Boolean> blurListener = new Consumer<Boolean>() {
         @Override
@@ -812,7 +813,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.screenStateChanged);
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.showBulletin);
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.appUpdateAvailable);
-        NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.requestPermissions);
         NotificationCenter.getGlobalInstance().addObserver(this, NotificationCenter.billingConfirmPurchaseError);
         NotificationCenter.getInstance(currentAccount).addObserver(this, NotificationCenter.currentUserPremiumStatusChanged);
         LiteMode.addOnPowerSaverAppliedListener(this::onPowerSaver);
@@ -5904,7 +5904,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.screenStateChanged);
         NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.showBulletin);
         NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.appUpdateAvailable);
-        NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.requestPermissions);
         NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.billingConfirmPurchaseError);
 
         LiteMode.removeOnPowerSaverAppliedListener(this::onPowerSaver);
@@ -6040,12 +6039,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         VoIPFragment.onRequestPermissionsResult(requestCode, permissions, grantResults);
         StoryRecorder.onRequestPermissionsResult(requestCode, permissions, grantResults);
         NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.onRequestPermissionResultReceived, requestCode, permissions, grantResults);
-
-        if (requestedPermissions.get(requestCode, -1) >= 0) {
-            int type = requestedPermissions.get(requestCode, -1);
-            requestedPermissions.delete(requestCode);
-            NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.permissionsGranted, type);
-        }
     }
 
     @Override
@@ -6902,25 +6895,6 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                 drawerLayoutAdapter.notifyDataSetChanged();
             }
             MessagesController.getMainSettings(currentAccount).edit().remove("transcribeButtonPressed").apply();
-        } else if (id == NotificationCenter.requestPermissions) {
-            int type = (int) args[0];
-            String[] permissions = null;
-            if (type == BLUETOOTH_CONNECT_TYPE) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    permissions = new String[]{
-                            Manifest.permission.BLUETOOTH_CONNECT
-                    };
-                }
-            }
-            if (permissions != null) {
-                requsetPermissionsPointer++;
-                requestedPermissions.put(requsetPermissionsPointer, type);
-                ActivityCompat.requestPermissions(
-                        this,
-                        permissions,
-                        requsetPermissionsPointer
-                );
-            }
         } else if (id == NotificationCenter.chatSwithcedToForum) {
             long chatId = (long) args[0];
             ForumUtilities.switchAllFragmentsInStackToForum(chatId, actionBarLayout);

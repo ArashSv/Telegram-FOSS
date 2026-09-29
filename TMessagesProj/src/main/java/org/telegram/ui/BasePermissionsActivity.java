@@ -11,7 +11,6 @@ import androidx.fragment.app.FragmentActivity;
 
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
-import org.telegram.messenger.ContactsController;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.ImageLoader;
 import org.telegram.messenger.LocaleController;
@@ -61,13 +60,6 @@ public class BasePermissionsActivity extends FragmentActivity {
                         LocaleController.getString("PermissionStorageWithHint", R.string.PermissionStorageWithHint));
             } else {
                 ImageLoader.getInstance().checkMediaPaths();
-            }
-        } else if (requestCode == REQUEST_CODE_ATTACH_CONTACT) {
-            if (!granted) {
-                showPermissionErrorAlert(R.raw.permission_request_contacts, LocaleController.getString("PermissionNoContactsSharing", R.string.PermissionNoContactsSharing));
-                return false;
-            } else {
-                ContactsController.getInstance(currentAccount).forceImportContacts();
             }
         } else if (requestCode == 3 || requestCode == REQUEST_CODE_VIDEO_MESSAGE) {
             boolean audioGranted = true;

@@ -23,5 +23,22 @@
     <uses-permission android:name="android.permission.READ_SMS" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" tools:node="remove" />
 
+    <!-- T56 (task: permissions): Contacts group + Nearby Devices group are
+         removed from the product. The app-level strips below keep the MERGED
+         manifest clean even if an AAR manifest re-injects them (same reason
+         as the location strips above). Every contact in Hermes is fictional
+         (server-side) — the app never reads/writes device contacts, never
+         requests the Contacts group, and shows no permission dialogs for
+         any of the groups below. -->
+    <uses-permission android:name="android.permission.READ_CONTACTS" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" tools:node="remove" />
+    <uses-permission android:name="android.permission.GET_ACCOUNTS" tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH" tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" tools:node="remove" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" tools:node="remove" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" tools:node="remove" />
+    <uses-permission android:name="android.permission.UWB_RANGING" tools:node="remove" />
+
     <application android:name="org.telegram.messenger.ApplicationLoaderImpl" tools:replace="name" />
 </manifest>
