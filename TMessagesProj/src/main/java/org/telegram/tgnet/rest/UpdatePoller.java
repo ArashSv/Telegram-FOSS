@@ -377,14 +377,20 @@ public final class UpdatePoller {
         }
         TLRPC.TL_updateDialogPinned tl = new TLRPC.TL_updateDialogPinned();
         tl.pinned = update.optBoolean("pinned", false);
-        tl.peer = new TLRPC.TL_dialogPeer();
+        // T56-fix: TL_updateDialogPinned.peer is declared as the ABSTRACT
+        // DialogPeer (no .peer field) — build the concrete TL_dialogPeer in
+        // a typed local, fill its Peer, then assign once.
+        TLRPC.TL_dialogPeer dialogPeer = new TLRPC.TL_dialogPeer();
         if (isGroup) {
-            tl.peer.peer = new TLRPC.TL_peerChat();
-            tl.peer.peer.chat_id = chatId;
+            TLRPC.TL_peerChat peerChat = new TLRPC.TL_peerChat();
+            peerChat.chat_id = chatId;
+            dialogPeer.peer = peerChat;
         } else {
-            tl.peer.peer = new TLRPC.TL_peerUser();
-            tl.peer.peer.user_id = peerUserId;
+            TLRPC.TL_peerUser peerUser = new TLRPC.TL_peerUser();
+            peerUser.user_id = peerUserId;
+            dialogPeer.peer = peerUser;
         }
+        tl.peer = dialogPeer;
         tlUpdates.add(tl);
     }
 

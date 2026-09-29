@@ -940,7 +940,8 @@ public final class RestDispatcher {
             } catch (Exception e) {
                 // a thumb must never fail the item; the server-side link falls
                 // back to whatever the file row already carries
-                FileLog.w("RestDispatcher: uploadMedia thumb finalize failed, continuing", e);
+                // T56-fix: this FileLog has w(String) only — e(String,Throwable) is the 2-arg logger
+                FileLog.e("RestDispatcher: uploadMedia thumb finalize failed, continuing", e);
             }
         }
         // parseMedia maps the finalize file json onto the exact MessageMedia
@@ -1004,7 +1005,9 @@ public final class RestDispatcher {
         }
 
         TLRPC.TL_updates updates = new TLRPC.TL_updates();
-        ArrayList<TLRPC.Message> parsed = new ArrayList<>();
+        // T56-fix: rememberMessages takes List<TL_message> — collect the
+        // parseMessage products under their concrete type, not TLRPC.Message
+        ArrayList<TLRPC.TL_message> parsed = new ArrayList<>();
         for (int a = 0; a < messagesJson.length(); a++) {
             JSONObject msgJson = messagesJson.optJSONObject(a);
             if (msgJson == null) {
@@ -1072,7 +1075,9 @@ public final class RestDispatcher {
         }
 
         TLRPC.TL_updates updates = new TLRPC.TL_updates();
-        ArrayList<TLRPC.Message> parsed = new ArrayList<>();
+        // T56-fix: rememberMessages takes List<TL_message> — same concrete
+        // collection type as the send-multi path above
+        ArrayList<TLRPC.TL_message> parsed = new ArrayList<>();
         for (int a = 0; a < messagesJson.length(); a++) {
             JSONObject msgJson = messagesJson.optJSONObject(a);
             if (msgJson == null) {
