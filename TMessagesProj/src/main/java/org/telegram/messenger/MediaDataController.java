@@ -2187,6 +2187,14 @@ public class MediaDataController extends BaseController {
             }
         }
         if (cache) {
+            // T59: snapshot the gif revision BEFORE the local read. The local
+            // (date != 0) apply below has no server snapshot to compare with —
+            // the only correctness fence is the revision: a save/auto-collect
+            // that mutated the collection while this read sat queued on the
+            // busy storage queue makes the about-to-be-applied DB snapshot
+            // STALE, and applying it would clobber fresher chain state. The
+            // T54 server-leg guard does not cover this leg.
+            final int gifRevAtReadStart = gif ? recentGifsLocalRevision : 0;
             getMessagesStorage().getStorageQueue().postRunnable(() -> {
                 try {
                     int cacheType;
@@ -2222,7 +2230,19 @@ public class MediaDataController extends BaseController {
                     cursor.dispose();
                     AndroidUtilities.runOnUIThread(() -> {
                         if (gif) {
-                            recentGifs = arrayList;
+                            if (recentGifsLocalRevision != gifRevAtReadStart) {
+                                // T59: the DB snapshot predates a local gif
+                                // mutation (save/auto-collect/rollback landed
+                                // while this read was queued). Memory already
+                                // holds the fresher state and the chain will
+                                // converge it server-side — do NOT stomp it
+                                // with the stale list (the stomp used to be
+                                // locked in by the 1h reload throttle = the
+                                // recurring "saved gif does not stick" report).
+                                FileLog.e("loadRecents: stale local gif snapshot (read rev " + gifRevAtReadStart + " != local rev " + recentGifsLocalRevision + ") — discarded");
+                            } else {
+                                recentGifs = arrayList;
+                            }
                             loadingRecentGifs = false;
                             recentGifsLoaded = true;
                         } else {
