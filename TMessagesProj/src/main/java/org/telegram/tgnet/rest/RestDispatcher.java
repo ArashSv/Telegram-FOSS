@@ -1068,7 +1068,7 @@ public final class RestDispatcher {
             ids[a] = req.id.get(a);
         }
 
-        JSONObject sent = RestGateway.getInstance(account).forward(toChatId, ids, req.drop_author);
+        JSONObject sent = RestGateway.getInstance(account).forward(toChatId, ids, req.drop_author, req.drop_media_captions);
         JSONArray messagesJson = sent.optJSONArray("messages");
         if (messagesJson == null || messagesJson.length() != ids.length) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "forward response rows do not pair with the request ids");

@@ -423,18 +423,21 @@
         <service android:name=".KeepAliveJob"
                  android:exported="false"
                  android:permission="android.permission.BIND_JOB_SERVICE"/>
-        <service android:name=".BringAppForegroundService" android:enabled="true"  android:exported="true"/>
+        <!-- T57 hardening: fork-only internal services no longer exported
+             (any installed app could previously start them). Same-app starts
+             are unaffected by exported=false. -->
+        <service android:name=".BringAppForegroundService" android:enabled="true"  android:exported="false"/>
         <service android:name=".NotificationsService" android:enabled="true"  android:exported="true" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Foreground service that keeps push notification handling alive"/>
         </service>
         <service android:name=".NotificationRepeat" android:exported="false"/>
-        <service android:name=".VideoEncodingService" android:enabled="true" android:exported="true" android:foregroundServiceType="dataSync"/>
-        <service android:name="org.telegram.ui.Stories.recorder.StoryUploadingService" android:enabled="true" android:exported="true" android:foregroundServiceType="dataSync"/>
-        <service android:name=".ImportingService" android:enabled="true" android:exported="true" android:foregroundServiceType="dataSync"/>
+        <service android:name=".VideoEncodingService" android:enabled="true" android:exported="false" android:foregroundServiceType="dataSync"/>
+        <service android:name="org.telegram.ui.Stories.recorder.StoryUploadingService" android:enabled="true" android:exported="false" android:foregroundServiceType="dataSync"/>
+        <service android:name=".ImportingService" android:enabled="true" android:exported="false" android:foregroundServiceType="dataSync"/>
         <service android:name=".LocationSharingService"
             android:foregroundServiceType="location"
             android:enabled="true"
-            android:exported="true"/>
+            android:exported="false"/>
         <service android:name=".voip.VoIPService" android:enabled="true" android:foregroundServiceType="mediaProjection|camera|microphone|mediaPlayback"/>
         <service android:name=".MusicPlayerService" android:exported="true" android:enabled="true" android:foregroundServiceType="mediaPlayback"/>
         <service android:name=".MusicBrowserService" android:exported="true">

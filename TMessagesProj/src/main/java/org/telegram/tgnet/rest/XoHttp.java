@@ -96,6 +96,7 @@ final class XoHttp {
      */
     static Response request(String urlSpec, String method, byte[] payload,
                             String contentType, String bearerToken) throws IOException {
+        enforceHttps(urlSpec);
         HttpURLConnection conn = (HttpURLConnection) new URL(urlSpec).openConnection();
         conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
         conn.setReadTimeout(READ_TIMEOUT_MS);
@@ -136,6 +137,7 @@ final class XoHttp {
      *                   header = whole file)
      */
     static BinaryResponse binaryRequest(String urlSpec, String bearerToken, long rangeStart, long rangeEnd) throws IOException {
+        enforceHttps(urlSpec);
         HttpURLConnection conn = (HttpURLConnection) new URL(urlSpec).openConnection();
         conn.setConnectTimeout(CONNECT_TIMEOUT_MS);
         conn.setReadTimeout(READ_TIMEOUT_MS);
@@ -239,5 +241,19 @@ final class XoHttp {
             }
         }
         return new String(buffer.toByteArray(), "UTF-8");
+    }
+
+    /**
+     * T57 hardening: the transport refuses any non-https URL. The base URL
+     * (RestGateway.BASE_URL) is https by construction; this makes the scheme
+     * ENFORCED instead of merely default, so a future refactor that assembles
+     * a cleartext URL fails loudly here instead of silently shipping bearer
+     * tokens over plaintext (minSdk 19 devices allow cleartext by platform
+     * default and there is no network_security_config on this tree).
+     */
+    static void enforceHttps(String urlSpec) throws IOException {
+        if (urlSpec == null || !urlSpec.startsWith("https://")) {
+            throw new IOException("refusing non-https transport URL");
+        }
     }
 }

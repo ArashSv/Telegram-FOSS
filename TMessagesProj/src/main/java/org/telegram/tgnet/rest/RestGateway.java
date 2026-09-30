@@ -609,15 +609,18 @@ public final class RestGateway {
     // ------------------------------------------------------------------ T56: albums + forward + pin (backend v2.7.0)
 
     /**
-     * POST /messages/forward.php {to_chat_id, message_ids[], drop_author} —
-     * Telegram-style forwarding, up to 100 source messages per call (the
-     * tree batches them in TL_messages_forwardMessages). The backend copies
-     * by reference (media shared, no re-upload), stamps the forward header
-     * (origin-resolution + forward-of-forward inheritance server-side) and
-     * answers {messages:[...]} in EXACT request order — the dispatcher pairs
-     * each row with req.random_id for the TL_updateMessageID echoes.
+     * POST /messages/forward.php {to_chat_id, message_ids[], drop_author,
+     * drop_media_captions} — Telegram-style forwarding, up to 100 source
+     * messages per call (the tree batches them in TL_messages_forwardMessages).
+     * The backend copies by reference (media shared, no re-upload), stamps the
+     * forward header (origin-resolution + forward-of-forward inheritance
+     * server-side) and answers {messages:[...]} in EXACT request order — the
+     * dispatcher pairs each row with req.random_id for the TL_updateMessageID
+     * echoes. v2.9.1 (T57): drop_media_captions rides along, so the
+     * "without captions" forward finally strips the text server-side instead
+     * of re-introducing it when the server rows replace the placeholders.
      */
-    public JSONObject forward(long toChatId, int[] messageIds, boolean dropAuthor) {
+    public JSONObject forward(long toChatId, int[] messageIds, boolean dropAuthor, boolean dropMediaCaptions) {
         JSONObject body = putNumber(new JSONObject(), "to_chat_id", toChatId);
         JSONArray ids = new JSONArray();
         for (int id : messageIds) {
@@ -626,6 +629,7 @@ public final class RestGateway {
         try {
             body.put("message_ids", ids);
             body.put("drop_author", dropAuthor);
+            body.put("drop_media_captions", dropMediaCaptions);
         } catch (JSONException e) {
             throw new IllegalStateException("static JSON build failed for forward body", e);
         }
