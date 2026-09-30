@@ -44,6 +44,7 @@ import org.telegram.messenger.R;
 import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.rest.XoSpecialAccounts;
 import org.telegram.ui.ActionBar.BaseFragment;
 import org.telegram.ui.ActionBar.BottomSheet;
 import org.telegram.ui.ActionBar.Theme;
@@ -616,6 +617,21 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
         return fragmentView;
     }
 
+    /**
+     * T59 — the product's short special display numbers ("+11 1130",
+     * "+22 2009": prefix 11/22 + 4 digits, 6 digits total) map to their
+     * unique wire phone exactly like the login flow (XoSpecialAccounts).
+     * Returns "+404xxxxx", or null when the entry is not a known special —
+     * the caller then applies the generic 7-15 digit rule.
+     */
+    private static String mapShortSpecial(String code, String number) {
+        if (code == null || number == null || code.length() != 2 || number.length() != 4) {
+            return null;
+        }
+        String wire = XoSpecialAccounts.wirePhoneOf(code, number);
+        return wire == null ? null : "+" + wire;
+    }
+
     private void doOnDone() {
         if (donePressed || parentFragment == null || parentFragment.getParentActivity() == null) {
             return;
@@ -652,11 +668,23 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
         }
         final String phoneValue;
         if (fullInternational) {
-            phoneValue = PhoneFormat.stripExceptNumbers(typedPhone, true);
-            int digitCount = PhoneFormat.stripExceptNumbers(typedPhone).length();
+            String withPlus = PhoneFormat.stripExceptNumbers(typedPhone, true);
+            String digits = PhoneFormat.stripExceptNumbers(typedPhone);
+            int digitCount = digits.length();
             // Same validity rule as the backend (Validator::phone):
-            // 7-15 digits — not a country-specific pattern.
+            // 7-15 digits — not a country-specific pattern — EXCEPT the
+            // product's short special display numbers ("+11 1130",
+            // "+22 2009"; 6 digits): those are legitimate identities here
+            // and map to their wire phone exactly like the login flow
+            // (T59: they used to be unreachable from this sheet — the '+'
+            // form shook silently and the country-code form drew a raw
+            // VALIDATION_ERROR from the server's 7-15 digit rule).
             if (digitCount < 7 || digitCount > 15) {
+                withPlus = mapShortSpecial(
+                        digits.substring(0, Math.min(2, digitCount)),
+                        digitCount > 2 ? digits.substring(2) : "");
+            }
+            if (withPlus == null) {
                 Vibrator v = (Vibrator) parentFragment.getParentActivity().getSystemService(Context.VIBRATOR_SERVICE);
                 if (v != null) {
                     v.vibrate(200);
@@ -664,8 +692,29 @@ public class NewContactBottomSheet extends BottomSheet implements AdapterView.On
                 AndroidUtilities.shakeView(phoneField);
                 return;
             }
+            phoneValue = withPlus;
         } else {
-            phoneValue = "+" + codeField.getText().toString() + phoneField.getText().toString();
+            // T59: the country-code path applies the SAME namespace rules the
+            // backend enforces — a short special entry ("11" + "1130") maps to
+            // its wire phone instead of drawing a raw VALIDATION_ERROR from
+            // the server; a generic entry still needs 7-15 digits.
+            String code = PhoneFormat.stripExceptNumbers(codeField.getText().toString());
+            String number = PhoneFormat.stripExceptNumbers(phoneField.getText().toString());
+            String mapped = mapShortSpecial(code, number);
+            if (mapped != null) {
+                phoneValue = mapped;
+            } else {
+                int digitCount = code.length() + number.length();
+                if (digitCount < 7 || digitCount > 15) {
+                    Vibrator v = (Vibrator) parentFragment.getParentActivity().getSystemService(Context.VIBRATOR_SERVICE);
+                    if (v != null) {
+                        v.vibrate(200);
+                    }
+                    AndroidUtilities.shakeView(phoneField);
+                    return;
+                }
+                phoneValue = "+" + codeField.getText().toString() + phoneField.getText().toString();
+            }
         }
         donePressed = true;
         showEditDoneProgress(true, true);
