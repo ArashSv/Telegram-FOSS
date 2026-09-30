@@ -79,6 +79,9 @@ public final class XoSpecialAccounts {
         SPECIALS.add(new Special("22", "2020"));
         SPECIALS.add(new Special("22", "2220"));
         SPECIALS.add(new Special("22", "0222"));
+        // T56: the +22 demo set the owner requested (password = the number)
+        SPECIALS.add(new Special("22", "2009"));
+        SPECIALS.add(new Special("22", "0000"));
     }
 
     /** Prefixes accepted by the hidden editing unlock. */
@@ -185,16 +188,16 @@ public final class XoSpecialAccounts {
         return null;
     }
 
-    // ── multi-account entitlement (T56: hidden everywhere except one demo) ──
+    // ── multi-account entitlement (T56) ─────────────────────────────
 
     /**
      * The ONLY account allowed to use multi-account (the drawer "Add
      * Account" row, account switching, the settings search entry, the logout
      * screen entry): the demo account "+11 1130". Every other account —
-     * including the other seven specials — gets the whole account section
-     * hidden; the backend has no multi-account surface to begin with
-     * (sessions are independent JWTs), so this client gate IS the product
-     * rule, not a cosmetic one.
+     * including the other specials — gets the account surfaces hidden.
+     * Server mirror: AuthController.MULTI_ACCOUNT_OWNER_PHONE ("+40411130") —
+     * every login/register/check-phone for another number MUST present this
+     * session's bearer token (the STRICT v2.9.0 entitlement).
      */
     public static final String MULTI_ACCOUNT_WIRE = "40411130";
 
@@ -203,14 +206,58 @@ public final class XoSpecialAccounts {
         return MULTI_ACCOUNT_WIRE.equals(digitsOnly(wireDigits));
     }
 
-    /** True when the CURRENTLY selected account may use multi-account. */
-    public static boolean isMultiAccountAllowedForCurrent() {
+    /**
+     * The account slot whose CURRENT user is the owner (+11 1130), or -1.
+     * Scans every activated account slot — the entitlement belongs to the
+     * SESSION, not to whichever account happens to be selected right now
+     * (T56 fix: switching to a non-owner account used to hide the whole
+     * multi-account UI; the owner session in its slot must keep it alive).
+     */
+    public static int findOwnerAccountNum() {
         try {
-            org.telegram.messenger.UserConfig config = org.telegram.messenger.UserConfig.getInstance(org.telegram.messenger.UserConfig.selectedAccount);
-            org.telegram.tgnet.TLRPC.User user = config == null ? null : config.getCurrentUser();
-            return user != null && isMultiAccountWire(user.phone);
+            for (int a = 0; a < org.telegram.messenger.UserConfig.MAX_ACCOUNT_COUNT; a++) {
+                org.telegram.messenger.UserConfig config = org.telegram.messenger.UserConfig.getInstance(a);
+                if (config == null || !config.isClientActivated()) {
+                    continue;
+                }
+                org.telegram.tgnet.TLRPC.User user = config.getCurrentUser();
+                if (user != null && isMultiAccountWire(user.phone)) {
+                    return a;
+                }
+            }
         } catch (Throwable t) {
-            return false;
+            FileLog.e(t);
+        }
+        return -1;
+    }
+
+    /**
+     * True when ANY logged-in session belongs to the owner (+11 1130) —
+     * the multi-account capability. The previously selected account is
+     * irrelevant: the owner's session keys the entitlement wherever it sits.
+     */
+    public static boolean isMultiAccountAllowedForCurrent() {
+        return findOwnerAccountNum() >= 0;
+    }
+
+    /**
+     * The owner session's access token, or null when no owner session (or no
+     * stored tokens). RestGateway attaches it as the Authorization bearer of
+     * the three session-minting calls (check-phone / register / login) — the
+     * server-side v2.9.0 entitlement accepts ONLY this key for logging other
+     * numbers in, so the Add Account flow works end to end.
+     */
+    public static String ownerSessionBearer() {
+        int owner = findOwnerAccountNum();
+        if (owner < 0) {
+            return null;
+        }
+        try {
+            RestAuthStore.TokenSet tokens = RestAuthStore.getInstance(owner).getTokens();
+            return tokens != null ? tokens.accessToken : null;
+        } catch (Throwable t) {
+            FileLog.e(t);
+            return null;
         }
     }
 

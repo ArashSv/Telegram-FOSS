@@ -2399,6 +2399,10 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                     needHideProgress(false);
                     if (error.text != null && error.text.startsWith("FLOOD_WAIT")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoTooManyAttempts));
+                    } else if (error.text != null && error.text.contains("MULTI_ACCOUNT_FORBIDDEN")) {
+                        // T56: the STRICT server entitlement — logging into another
+                        // number requires the owner (+11 1130) session.
+                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoMultiAccountForbidden));
                     } else if (error.text != null && error.text.contains("VALIDATION_ERROR")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidPhoneNumber", R.string.InvalidPhoneNumber));
                     } else if (error.text != null && (error.text.contains("MALFORMED_RESPONSE") || error.text.equals("NO_CONNECTION") || error.code == -1)) {
@@ -2634,6 +2638,10 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                         showError(getString(R.string.XoWrongPassword));
                     } else if (error.text != null && error.text.startsWith("FLOOD_WAIT")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoTooManyAttempts));
+                    } else if (error.text != null && error.text.contains("MULTI_ACCOUNT_FORBIDDEN")) {
+                        // T56: the STRICT server entitlement — logging into another
+                        // number requires the owner (+11 1130) session.
+                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoMultiAccountForbidden));
                     } else if (error.text != null && (error.text.contains("MALFORMED_RESPONSE") || error.text.equals("NO_CONNECTION") || error.code == -1)) {
                         // T50: transport-level failure (non-JSON reply, WAF page, no network)
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoConnectionError));
@@ -2859,6 +2867,10 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoTooManyAttempts));
                     } else if (error.text != null && error.text.equals("ACCOUNT_EXISTS")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoNumberTakenTitle));
+                    } else if (error.text != null && error.text.contains("MULTI_ACCOUNT_FORBIDDEN")) {
+                        // T56: the STRICT server entitlement — creating an account
+                        // for another number requires the owner (+11 1130) session.
+                        needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoMultiAccountForbidden));
                     } else if (error.text != null && error.text.contains("VALIDATION_ERROR")) {
                         showError(getString(R.string.XoPasswordTooShort));
                     } else if (error.text != null && (error.text.contains("MALFORMED_RESPONSE") || error.text.equals("NO_CONNECTION") || error.code == -1)) {

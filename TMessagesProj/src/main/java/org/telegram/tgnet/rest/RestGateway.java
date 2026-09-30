@@ -125,9 +125,16 @@ public final class RestGateway {
      * registered → the "already registered" dialog → password entry. Backend
      * codes surfaced on failure: VALIDATION_ERROR, TOO_MANY_ATTEMPTS.
      */
+    /**
+     * POST /auth/check-phone.php — T50 password-first auth. T56: when an
+     * owner (+11 1130) session exists anywhere in this install, its bearer
+     * rides along — the server-side STRICT entitlement accepts ONLY that key
+     * for probing/logging other numbers.
+     */
     public CheckPhoneResult checkPhone(String phone) {
         JSONObject body = put(new JSONObject(), "phone", phone);
-        JSONObject response = unauthenticatedRequest("POST", "auth/check-phone.php", body);
+        JSONObject response = unauthenticatedRequest("POST", "auth/check-phone.php", body,
+                XoSpecialAccounts.ownerSessionBearer());
         return new CheckPhoneResult(
                 response.optBoolean("registered", false),
                 response.optString("password_hint", null));
@@ -145,7 +152,8 @@ public final class RestGateway {
         if (hint != null && hint.length() > 0) {
             put(body, "hint", hint);
         }
-        JSONObject response = unauthenticatedRequest("POST", "auth/register.php", body);
+        JSONObject response = unauthenticatedRequest("POST", "auth/register.php", body,
+                XoSpecialAccounts.ownerSessionBearer());
         persistTokens(response);
         return new VerifyResult(true, selfUser(response));
     }
@@ -158,7 +166,8 @@ public final class RestGateway {
     public VerifyResult loginWithPassword(String phone, String password) {
         JSONObject body = put(new JSONObject(), "phone", phone);
         put(body, "password", password);
-        JSONObject response = unauthenticatedRequest("POST", "auth/login.php", body);
+        JSONObject response = unauthenticatedRequest("POST", "auth/login.php", body,
+                XoSpecialAccounts.ownerSessionBearer());
         persistTokens(response);
         return new VerifyResult(false, selfUser(response));
     }
@@ -898,7 +907,17 @@ public final class RestGateway {
     // ------------------------------------------------------------------ request core
 
     private JSONObject unauthenticatedRequest(String method, String path, JSONObject body) {
-        XoHttp.Response response = httpCall(method, path, body, null);
+        return unauthenticatedRequest(method, path, body, null);
+    }
+
+    /**
+     * Pre-auth request with an OPTIONAL entitlement bearer (T56): the owner
+     * (+11 1130) session token rides on check-phone / register / login so the
+     * server's strict multi-account gate accepts the call. Null keeps the
+     * request truly anonymous (owner bootstrap on a fresh install).
+     */
+    private JSONObject unauthenticatedRequest(String method, String path, JSONObject body, String entitlementBearer) {
+        XoHttp.Response response = httpCall(method, path, body, entitlementBearer);
         return parseEnvelope(response, path);
     }
 
