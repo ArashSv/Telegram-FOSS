@@ -4,6 +4,7 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ApplicationLoader;
+import org.telegram.messenger.ContactsController;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessagesController;
@@ -321,6 +322,24 @@ public final class UpdatePoller {
                     // is the no-network local branch (no event echo loop).
                     handleDialogPin(update, tlUpdates);
                     break;
+                case "privacy":
+                    // T61: MY privacy rules changed on another device
+                    // (backend v2.10 owner-only event). Re-pulls the
+                    // authoritative rule set once and re-applies every
+                    // supported key through the canonical
+                    // ContactsController.setPrivacyRules cascade — all
+                    // observers (settings rows, editors, contact ordering)
+                    // refresh without bespoke UI code.
+                    handlePrivacyChanged();
+                    break;
+                case "blocked":
+                    // T61: MY blocked list changed on another device (backend
+                    // v2.10 owner-only event). Merges directly into
+                    // MessagesController.blockePeers — the same state the
+                    // block/unblock UI consumes — and posts
+                    // blockedUsersDidLoad (banners/input gates refresh).
+                    handleBlockedChanged(update);
+                    break;
                 default:
                     break;
             }
@@ -575,6 +594,101 @@ public final class UpdatePoller {
                 MediaDataController.getInstance(account).loadRecents(MediaDataController.TYPE_IMAGE, true, false, true);
             } catch (Throwable e) {
                 FileLog.e("UpdatePoller: gifs force-reload failed", e);
+            }
+        });
+    }
+
+    /**
+     * T61: sync event {@code privacy} — MY rule set changed on another
+     * device. The HTTP fetch runs here (sync thread); parsing reuses the
+     * dispatcher's wire→TL converters; the apply posts to the UI thread
+     * because setPrivacyRules fires NotificationCenter + contact re-sorting.
+     * The response also carries the exception users — hydrated through
+     * putUsers so the editors render names, not bare ids.
+     */
+    private void handlePrivacyChanged() {
+        try {
+            JSONObject answer = RestGateway.getInstance(account).privacyGet();
+            JSONObject rules = answer == null ? null : answer.optJSONObject("rules");
+            if (rules == null) {
+                return;
+            }
+            ArrayList<TLRPC.User> users = RestDispatcher.parsePrivacyUsers(answer);
+            ArrayList<TLRPC.PrivacyRule> lastseen = rules.has("status_timestamp") ? RestDispatcher.tlRulesFromWire(rules.getJSONObject("status_timestamp")) : null;
+            ArrayList<TLRPC.PrivacyRule> photo = rules.has("photo") ? RestDispatcher.tlRulesFromWire(rules.getJSONObject("photo")) : null;
+            ArrayList<TLRPC.PrivacyRule> about = rules.has("about") ? RestDispatcher.tlRulesFromWire(rules.getJSONObject("about")) : null;
+            ArrayList<TLRPC.PrivacyRule> invite = rules.has("chat_invite") ? RestDispatcher.tlRulesFromWire(rules.getJSONObject("chat_invite")) : null;
+            AndroidUtilities.runOnUIThread(() -> {
+                try {
+                    MessagesController.getInstance(account).putUsers(users, false);
+                    ContactsController contactsController = ContactsController.getInstance(account);
+                    if (lastseen != null) {
+                        contactsController.setPrivacyRules(lastseen, ContactsController.PRIVACY_RULES_TYPE_LASTSEEN);
+                    }
+                    if (photo != null) {
+                        contactsController.setPrivacyRules(photo, ContactsController.PRIVACY_RULES_TYPE_PHOTO);
+                    }
+                    if (about != null) {
+                        contactsController.setPrivacyRules(about, ContactsController.PRIVACY_RULES_TYPE_BIO);
+                    }
+                    if (invite != null) {
+                        contactsController.setPrivacyRules(invite, ContactsController.PRIVACY_RULES_TYPE_INVITE);
+                    }
+                } catch (Throwable e) {
+                    FileLog.e("UpdatePoller: privacy event apply failed", e);
+                }
+            });
+        } catch (Exception e) {
+            FileLog.e("UpdatePoller: privacy event fetch failed", e);
+        }
+    }
+
+    /**
+     * T61: sync event {@code blocked} — MY blocked list changed on another
+     * device. Payload: {user_id, blocked, user?, date?}. The merge mirrors
+     * the local optimistic branch of blockPeer/unblockPeer (count only
+     * adjusted while a real count is loaded) and reuses their notification
+     * (blockedUsersDidLoad) so every banner/input gate re-evaluates.
+     */
+    private void handleBlockedChanged(JSONObject update) {
+        if (update == null) {
+            return;
+        }
+        final long userId = update.optLong("user_id", 0);
+        if (userId == 0) {
+            return;
+        }
+        final boolean blocked = update.optBoolean("blocked", true);
+        TLRPC.TL_user user = null;
+        JSONObject userJson = update.optJSONObject("user");
+        if (userJson != null) {
+            try {
+                user = TlJsonMapper.parseUser(userJson, false);
+            } catch (Exception e) {
+                FileLog.e("UpdatePoller: blocked event user parse failed", e);
+            }
+        }
+        final TLRPC.TL_user parsedUser = user;
+        AndroidUtilities.runOnUIThread(() -> {
+            try {
+                MessagesController messagesController = MessagesController.getInstance(account);
+                if (blocked) {
+                    messagesController.blockePeers.put(userId, 1);
+                    if (messagesController.totalBlockedCount >= 0) {
+                        messagesController.totalBlockedCount++;
+                    }
+                } else {
+                    messagesController.blockePeers.delete(userId);
+                    if (messagesController.totalBlockedCount > 0) {
+                        messagesController.totalBlockedCount--;
+                    }
+                }
+                if (parsedUser != null) {
+                    messagesController.putUser(parsedUser, false);
+                }
+                NotificationCenter.getInstance(account).postNotificationName(NotificationCenter.blockedUsersDidLoad);
+            } catch (Throwable e) {
+                FileLog.e("UpdatePoller: blocked event apply failed", e);
             }
         });
     }

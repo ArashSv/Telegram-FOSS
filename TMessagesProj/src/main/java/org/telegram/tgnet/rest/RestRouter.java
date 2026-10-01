@@ -166,6 +166,13 @@ public final class RestRouter {
     public static final int ROUTE_SAVE_GIF = 39;          // TL_messages_saveGif -> POST /gifs/save.php {file_id, unsave} (TL_boolTrue)
     public static final int ROUTE_UPDATE_PROFILE_PHOTO = 40; // TL_photos_updateProfilePhoto -> POST /users/delete-photo.php {} (TL_inputPhotoEmpty = delete; TL_photos_photo)
 
+    // T61 — privacy rules + blocked users (backend v2.10.0)
+    public static final int ROUTE_GET_PRIVACY = 46;   // TL_account_getPrivacy -> GET /privacy/get.php (one call carries ALL keys; handler filters)
+    public static final int ROUTE_SET_PRIVACY = 47;   // TL_account_setPrivacy -> POST /privacy/set.php {key, base, allowed[], disallowed[]}
+    public static final int ROUTE_GET_BLOCKED = 48;   // TL_contacts_getBlocked -> GET /blocked/list.php (TL_contacts_blockedSlice)
+    public static final int ROUTE_BLOCK_PEER = 49;    // TL_contacts_block -> POST /blocked/add.php {user_id} (TL_boolTrue)
+    public static final int ROUTE_UNBLOCK_PEER = 50;  // TL_contacts_unblock -> POST /blocked/remove.php {user_id} (TL_boolTrue)
+
     // T56 — albums, forward, dialog pin (backend v2.7.0)
     public static final int ROUTE_FORWARD = 41;             // TL_messages_forwardMessages -> POST /messages/forward.php {to_chat_id, message_ids[], drop_author}
     public static final int ROUTE_UPLOAD_MEDIA = 42;        // TL_messages_uploadMedia -> per-item finalize (response MessageMedia with the backend file id planted)
@@ -272,6 +279,19 @@ public final class RestRouter {
         ROUTES.put(TLRPC.TL_messages_sendMultiMedia.class, ROUTE_SEND_MULTI_MEDIA);
         ROUTES.put(TLRPC.TL_messages_toggleDialogPin.class, ROUTE_TOGGLE_DIALOG_PIN);
         ROUTES.put(TLRPC.TL_messages_reorderPinnedDialogs.class, ROUTE_REORDER_PINNED);
+        // T61 — the whole upstream privacy surface (settings rows, per-key
+        // editors, blocked users) was default-denied: every GET answered
+        // XO_NOT_ROUTED (rows rendered a lying "Nobody" placeholder), every
+        // Save popped an error dialog, the blocked list spun forever and
+        // block/unblock were session-local only (the backend never learned).
+        // Routed to the v2.10.0 privacy + blocked endpoints; the upstream
+        // state machine (ContactsController.setPrivacyRules + the
+        // privacyRulesUpdated cascade) now works unchanged on REST transport.
+        ROUTES.put(TLRPC.TL_account_getPrivacy.class, ROUTE_GET_PRIVACY);
+        ROUTES.put(TLRPC.TL_account_setPrivacy.class, ROUTE_SET_PRIVACY);
+        ROUTES.put(TLRPC.TL_contacts_getBlocked.class, ROUTE_GET_BLOCKED);
+        ROUTES.put(TLRPC.TL_contacts_block.class, ROUTE_BLOCK_PEER);
+        ROUTES.put(TLRPC.TL_contacts_unblock.class, ROUTE_UNBLOCK_PEER);
     }
 
     private RestRouter() {

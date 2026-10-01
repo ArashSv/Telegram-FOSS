@@ -7738,6 +7738,14 @@ public class MessagesController extends BaseController implements NotificationCe
                 }
                 loadingBlockedPeers = false;
                 getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
+            } else {
+                // T61: a failed load MUST release the gate — the old code only
+                // ever ran the success branch, so one transport error left
+                // loadingBlockedPeers stuck true and every later
+                // getBlockedPeers call early-returned: the "Blocked Users" row
+                // and list screen spun forever behind an empty state.
+                loadingBlockedPeers = false;
+                getNotificationCenter().postNotificationName(NotificationCenter.blockedUsersDidLoad);
             }
         }));
     }

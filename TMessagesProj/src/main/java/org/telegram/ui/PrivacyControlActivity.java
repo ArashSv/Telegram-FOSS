@@ -1085,14 +1085,11 @@ public class PrivacyControlActivity extends BaseFragment implements Notification
                 }
                 photoForRestDescriptionRow = rowCount++;
             }
-            if (rulesType == PRIVACY_RULES_TYPE_LASTSEEN && (currentType != TYPE_EVERYBODY || currentMinus != null && !currentMinus.isEmpty())) {
-                readRow = rowCount++;
-                readDetailRow = rowCount++;
-            }
-            if (rulesType == PRIVACY_RULES_TYPE_LASTSEEN && !getMessagesController().premiumFeaturesBlocked()) {
-                readPremiumRow = rowCount++;
-                readPremiumDetailRow = rowCount++;
-            }
+            // v2.10 (T61): the "hide read time" toggle + premium hint rows are
+            // retired — hide_read_marks lives in TL_globalPrivacySettings,
+            // which this backend does not model; the toggle never persisted
+            // and nothing enforced it. The row fields stay -1 (inert) so the
+            // surrounding branches compile untouched.
         }
 
         setMessageText();

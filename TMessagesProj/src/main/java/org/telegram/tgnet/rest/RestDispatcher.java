@@ -261,6 +261,21 @@ public final class RestDispatcher {
                 case RestRouter.ROUTE_REORDER_PINNED:
                     response = handleReorderPinned(account, (TLRPC.TL_messages_reorderPinnedDialogs) object);
                     break;
+                case RestRouter.ROUTE_GET_PRIVACY:
+                    response = handleGetPrivacy(account, (TLRPC.TL_account_getPrivacy) object);
+                    break;
+                case RestRouter.ROUTE_SET_PRIVACY:
+                    response = handleSetPrivacy(account, (TLRPC.TL_account_setPrivacy) object);
+                    break;
+                case RestRouter.ROUTE_GET_BLOCKED:
+                    response = handleGetBlocked(account, (TLRPC.TL_contacts_getBlocked) object);
+                    break;
+                case RestRouter.ROUTE_BLOCK_PEER:
+                    response = handleBlockPeer(account, (TLRPC.TL_contacts_block) object);
+                    break;
+                case RestRouter.ROUTE_UNBLOCK_PEER:
+                    response = handleUnblockPeer(account, (TLRPC.TL_contacts_unblock) object);
+                    break;
                 default:
                     error = tlError(400, "XO_NOT_ROUTED");
                     break;
@@ -1417,6 +1432,247 @@ public final class RestDispatcher {
         long fileId = ((TLRPC.TL_inputDocument) req.id).id;
         RestGateway.getInstance(account).saveGif(fileId, req.unsave);
         return new TLRPC.TL_boolTrue();
+    }
+
+    // ------------------------------------------------------------------ T61: privacy rules + blocked users
+
+    /**
+     * T61 — TL_account_getPrivacy. The backend serves the WHOLE rule set in
+     * one GET (privacy/get.php); this handler filters the requested key out
+     * of it and answers the upstream contract {@code TL_account_privacyRules
+     * {rules, users, chats}}. Rule order emitted: [AllowUsers?,
+     * DisallowUsers?, base] — fillNextRows/formatRulesString interpret the
+     * classes, not the order.
+     *
+     * <p>Keys the backend does not model (phone — global by product decision
+     * since v2.8.0; calls/p2p/voice — no VoIP; forwards/birthday/added-by-
+     * phone — not modeled) answer SUCCESS with an empty rules list: the
+     * loader marks the slot loaded (no retry storm) and the UI shows its
+     * neutral state instead of an error dialog. The privacy screen only
+     * offers the four modeled keys.
+     */
+    private static TLObject handleGetPrivacy(int account, TLRPC.TL_account_getPrivacy req) {
+        JSONObject answer = RestGateway.getInstance(account).privacyGet();
+        TLRPC.TL_account_privacyRules result = new TLRPC.TL_account_privacyRules();
+        result.users.addAll(parsePrivacyUsers(answer));
+        String key = wireKeyFor(req.key);
+        if (key == null) {
+            return result; // unsupported key: loaded-and-empty, never an error
+        }
+        JSONObject rules = answer.optJSONObject("rules");
+        JSONObject mine = rules == null ? null : rules.optJSONObject(key);
+        if (mine != null) {
+            result.rules.addAll(tlRulesFromWire(mine));
+        }
+        return result;
+    }
+
+    /**
+     * T61 — TL_account_setPrivacy. Converts the upstream input rule list
+     * ([AllowUsers/DisallowUsers/ChatParticipants…, base, AllowPremium?])
+     * into the backend wire shape {key, base, allowed[], disallowed[]};
+     * chat-participant and premium rules carry no product semantics here and
+     * are ignored (the editors that could build them are user-only). Answers
+     * the canonical {@code TL_account_privacyRules} so PrivacyControlActivity's
+     * success path (putUsers + ContactsController.setPrivacyRules + the
+     * privacyRulesUpdated cascade) runs unchanged.
+     */
+    private static TLObject handleSetPrivacy(int account, TLRPC.TL_account_setPrivacy req) {
+        String key = wireKeyFor(req.key);
+        if (key == null) {
+            throw new XoApiException(400, "PRIVACY_KEY_UNSUPPORTED", "privacy key not modeled by this backend");
+        }
+        String base = null;
+        ArrayList<Long> allowed = new ArrayList<>();
+        ArrayList<Long> disallowed = new ArrayList<>();
+        for (int a = 0, N = req.rules.size(); a < N; a++) {
+            TLRPC.InputPrivacyRule rule = req.rules.get(a);
+            if (rule instanceof TLRPC.TL_inputPrivacyValueAllowUsers) {
+                for (int b = 0, M = ((TLRPC.TL_inputPrivacyValueAllowUsers) rule).users.size(); b < M; b++) {
+                    long id = inputUserId(account, ((TLRPC.TL_inputPrivacyValueAllowUsers) rule).users.get(b));
+                    if (id > 0) {
+                        allowed.add(id);
+                    }
+                }
+            } else if (rule instanceof TLRPC.TL_inputPrivacyValueDisallowUsers) {
+                for (int b = 0, M = ((TLRPC.TL_inputPrivacyValueDisallowUsers) rule).users.size(); b < M; b++) {
+                    long id = inputUserId(account, ((TLRPC.TL_inputPrivacyValueDisallowUsers) rule).users.get(b));
+                    if (id > 0) {
+                        disallowed.add(id);
+                    }
+                }
+            } else if (rule instanceof TLRPC.TL_inputPrivacyValueAllowAll) {
+                base = "everybody";
+            } else if (rule instanceof TLRPC.TL_inputPrivacyValueDisallowAll) {
+                base = "nobody";
+            } else if (rule instanceof TLRPC.TL_inputPrivacyValueAllowContacts) {
+                base = "contacts";
+            }
+            // TL_inputPrivacyValueAllowPremium / *ChatParticipants: not modeled — skip
+        }
+        if (base == null) {
+            throw new XoApiException(400, "VALIDATION_ERROR", "setPrivacy carries no base rule");
+        }
+        org.json.JSONArray allowedJson = allowed.isEmpty() ? null : new org.json.JSONArray(allowed);
+        org.json.JSONArray disallowedJson = disallowed.isEmpty() ? null : new org.json.JSONArray(disallowed);
+        JSONObject answer = RestGateway.getInstance(account).privacySet(key, base, allowedJson, disallowedJson);
+        TLRPC.TL_account_privacyRules result = new TLRPC.TL_account_privacyRules();
+        result.users.addAll(parsePrivacyUsers(answer));
+        JSONObject rules = answer.optJSONObject("rules");
+        JSONObject mine = rules == null ? null : rules.optJSONObject(key);
+        if (mine != null) {
+            result.rules.addAll(tlRulesFromWire(mine));
+        }
+        return result;
+    }
+
+    /**
+     * T61 — TL_contacts_getBlocked → blocked/list.php. Answer contract
+     * {@code TL_contacts_blockedSlice{count, blocked[], users[]}} — exactly
+     * what MessagesController.getBlockedPeers consumes (count = full list
+     * size; page size &lt; limit marks the end reached).
+     */
+    private static TLObject handleGetBlocked(int account, TLRPC.TL_contacts_getBlocked req) {
+        JSONObject answer = RestGateway.getInstance(account).blockedList(req.offset, req.limit);
+        TLRPC.TL_contacts_blockedSlice result = new TLRPC.TL_contacts_blockedSlice();
+        org.json.JSONArray arr = answer.optJSONArray("blocked");
+        if (arr != null) {
+            for (int a = 0; a < arr.length(); a++) {
+                JSONObject item = arr.optJSONObject(a);
+                if (item == null) {
+                    continue;
+                }
+                TLRPC.TL_peerBlocked blocked = new TLRPC.TL_peerBlocked();
+                TLRPC.TL_peerUser peer = new TLRPC.TL_peerUser();
+                peer.user_id = item.optLong("user_id", 0);
+                blocked.peer_id = peer;
+                blocked.date = item.optInt("date", nowSeconds());
+                result.blocked.add(blocked);
+            }
+        }
+        result.count = Math.max(answer.optInt("count", 0), result.blocked.size());
+        result.users.addAll(parsePrivacyUsers(answer));
+        return result;
+    }
+
+    /**
+     * T61 — TL_contacts_block → blocked/add.php. The upstream consumer
+     * (MessagesController.blockPeer) applies its local optimistic state
+     * BEFORE the call and ignores the response body; a typed error here
+     * (self-block) still surfaces as the generic failure path. Contract:
+     * {@code TL_boolTrue}.
+     */
+    private static TLObject handleBlockPeer(int account, TLRPC.TL_contacts_block req) {
+        long userId = inputPeerId(account, req.id);
+        if (userId <= 0) {
+            throw new XoApiException(400, "PEER_INVALID", "block carries no resolvable user peer");
+        }
+        if (userId == UserConfig.getInstance(account).clientUserId) {
+            throw new XoApiException(400, "VALIDATION_ERROR", "cannot block yourself");
+        }
+        RestGateway.getInstance(account).blockedAdd(userId);
+        return new TLRPC.TL_boolTrue();
+    }
+
+    /** T61 — TL_contacts_unblock → blocked/remove.php. Contract: {@code TL_boolTrue}. */
+    private static TLObject handleUnblockPeer(int account, TLRPC.TL_contacts_unblock req) {
+        long userId = inputPeerId(account, req.id);
+        if (userId <= 0) {
+            throw new XoApiException(400, "PEER_INVALID", "unblock carries no resolvable user peer");
+        }
+        RestGateway.getInstance(account).blockedRemove(userId);
+        return new TLRPC.TL_boolTrue();
+    }
+
+    /** T61: InputPrivacyKey → backend wire key, or null when not modeled. */
+    private static String wireKeyFor(TLRPC.InputPrivacyKey key) {
+        if (key instanceof TLRPC.TL_inputPrivacyKeyStatusTimestamp) {
+            return "status_timestamp";
+        } else if (key instanceof TLRPC.TL_inputPrivacyKeyProfilePhoto) {
+            return "photo";
+        } else if (key instanceof TLRPC.TL_inputPrivacyKeyAbout) {
+            return "about";
+        } else if (key instanceof TLRPC.TL_inputPrivacyKeyChatInvite) {
+            return "chat_invite";
+        }
+        return null;
+    }
+
+    /** T61: InputUser → user id (Self resolves to the current client user; Empty/unmodeled → -1). */
+    private static long inputUserId(int account, TLRPC.InputUser user) {
+        if (user instanceof TLRPC.TL_inputUser) {
+            return ((TLRPC.TL_inputUser) user).user_id;
+        } else if (user instanceof TLRPC.TL_inputUserSelf) {
+            return UserConfig.getInstance(account).clientUserId;
+        }
+        return -1;
+    }
+
+    /** T61: InputPeer → user id (Self resolves to the current client user; Empty/unmodeled → -1). */
+    private static long inputPeerId(int account, TLRPC.InputPeer peer) {
+        if (peer instanceof TLRPC.TL_inputPeerUser) {
+            return ((TLRPC.TL_inputPeerUser) peer).user_id;
+        } else if (peer instanceof TLRPC.TL_inputPeerSelf) {
+            return UserConfig.getInstance(account).clientUserId;
+        }
+        return -1;
+    }
+
+    /** T61: one wire rule {base, allowed[], disallowed[]} → the upstream
+     * PrivacyRule list. Emitted order [AllowUsers?, DisallowUsers?, base] —
+     * every consumer iterates and type-switches, order is irrelevant.
+     * Package-visible: the UpdatePoller privacy event reuses it. */
+    static ArrayList<TLRPC.PrivacyRule> tlRulesFromWire(JSONObject mine) {
+        ArrayList<TLRPC.PrivacyRule> out = new ArrayList<>();
+        org.json.JSONArray allowed = mine.optJSONArray("allowed");
+        if (allowed != null && allowed.length() > 0) {
+            TLRPC.TL_privacyValueAllowUsers rule = new TLRPC.TL_privacyValueAllowUsers();
+            for (int a = 0; a < allowed.length(); a++) {
+                rule.users.add(allowed.optLong(a));
+            }
+            out.add(rule);
+        }
+        org.json.JSONArray disallowed = mine.optJSONArray("disallowed");
+        if (disallowed != null && disallowed.length() > 0) {
+            TLRPC.TL_privacyValueDisallowUsers rule = new TLRPC.TL_privacyValueDisallowUsers();
+            for (int a = 0; a < disallowed.length(); a++) {
+                rule.users.add(disallowed.optLong(a));
+            }
+            out.add(rule);
+        }
+        String base = mine.optString("base", "everybody");
+        if ("contacts".equals(base)) {
+            out.add(new TLRPC.TL_privacyValueAllowContacts());
+        } else if ("nobody".equals(base)) {
+            out.add(new TLRPC.TL_privacyValueDisallowAll());
+        } else {
+            out.add(new TLRPC.TL_privacyValueAllowAll());
+        }
+        return out;
+    }
+
+    /** T61: the response's users[] (public json of exception users) → parsed
+     * TL_user list. Package-visible: the UpdatePoller privacy event reuses it. */
+    static ArrayList<TLRPC.User> parsePrivacyUsers(JSONObject answer) {
+        ArrayList<TLRPC.User> users = new ArrayList<>();
+        org.json.JSONArray arr = answer == null ? null : answer.optJSONArray("users");
+        if (arr != null) {
+            for (int a = 0; a < arr.length(); a++) {
+                JSONObject userJson = arr.optJSONObject(a);
+                if (userJson == null) {
+                    continue;
+                }
+                try {
+                    TLRPC.TL_user user = TlJsonMapper.parseUser(userJson, false);
+                    if (user != null) {
+                        users.add(user);
+                    }
+                } catch (Exception e) {
+                    FileLog.e("RestDispatcher: privacy users parse failed", e);
+                }
+            }
+        }
+        return users;
     }
 
     /**

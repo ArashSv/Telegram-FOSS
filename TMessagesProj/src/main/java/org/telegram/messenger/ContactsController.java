@@ -2690,23 +2690,23 @@ public class ContactsController extends BaseController {
     }
 
     public void loadPrivacySettings() {
-        if (loadingDeleteInfo == 0) {
-            loadingDeleteInfo = 1;
-            TLRPC.TL_account_getAccountTTL req = new TLRPC.TL_account_getAccountTTL();
-            getConnectionsManager().sendRequest(req, (response, error) -> AndroidUtilities.runOnUIThread(() -> {
-                if (error == null) {
-                    TLRPC.TL_accountDaysTTL ttl = (TLRPC.TL_accountDaysTTL) response;
-                    deleteAccountTTL = ttl.days;
-                    loadingDeleteInfo = 2;
-                } else {
-                    loadingDeleteInfo = 0;
-                }
-                getNotificationCenter().postNotificationName(NotificationCenter.privacyRulesUpdated);
-            }));
-        }
-        loadGlobalPrivacySetting();
+        // T61: the delete-account TTL + global-privacy fetches are gone with
+        // their (removed) dead rows — the backend models neither. The four
+        // MODELED keys (last seen / photo / bio / invite) are fetched for
+        // real; every other upstream key is marked LOADED-empty so no
+        // unrouted request fires and no retry storm runs.
         for (int a = 0; a < loadingPrivacyInfo.length; a++) {
             if (loadingPrivacyInfo[a] != 0) {
+                continue;
+            }
+            // T61: only the keys the backend models are actually fetched. The
+            // rest (calls/p2p — no VoIP; forwards/birthday/added-by-phone —
+            // not modeled; phone — global by product decision since v2.8.0)
+            // are marked LOADED with an empty result so no request is wasted
+            // and the loader never retries them.
+            if (a != PRIVACY_RULES_TYPE_LASTSEEN && a != PRIVACY_RULES_TYPE_INVITE
+                    && a != PRIVACY_RULES_TYPE_PHOTO && a != PRIVACY_RULES_TYPE_BIO) {
+                loadingPrivacyInfo[a] = 2;
                 continue;
             }
             loadingPrivacyInfo[a] = 1;
@@ -2721,32 +2721,11 @@ public class ContactsController extends BaseController {
                 case PRIVACY_RULES_TYPE_INVITE:
                     req.key = new TLRPC.TL_inputPrivacyKeyChatInvite();
                     break;
-                case PRIVACY_RULES_TYPE_CALLS:
-                    req.key = new TLRPC.TL_inputPrivacyKeyPhoneCall();
-                    break;
-                case PRIVACY_RULES_TYPE_P2P:
-                    req.key = new TLRPC.TL_inputPrivacyKeyPhoneP2P();
-                    break;
                 case PRIVACY_RULES_TYPE_PHOTO:
                     req.key = new TLRPC.TL_inputPrivacyKeyProfilePhoto();
                     break;
                 case PRIVACY_RULES_TYPE_BIO:
                     req.key = new TLRPC.TL_inputPrivacyKeyAbout();
-                    break;
-                case PRIVACY_RULES_TYPE_FORWARDS:
-                    req.key = new TLRPC.TL_inputPrivacyKeyForwards();
-                    break;
-                case PRIVACY_RULES_TYPE_PHONE:
-                    req.key = new TLRPC.TL_inputPrivacyKeyPhoneNumber();
-                    break;
-                case PRIVACY_RULES_TYPE_VOICE_MESSAGES:
-                    req.key = new TLRPC.TL_inputPrivacyKeyVoiceMessages();
-                    break;
-                case PRIVACY_RULES_TYPE_BIRTHDAY:
-                    req.key = new TLRPC.TL_inputPrivacyKeyBirthday();
-                    break;
-                case PRIVACY_RULES_TYPE_ADDED_BY_PHONE:
-                    req.key = new TLRPC.TL_inputPrivacyKeyAddedByPhone();
                     break;
                 default:
                     continue;
@@ -2765,33 +2744,13 @@ public class ContactsController extends BaseController {
                         case PRIVACY_RULES_TYPE_INVITE:
                             groupPrivacyRules = rules.rules;
                             break;
-                        case PRIVACY_RULES_TYPE_CALLS:
-                            callPrivacyRules = rules.rules;
-                            break;
-                        case PRIVACY_RULES_TYPE_P2P:
-                            p2pPrivacyRules = rules.rules;
-                            break;
                         case PRIVACY_RULES_TYPE_PHOTO:
                             profilePhotoPrivacyRules = rules.rules;
                             break;
                         case PRIVACY_RULES_TYPE_BIO:
                             bioPrivacyRules = rules.rules;
                             break;
-                        case PRIVACY_RULES_TYPE_BIRTHDAY:
-                            birthdayPrivacyRules = rules.rules;
-                            break;
-                        case PRIVACY_RULES_TYPE_FORWARDS:
-                            forwardsPrivacyRules = rules.rules;
-                            break;
-                        case PRIVACY_RULES_TYPE_PHONE:
-                            phonePrivacyRules = rules.rules;
-                            break;
-                        case PRIVACY_RULES_TYPE_VOICE_MESSAGES:
-                            voiceMessagesRules = rules.rules;
-                            break;
-                        case PRIVACY_RULES_TYPE_ADDED_BY_PHONE:
                         default:
-                            addedByPhonePrivacyRules = rules.rules;
                             break;
                     }
                     loadingPrivacyInfo[num] = 2;

@@ -612,7 +612,8 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
                 updateRows();
             }
         } if (id == NotificationCenter.didUpdateGlobalAutoDeleteTimer) {
-            if (listAdapter != null) {
+            // T61: the auto-delete row no longer exists (autoDeleteMesages = -1)
+            if (autoDeleteMesages >= 0 && listAdapter != null) {
                 listAdapter.notifyItemChanged(autoDeleteMesages);
             }
         }
@@ -627,7 +628,11 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
 
         securitySectionRow = rowCount++;
         passwordRow = rowCount++;
-        autoDeleteMesages = rowCount++;
+        // v2.10 (T61): the message auto-delete timer row is gone — default
+        // message TTL is MTProto surface this REST backend does not model
+        // (no TTL column, no route); the row only ever presented a timer
+        // that silently did nothing.
+        autoDeleteMesages = -1;
         passcodeRow = rowCount++;
         if (currentPassword != null ? currentPassword.login_email_pattern != null : SharedConfig.hasEmailLogin) {
             emailLoginRow = rowCount++;
@@ -642,8 +647,11 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
                 SharedConfig.saveConfig();
             }
         }
-        sessionsRow = rowCount++;
-        sessionsDetailRow = rowCount++;
+        // v2.10 (T61): the sessions/devices rows are gone —
+        // TL_account_getAuthorizations has no REST equivalent, the screen
+        // only ever spun on a permanent loading state.
+        sessionsRow = -1;
+        sessionsDetailRow = -1;
 
         privacySectionRow = rowCount++;
         // v2.8.0: the "Phone Number" privacy row is REMOVED by product
@@ -651,35 +659,37 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
         // (UserMapper::publicJson serves every user's own number), so a
         // per-account "who can see my number" toggle is dead MTProto
         // surface that would only mislead. Do not re-add it.
+        // v2.10 (T61): the same honesty pass removed forwards / calls /
+        // voice / non-contact-premium / birthday — every one presented a
+        // RULE the backend cannot enforce (no VoIP, no forward attribution,
+        // no birthday field, no premium); they rendered a lying "Nobody"
+        // placeholder and every Save popped an error dialog. The remaining
+        // rows (last seen, photo, bio, groups) are server-enforced for real.
         lastSeenRow = rowCount++;
         profilePhotoRow = rowCount++;
-        forwardsRow = rowCount++;
-        callsRow = rowCount++;
+        forwardsRow = -1;
+        callsRow = -1;
         groupsDetailRow = -1;
-        if (!getMessagesController().premiumFeaturesBlocked() || getUserConfig().isPremium()) {
-            voicesRow = rowCount++;
-            noncontactsRow = rowCount++;
-        } else {
-            voicesRow = -1;
-            noncontactsRow = -1;
-        }
-        birthdayRow = rowCount++;
+        voicesRow = -1;
+        noncontactsRow = -1;
+        birthdayRow = -1;
         bioRow = rowCount++;
         groupsRow = rowCount++;
         privacyShadowRow = rowCount++;
 
-        if (getMessagesController().autoarchiveAvailable || getUserConfig().isPremium()) {
-            newChatsHeaderRow = rowCount++;
-            newChatsRow = rowCount++;
-            newChatsSectionRow = rowCount++;
-        } else {
-            newChatsHeaderRow = -1;
-            newChatsRow = -1;
-            newChatsSectionRow = -1;
-        }
-        advancedSectionRow = rowCount++;
-        deleteAccountRow = rowCount++;
-        deleteAccountDetailRow = rowCount++;
+        // v2.10 (T61): archive&mute new chats section removed — it echoed to
+        // the dead TL_account_setGlobalPrivacySettings route; the toggle never
+        // persisted and nothing enforced it.
+        newChatsHeaderRow = -1;
+        newChatsRow = -1;
+        newChatsSectionRow = -1;
+
+        // v2.10 (T61): delete-account-if-away section removed —
+        // TL_account_get/setAccountTTL are unrouted and account deletion is a
+        // server-side operation, out of this product's scope.
+        advancedSectionRow = -1;
+        deleteAccountRow = -1;
+        deleteAccountDetailRow = -1;
         botsSectionRow = rowCount++;
         if (getUserConfig().hasSecureData) {
             passportRow = rowCount++;
@@ -764,11 +774,12 @@ public class PrivacySettingsActivity extends BaseFragment implements Notificatio
     public static String formatRulesString(AccountInstance accountInstance, int rulesType) {
         ArrayList<TLRPC.PrivacyRule> privacyRules = accountInstance.getContactsController().getPrivacyRules(rulesType);
         if (privacyRules == null || privacyRules.size() == 0) {
-            if (rulesType == 3) {
-                return LocaleController.getString("P2PNobody", R.string.P2PNobody);
-            } else {
-                return LocaleController.getString("LastSeenNobody", R.string.LastSeenNobody);
-            }
+            // T61: the old fallback rendered a hard-coded "Nobody" — a lie
+            // whenever the rule simply hadn't loaded (which, pre-REST-wiring,
+            // was ALWAYS). The row-binding layer treats null as "no value";
+            // modeled keys now always carry real rules, so this only shows
+            // while data is in flight.
+            return null;
         }
         int type = -1;
         int plus = 0;
