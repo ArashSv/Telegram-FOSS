@@ -36,7 +36,10 @@ def wd(method, path, out=None, inp=None):
                            (["--data-binary", "@" + inp, "-H", "Content-Type: application/octet-stream"] if inp else []) +
                            (["-o", out] if out else []) +
                            ["-w", "%{http_code}", WEB + path], capture_output=True)
-        code = r.stdout.decode(errors="replace").strip().rsplit("\n", 1)[-1]
+        # The server writes a body like "Resource Created" BEFORE curl's
+        # %{http_code} with NO newline separator; HTTP codes are always the
+        # final 3 characters of the output, so parse from the tail.
+        code = r.stdout.decode(errors="replace").strip()[-3:]
         if code.startswith(("2", "3")):
             return True
         time.sleep(1 + attempt)
