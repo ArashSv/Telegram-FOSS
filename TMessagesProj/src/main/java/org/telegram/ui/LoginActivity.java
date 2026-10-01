@@ -425,14 +425,27 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
         }
     }
 
+    /**
+     * v2.9.3 auth-context: the no-arg constructor is the BOOTSTRAP flow
+     * (first login, post-logout login, re-auth of an inactive install) —
+     * the three session-minting calls go out anonymously and the server
+     * never gates them. The (int) constructor is the ADDITIVE flow (the
+     * entitlement-gated Add-Account entry points): the calls present the
+     * most privileged live session, and the server enforces the
+     * multi-account policy on that basis.
+     */
+    private final String authBearer;
+
     public LoginActivity() {
         super();
+        this.authBearer = null; // bootstrap: anonymous by design
     }
 
     public LoginActivity(int account) {
         super();
         currentAccount = account;
         newAccount = true;
+        this.authBearer = XoSpecialAccounts.additiveAuthBearer();
     }
 
     public LoginActivity changeEmail(Runnable onFinishCallback) {
@@ -2373,7 +2386,7 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
         private void checkPhoneViaRest(final String phone) {
             Bundle params = new Bundle();
             params.putString("phoneFormated", phone);
-            RestAuthController.checkPhone(currentAccount, phone, new RestAuthController.Callback<RestGateway.CheckPhoneResult>() {
+            RestAuthController.checkPhone(currentAccount, phone, authBearer, new RestAuthController.Callback<RestGateway.CheckPhoneResult>() {
                 @Override
                 public void onResult(RestGateway.CheckPhoneResult result) {
                     nextPressed = false;
@@ -2400,8 +2413,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                     if (error.text != null && error.text.startsWith("FLOOD_WAIT")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoTooManyAttempts));
                     } else if (error.text != null && error.text.contains("MULTI_ACCOUNT_FORBIDDEN")) {
-                        // T56: the STRICT server entitlement — logging into another
-                        // number requires the owner (+11 1130) session.
+                        // v2.9.3: the entitlement is additive-only — a session-bearing
+                        // client tried to add a non-owner second account. Bootstrap
+                        // logins are never gated, so first-time users never see this.
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoMultiAccountForbidden));
                     } else if (error.text != null && error.text.contains("VALIDATION_ERROR")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString("InvalidPhoneNumber", R.string.InvalidPhoneNumber));
@@ -2618,7 +2632,7 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             needShowProgress(0);
             AndroidUtilities.hideKeyboard(codeField);
             errorTextView.setVisibility(GONE);
-            RestAuthController.loginWithPassword(currentAccount, requestPhone, codeField.getText().toString(), new RestAuthController.Callback<RestGateway.VerifyResult>() {
+            RestAuthController.loginWithPassword(currentAccount, requestPhone, codeField.getText().toString(), authBearer, new RestAuthController.Callback<RestGateway.VerifyResult>() {
                 @Override
                 public void onResult(RestGateway.VerifyResult result) {
                     nextPressed = false;
@@ -2639,8 +2653,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                     } else if (error.text != null && error.text.startsWith("FLOOD_WAIT")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoTooManyAttempts));
                     } else if (error.text != null && error.text.contains("MULTI_ACCOUNT_FORBIDDEN")) {
-                        // T56: the STRICT server entitlement — logging into another
-                        // number requires the owner (+11 1130) session.
+                        // v2.9.3: the entitlement is additive-only — a session-bearing
+                        // client tried to add a non-owner second account. Bootstrap
+                        // logins are never gated, so first-time users never see this.
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoMultiAccountForbidden));
                     } else if (error.text != null && (error.text.contains("MALFORMED_RESPONSE") || error.text.equals("NO_CONNECTION") || error.code == -1)) {
                         // T50: transport-level failure (non-JSON reply, WAF page, no network)
@@ -2842,7 +2857,7 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
             nextPressed = true;
             needShowProgress(0);
             AndroidUtilities.hideKeyboard(field);
-            RestAuthController.register(currentAccount, requestPhone, firstPassword, value.length() > 0 ? value : null, new RestAuthController.Callback<RestGateway.VerifyResult>() {
+            RestAuthController.register(currentAccount, requestPhone, firstPassword, value.length() > 0 ? value : null, authBearer, new RestAuthController.Callback<RestGateway.VerifyResult>() {
                 @Override
                 public void onResult(RestGateway.VerifyResult result) {
                     nextPressed = false;
@@ -2868,8 +2883,9 @@ public class LoginActivity extends BaseFragment implements NotificationCenter.No
                     } else if (error.text != null && error.text.equals("ACCOUNT_EXISTS")) {
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoNumberTakenTitle));
                     } else if (error.text != null && error.text.contains("MULTI_ACCOUNT_FORBIDDEN")) {
-                        // T56: the STRICT server entitlement — creating an account
-                        // for another number requires the owner (+11 1130) session.
+                        // v2.9.3: the entitlement is additive-only — a session-bearing
+                        // client tried to add a non-owner second account. Bootstrap
+                        // logins are never gated, so first-time users never see this.
                         needShowAlert(getString(R.string.RestorePasswordNoEmailTitle), getString(R.string.XoMultiAccountForbidden));
                     } else if (error.text != null && error.text.contains("VALIDATION_ERROR")) {
                         showError(getString(R.string.XoPasswordTooShort));

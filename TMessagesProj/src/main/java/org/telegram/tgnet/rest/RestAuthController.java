@@ -39,11 +39,11 @@ public final class RestAuthController {
     private RestAuthController() {
     }
 
-    /** POST /auth/check-phone.php off the UI thread (T50). */
-    public static void checkPhone(int account, String phone, Callback<RestGateway.CheckPhoneResult> callback) {
+    /** POST /auth/check-phone.php off the UI thread (T50; v2.9.3 auth context). */
+    public static void checkPhone(int account, String phone, String authBearer, Callback<RestGateway.CheckPhoneResult> callback) {
         IO_QUEUE.execute(() -> {
             try {
-                RestGateway.CheckPhoneResult result = RestGateway.getInstance(account).checkPhone(phone);
+                RestGateway.CheckPhoneResult result = RestGateway.getInstance(account).checkPhone(phone, authBearer);
                 AndroidUtilities.runOnUIThread(() -> callback.onResult(result));
             } catch (Exception e) {
                 FileLog.e("RestAuthController: checkPhone failed", e);
@@ -53,13 +53,13 @@ public final class RestAuthController {
         });
     }
 
-    /** POST /auth/register.php off the UI thread — new number + password setup (T50). */
-    public static void register(int account, String phone, String password, String hint,
+    /** POST /auth/register.php off the UI thread — new number + password setup (T50; v2.9.3 auth context). */
+    public static void register(int account, String phone, String password, String hint, String authBearer,
                                 Callback<RestGateway.VerifyResult> callback) {
         IO_QUEUE.execute(() -> {
             try {
                 RestGateway.VerifyResult result = RestGateway.getInstance(account)
-                        .register(phone, password, hint);
+                        .register(phone, password, hint, authBearer);
                 AndroidUtilities.runOnUIThread(() -> callback.onResult(result));
             } catch (Exception e) {
                 FileLog.e("RestAuthController: register failed", e);
@@ -69,13 +69,13 @@ public final class RestAuthController {
         });
     }
 
-    /** POST /auth/login.php off the UI thread — existing number + password (T50). */
-    public static void loginWithPassword(int account, String phone, String password,
+    /** POST /auth/login.php off the UI thread — existing number + password (T50; v2.9.3 auth context). */
+    public static void loginWithPassword(int account, String phone, String password, String authBearer,
                                          Callback<RestGateway.VerifyResult> callback) {
         IO_QUEUE.execute(() -> {
             try {
                 RestGateway.VerifyResult result = RestGateway.getInstance(account)
-                        .loginWithPassword(phone, password);
+                        .loginWithPassword(phone, password, authBearer);
                 AndroidUtilities.runOnUIThread(() -> callback.onResult(result));
             } catch (Exception e) {
                 FileLog.e("RestAuthController: loginWithPassword failed", e);
