@@ -22,6 +22,7 @@ BASE = os.environ.get("API_BASE", "https://xorbit.ir/tele").rstrip("/")
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0 Safari/537.36"
 PASSWORD = "xo-test-951"
 MODE = sys.argv[1] if len(sys.argv) > 1 else "baseline"
+OWNER_PHONE = "+40411130"  # the owner's +11 1130 (multi-account keying number)
 
 
 def fresh_phone():
@@ -144,7 +145,19 @@ def main():
     if v:
         print(f"SERVICE VERSION: {v.group(0)}", flush=True)
 
-    # 2. check-phone (fresh number) ---------------------------------------------
+    # 2. check-phone (OWNER's own number, NO bearer) -----------------------------
+    # verify: HTTP 200 expected (bootstrap case 1 — the owner's own number
+    # with no bearer is open under the v2.9.3 session-state-aware gate).
+    # baseline: report-only.
+    code, body = http("POST", f"{prefix}/check-phone.php", {"phone": OWNER_PHONE})
+    if code == "000":
+        transport_ok = False
+    if MODE == "verify":
+        step("check-phone-owner", code, body, expect_200)
+    else:
+        step("check-phone-owner", code, body)
+
+    # 3. check-phone (fresh number) ---------------------------------------------
     code, body = http("POST", f"{prefix}/check-phone.php", {"phone": phone})
     if code == "000":
         transport_ok = False
@@ -156,7 +169,7 @@ def main():
     print(f"NOTE: check-phone path shape that works: {prefix}/check-phone.php "
           f"(tried /api/v1/auth/ first)", flush=True)
 
-    # 3. register ---------------------------------------------------------------
+    # 4. register ---------------------------------------------------------------
     code, body = http("POST", f"{prefix}/register.php",
                       {"phone": phone, "password": PASSWORD})
     if code == "000":
@@ -167,7 +180,7 @@ def main():
         step("register", code, body)
     bearer = extract_token(body) or ""
 
-    # 4. login (fresh number) ----------------------------------------------------
+    # 5. login (fresh number) ----------------------------------------------------
     code, body = http("POST", f"{prefix}/login.php",
                       {"phone": phone, "password": PASSWORD})
     if code == "000":
@@ -179,7 +192,7 @@ def main():
     bearer = extract_token(body) or bearer
     auth = {"Authorization": f"Bearer {bearer}"} if bearer else {}
 
-    # 5. login for a DIFFERENT fresh number WITH the fresh account's bearer ------
+    # 6. login for a DIFFERENT fresh number WITH the fresh account's bearer ------
     code, body = http("POST", f"{prefix}/login.php",
                       {"phone": other, "password": "x"}, headers=auth)
     if code == "000":
@@ -189,7 +202,7 @@ def main():
     else:
         step("login-other-with-bearer", code, body)
 
-    # 6. self re-auth: SAME fresh number WITH its own bearer ----------------------
+    # 7. self re-auth: SAME fresh number WITH its own bearer ----------------------
     code, body = http("POST", f"{prefix}/login.php",
                       {"phone": phone, "password": PASSWORD}, headers=auth)
     if code == "000":

@@ -43,4 +43,5 @@ jobs:
           WD_PASS: ${{ secrets.WD_PASS }}
         run: |
           python3 .github/backend-ops/deploy_live.py .github/backend-ops/live
+          python3 .github/backend-ops/bump_version.py
           python3 .github/backend-ops/smoke.py verify
