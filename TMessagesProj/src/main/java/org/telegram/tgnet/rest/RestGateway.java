@@ -776,6 +776,65 @@ public final class RestGateway {
         return authenticatedRequest("POST", "gifs/save.php", body);
     }
 
+    // ------------------------------------------------------------------ T61: privacy rules + blocked users
+
+    /**
+     * GET /privacy/get.php — the caller's WHOLE privacy rule set in one
+     * payload: {ok, rules:{<key>:{base, allowed[], disallowed[]}}, users:[…],
+     * updated_at}. Keys are the wire strings ("status_timestamp", "photo",
+     * "about", "chat_invite"); the dispatcher filters per request key. The
+     * users array carries the public json of every exception user referenced
+     * by any rule (upstream putUsers hydrates them).
+     */
+    public JSONObject privacyGet() {
+        return authenticatedRequest("GET", "privacy/get.php", null);
+    }
+
+    /**
+     * POST /privacy/set.php {key, base, allowed?, disallowed?} — write ONE
+     * key's rule (base = "everybody" | "contacts" | "nobody"; exception id
+     * arrays optional). Answers the same shape as privacy/get (the written
+     * key + full users list), so the dispatcher can return a genuine
+     * TL_account_privacyRules and the upstream cascade fires unchanged.
+     */
+    public JSONObject privacySet(String key, String base, org.json.JSONArray allowed, org.json.JSONArray disallowed) {
+        JSONObject body = put(new JSONObject(), "key", key);
+        try {
+            body.put("base", base);
+            if (allowed != null) {
+                body.put("allowed", allowed);
+            }
+            if (disallowed != null) {
+                body.put("disallowed", disallowed);
+            }
+        } catch (JSONException e) {
+            throw new IllegalStateException("static JSON build failed for privacy/set", e);
+        }
+        return authenticatedRequest("POST", "privacy/set.php", body);
+    }
+
+    /**
+     * GET /blocked/list.php?offset=&limit= — the caller's blocked list,
+     * newest first: {ok, count, blocked:[{user_id, date}], users:[…]}
+     * (users = public json for the page's ids). count = the FULL list size
+     * (slice semantics: blockedEndReached derives from page size < limit).
+     */
+    public JSONObject blockedList(int offset, int limit) {
+        return authenticatedRequest("GET", "blocked/list.php?offset=" + offset + "&limit=" + limit, null);
+    }
+
+    /** POST /blocked/add.php {user_id} — block a user (idempotent). */
+    public JSONObject blockedAdd(long userId) {
+        JSONObject body = putNumber(new JSONObject(), "user_id", userId);
+        return authenticatedRequest("POST", "blocked/add.php", body);
+    }
+
+    /** POST /blocked/remove.php {user_id} — unblock a user (idempotent). */
+    public JSONObject blockedRemove(long userId) {
+        JSONObject body = putNumber(new JSONObject(), "user_id", userId);
+        return authenticatedRequest("POST", "blocked/remove.php", body);
+    }
+
     // ------------------------------------------------------------------ T33: usernames + bio + deep links
 
     /**
