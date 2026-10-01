@@ -188,16 +188,28 @@ public final class XoSpecialAccounts {
         return null;
     }
 
-    // ── multi-account entitlement (T56) ─────────────────────────────
+    // ── multi-account entitlement (T56, contract v2.9.3) ────────────
 
     /**
-     * The ONLY account allowed to use multi-account (the drawer "Add
-     * Account" row, account switching, the settings search entry, the logout
-     * screen entry): the demo account "+11 1130". Every other account —
-     * including the other specials — gets the account surfaces hidden.
-     * Server mirror: AuthController.MULTI_ACCOUNT_OWNER_PHONE ("+40411130") —
-     * every login/register/check-phone for another number MUST present this
-     * session's bearer token (the STRICT v2.9.0 entitlement).
+     * The ONLY account allowed to USE multi-account (the drawer "Add
+     * Account" row, account switching, the settings search entry, the
+     * logout screen entry): the demo account "+11 1130". Every other
+     * account — including the other specials — gets the account surfaces
+     * hidden. Server mirror: AuthController.MULTI_ACCOUNT_OWNER_PHONE
+     * ("+40411130") decides the same entitlement from the PRESENTED
+     * session (v2.9.3 session-aware contract):
+     *
+     *   no valid bearer  -> bootstrap (first login, post-logout login,
+     *                       registration) — always allowed, never gated;
+     *   bearer == target -> self re-auth — always allowed;
+     *   bearer == owner  -> multi-account — allowed for any number;
+     *   other bearer     -> clean MULTI_ACCOUNT_FORBIDDEN refusal.
+     *
+     * Login itself is NEVER gated by this: authentication bootstraps a
+     * session and cannot require one. (The v2.9.0 "STRICT" form put the
+     * gate at the bootstrap layer and locked every first-time user out —
+     * fixed in server v2.9.3; the client now passes an explicit auth
+     * context instead of always attaching the owner bearer.)
      */
     public static final String MULTI_ACCOUNT_WIRE = "40411130";
 
@@ -241,11 +253,10 @@ public final class XoSpecialAccounts {
     }
 
     /**
-     * The owner session's access token, or null when no owner session (or no
-     * stored tokens). RestGateway attaches it as the Authorization bearer of
-     * the three session-minting calls (check-phone / register / login) — the
-     * server-side v2.9.0 entitlement accepts ONLY this key for logging other
-     * numbers in, so the Add Account flow works end to end.
+     * The owner session's access token, or null when no owner session (or
+     * no stored tokens). v2.9.3: used only as the additive-auth credential
+     * (see {@link #additiveAuthBearer()}); the gateway no longer attaches
+     * it by itself.
      */
     public static String ownerSessionBearer() {
         int owner = findOwnerAccountNum();
@@ -254,6 +265,35 @@ public final class XoSpecialAccounts {
         }
         try {
             RestAuthStore.TokenSet tokens = RestAuthStore.getInstance(owner).getTokens();
+            return tokens != null ? tokens.accessToken : null;
+        } catch (Throwable t) {
+            FileLog.e(t);
+            return null;
+        }
+    }
+
+    /**
+     * v2.9.3: the credential presented on an ADDITIVE auth request (logging
+     * into an additional account while this install already holds sessions):
+     * the most privileged live session we hold — the owner's token when an
+     * owner session exists (the multi-account entitlement key, wherever its
+     * slot sits), otherwise the selected account's own token so the server
+     * can classify the request as a non-owner add and refuse it cleanly.
+     * Bootstrap flows never call this: the no-arg LoginActivity passes a
+     * null bearer explicitly and stays anonymous.
+     */
+    public static String additiveAuthBearer() {
+        String owner = ownerSessionBearer();
+        if (owner != null) {
+            return owner;
+        }
+        try {
+            org.telegram.messenger.UserConfig config =
+                    org.telegram.messenger.UserConfig.getInstance(org.telegram.messenger.UserConfig.selectedAccount);
+            if (config == null || !config.isClientActivated()) {
+                return null;
+            }
+            RestAuthStore.TokenSet tokens = RestAuthStore.getInstance(org.telegram.messenger.UserConfig.selectedAccount).getTokens();
             return tokens != null ? tokens.accessToken : null;
         } catch (Throwable t) {
             FileLog.e(t);

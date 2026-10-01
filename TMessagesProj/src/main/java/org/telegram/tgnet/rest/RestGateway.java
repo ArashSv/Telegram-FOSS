@@ -126,15 +126,15 @@ public final class RestGateway {
      * codes surfaced on failure: VALIDATION_ERROR, TOO_MANY_ATTEMPTS.
      */
     /**
-     * POST /auth/check-phone.php — T50 password-first auth. T56: when an
-     * owner (+11 1130) session exists anywhere in this install, its bearer
-     * rides along — the server-side STRICT entitlement accepts ONLY that key
-     * for probing/logging other numbers.
+     * POST /auth/check-phone.php — T50 password-first auth. v2.9.3: the
+     * caller decides the auth context — null = bootstrap (anonymous; the
+     * server never gates first-time logins), non-null = the presented
+     * session the server's session-aware entitlement classifies (self
+     * re-auth vs owner multi-account vs clean additive refusal).
      */
-    public CheckPhoneResult checkPhone(String phone) {
+    public CheckPhoneResult checkPhone(String phone, String authBearer) {
         JSONObject body = put(new JSONObject(), "phone", phone);
-        JSONObject response = unauthenticatedRequest("POST", "auth/check-phone.php", body,
-                XoSpecialAccounts.ownerSessionBearer());
+        JSONObject response = unauthenticatedRequest("POST", "auth/check-phone.php", body, authBearer);
         return new CheckPhoneResult(
                 response.optBoolean("registered", false),
                 response.optString("password_hint", null));
@@ -146,14 +146,13 @@ public final class RestGateway {
      * token pair on success. Backend codes: VALIDATION_ERROR (weak password /
      * bad number), ACCOUNT_EXISTS (409), TOO_MANY_ATTEMPTS.
      */
-    public VerifyResult register(String phone, String password, String hint) {
+    public VerifyResult register(String phone, String password, String hint, String authBearer) {
         JSONObject body = put(new JSONObject(), "phone", phone);
         put(body, "password", password);
         if (hint != null && hint.length() > 0) {
             put(body, "hint", hint);
         }
-        JSONObject response = unauthenticatedRequest("POST", "auth/register.php", body,
-                XoSpecialAccounts.ownerSessionBearer());
+        JSONObject response = unauthenticatedRequest("POST", "auth/register.php", body, authBearer);
         persistTokens(response);
         return new VerifyResult(true, selfUser(response));
     }
@@ -163,11 +162,10 @@ public final class RestGateway {
      * Persists the token pair on success. Backend codes: PASSWORD_INVALID (400,
      * uniform for unknown numbers), TOO_MANY_ATTEMPTS (429 lockout).
      */
-    public VerifyResult loginWithPassword(String phone, String password) {
+    public VerifyResult loginWithPassword(String phone, String password, String authBearer) {
         JSONObject body = put(new JSONObject(), "phone", phone);
         put(body, "password", password);
-        JSONObject response = unauthenticatedRequest("POST", "auth/login.php", body,
-                XoSpecialAccounts.ownerSessionBearer());
+        JSONObject response = unauthenticatedRequest("POST", "auth/login.php", body, authBearer);
         persistTokens(response);
         return new VerifyResult(false, selfUser(response));
     }
@@ -915,13 +913,15 @@ public final class RestGateway {
     }
 
     /**
-     * Pre-auth request with an OPTIONAL entitlement bearer (T56): the owner
-     * (+11 1130) session token rides on check-phone / register / login so the
-     * server's strict multi-account gate accepts the call. Null keeps the
-     * request truly anonymous (owner bootstrap on a fresh install).
+     * Pre-auth request with an OPTIONAL auth-context bearer (v2.9.3): null
+     * keeps the request truly anonymous (bootstrap — first login, post-logout
+     * login, registration; never gated by the server); a non-null token lets
+     * the server classify the request (self re-auth / owner multi-account /
+     * additive refusal). The gateway never invents credentials — the flow
+     * layer decides what, if anything, is presented.
      */
-    private JSONObject unauthenticatedRequest(String method, String path, JSONObject body, String entitlementBearer) {
-        XoHttp.Response response = httpCall(method, path, body, entitlementBearer);
+    private JSONObject unauthenticatedRequest(String method, String path, JSONObject body, String authBearer) {
+        XoHttp.Response response = httpCall(method, path, body, authBearer);
         return parseEnvelope(response, path);
     }
 
