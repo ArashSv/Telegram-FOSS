@@ -1,0 +1,46 @@
+name: backend-ops
+
+on:
+  workflow_dispatch:
+    inputs:
+      op:
+        description: 'pull = snapshot the live backend into an artifact; patch = deploy .github/backend-ops/live/* (with pre-backups) + smoke test'
+        required: true
+        default: 'pull'
+
+jobs:
+  ops:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pull live backend snapshot
+        if: ${{ inputs.op == 'pull' }}
+        env:
+          WD_URL: ${{ secrets.WD_URL }}
+          WD_USER: ${{ secrets.WD_USER }}
+          WD_PASS: ${{ secrets.WD_PASS }}
+        run: |
+          mkdir -p out
+          python3 .github/backend-ops/pull_live.py out/tree
+          python3 .github/backend-ops/smoke.py baseline | tee out/smoke_baseline.txt
+
+      - name: Upload live snapshot
+        if: ${{ inputs.op == 'pull' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-backend
+          path: out/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Deploy patch + smoke
+        if: ${{ inputs.op == 'patch' }}
+        env:
+          WD_URL: ${{ secrets.WD_URL }}
+          WD_USER: ${{ secrets.WD_USER }}
+          WD_PASS: ${{ secrets.WD_PASS }}
+        run: |
+          python3 .github/backend-ops/deploy_live.py .github/backend-ops/live
+          python3 .github/backend-ops/smoke.py verify
