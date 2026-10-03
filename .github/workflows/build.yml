@@ -225,15 +225,19 @@ jobs:
           export NDK="$ANDROID_HOME/ndk/21.4.7075529"
           export NINJA_PATH="$(which ninja)"
           cd TMessagesProj/jni
-          # T64: build ALL four ABIs. Each script loops over its args; the two
-          # patch scripts patch SOURCES and must run exactly ONCE — patch_ffmpeg
-          # then distributes headers into every ABI build dir (it already
-          # expects all four: arm64-v8a/armeabi-v7a/x86/x86_64).
-          ./build_libvpx_clang.sh arm arm64 x86 x86_64
-          ./build_ffmpeg_clang.sh arm arm64 x86 x86_64
+          # T64: build ALL four ABIs — ONE INVOCATION PER ABI. The scripts were
+          # designed for a single ABI per process (upstream usage): their case
+          # bodies do not reset every variable, so batching arm/arm64/x86/x86_64
+          # in one call leaks e.g. OPTIMIZE_CFLAGS="-march=i686" into the x86_64
+          # configure and kills its compiler test. A fresh process per ABI is
+          # the safe contract. The two patch scripts patch SOURCES and run
+          # exactly ONCE; patch_ffmpeg then distributes headers into every ABI
+          # build dir (it already expects all four).
+          for ABI in arm arm64 x86 x86_64; do ./build_libvpx_clang.sh "$ABI"; done
+          for ABI in arm arm64 x86 x86_64; do ./build_ffmpeg_clang.sh "$ABI"; done
           ./patch_ffmpeg.sh
           ./patch_boringssl.sh
-          ./build_boringssl.sh arm arm64 x86 x86_64
+          for ABI in arm arm64 x86 x86_64; do ./build_boringssl.sh "$ABI"; done
 
       - name: Build assembleAfatRelease (signed, non-debuggable)
         env:
