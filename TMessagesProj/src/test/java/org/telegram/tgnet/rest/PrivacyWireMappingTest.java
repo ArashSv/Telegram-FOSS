@@ -67,7 +67,7 @@ public class PrivacyWireMappingTest {
     }
 
     @Test
-    public void baseVariants_mapToTheirUpstreamClass() {
+    public void baseVariants_mapToTheirUpstreamClass() throws Exception {
         assertTrue(RestDispatcher.tlRulesFromWire(new JSONObject("{\"base\":\"nobody\"}"))
                 .get(0) instanceof TLRPC.TL_privacyValueDisallowAll);
         assertTrue(RestDispatcher.tlRulesFromWire(new JSONObject("{\"base\":\"contacts\"}"))
@@ -80,7 +80,7 @@ public class PrivacyWireMappingTest {
     }
 
     @Test
-    public void emptyExceptionArrays_omitTheirRuleEntries() {
+    public void emptyExceptionArrays_omitTheirRuleEntries() throws Exception {
         ArrayList<TLRPC.PrivacyRule> mapped = RestDispatcher.tlRulesFromWire(
                 new JSONObject("{\"base\":\"contacts\",\"allowed\":[],\"disallowed\":[]}"));
         assertEquals(1, mapped.size());
