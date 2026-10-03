@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    package="org.telegram.messenger.regular"
     android:installLocation="auto">
+    <!-- T65: the package attribute moved to the Gradle namespace DSL
+         (org.telegram.messenger.regular) as required by AGP 8. -->
 
     <!-- T49 (task 3): location permissions are removed from the product.
          The osmdroid AAR manifest would re-inject ACCESS_COARSE_LOCATION /

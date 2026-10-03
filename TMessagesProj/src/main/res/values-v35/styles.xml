@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- T65 (targetSdk 35 migration valve):
+         Android 15 ENFORCES edge-to-edge for apps targeting SDK 35 — every
+         window would draw behind the status/navigation bars and the
+         deprecated setStatusBarColor / setNavigationBarColor calls stop
+         working. This fork's UI predates that model (fitsSystemWindows +
+         explicit bar colors throughout ActionBarLayout/NotificationUtils),
+         and a UI-wide insets redesign was explicitly out of scope.
+         windowOptOutEdgeToEdgeEnforcement is the official Android-15 valve
+         for exactly this situation (it is honored for targetSdk 35 apps and
+         only deprecated for apps that later target SDK 36). Older devices
+         never see this file (it lives in values-v35), so their rendering is
+         untouched.
+         Each activity-facing theme must carry the item, because the
+         enforcement is evaluated per window from the activity's own theme.
+         Style parents resolve per-configuration, so the derived themes
+         (PopupNotification / Transparent / TransparentWithAlerts) inherit
+         the item from Theme.TMessages below on Android 15+ devices. -->
+
+    <style name="Theme.TMessages.Start" parent="Theme.AppCompat.Light">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:actionBarStyle">@style/ActionBar.Transparent.TMessages.Start</item>
+        <item name="android:colorBackground">@android:color/white</item>
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:textViewStyle">@style/MyTextViewStyle</item>
+    </style>
+
+    <style name="Theme.TMessages" parent="Theme.AppCompat.Light">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBarOverlay">false</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:colorBackground">@android:color/white</item>
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:itemTextAppearance">@style/ActionBar.Transparent.TMessages.Item</item>
+        <item name="android:listViewStyle">@style/Theme.TMessages.ListView</item>
+        <item name="android:listChoiceBackgroundIndicator">@drawable/list_selector_ex</item>
+        <item name="android:actionBarItemBackground">@drawable/bar_selector_style</item>
+        <item name="android:textViewStyle">@style/MyTextViewStyle</item>
+    </style>
+
+    <style name="Theme.TMessages.Dark" parent="Theme.AppCompat.DayNight">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBarOverlay">false</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:colorBackground">@android:color/black</item>
+        <item name="android:windowBackground">@android:color/black</item>
+        <item name="android:itemTextAppearance">@style/ActionBar.Transparent.TMessages.Item</item>
+        <item name="android:listViewStyle">@style/Theme.TMessages.ListView</item>
+        <item name="android:listChoiceBackgroundIndicator">@drawable/list_selector_ex</item>
+        <item name="android:actionBarItemBackground">@drawable/bar_selector_style</item>
+        <item name="android:textViewStyle">@style/MyTextViewStyle</item>
+    </style>
+
+</resources>

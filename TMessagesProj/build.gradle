@@ -54,7 +54,7 @@ dependencies {
     }
     implementation 'org.osmdroid:osmdroid-android:6.1.14'
 
-    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:1.2.2'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.2'
 }
 
 def isWindows = String.valueOf(DefaultNativePlatform.currentOperatingSystem.toFamilyName() == OperatingSystemFamily.WINDOWS)
@@ -83,8 +83,11 @@ def getAppHash(){
 }
 
 android {
-    compileSdkVersion 34
-    buildToolsVersion '34.0.0'
+    // T65 migration: AGP 8.x requires the package attribute to move from the
+    // manifest into the namespace DSL (class/R resolution is unchanged:
+    // org.telegram.messenger).
+    namespace 'org.telegram.messenger'
+    compileSdk 35
     ndkVersion "21.4.7075529"
 
     // T63 — JVM unit tests: un-mocked android.* calls return defaults instead
@@ -110,15 +113,12 @@ android {
         }
     }
 
-    lintOptions {
-        disable 'MissingTranslation'
-        disable 'ExtraTranslation'
-        disable 'BlockedPrivateApi'
+    lint {
+        disable += ['MissingTranslation', 'ExtraTranslation', 'BlockedPrivateApi']
+        checkReleaseBuilds = false
     }
 
-    dexOptions {
-        jumboMode = true
-    }
+    // T65: dexOptions was removed in AGP 8 (jumboMode is always on).
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -130,9 +130,9 @@ android {
     defaultConfig.versionCode = Integer.parseInt(APP_VERSION_CODE)
 
     defaultConfig {
-        minSdkVersion 19
-        targetSdkVersion 34
-        versionName "0.1.0" // T49: aligned with APP_VERSION_NAME
+        minSdk 19
+        // T65: targetSdkVersion is REMOVED for library modules in AGP 8 —
+        // only the app module declares targetSdk 35.
 
         vectorDrawables.generatedDensities = ['mdpi', 'hdpi', 'xhdpi', 'xxhdpi']
         //obtain your own keys at https://core.telegram.org/api/obtaining_api_id
@@ -143,10 +143,15 @@ android {
 
         externalNativeBuild {
             cmake {
-                version '3.10.2'
+                // T65: AGP 8 enforces a minimum CMake of 3.22.1.
+                version '3.22.1'
                 arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-16' // T53: -j=16 rejected by AGP 7.4 cmake configure; AGP manages build parallelism
             }
         }
+    }
+
+    buildFeatures {
+        buildConfig = true
     }
 
     buildTypes {

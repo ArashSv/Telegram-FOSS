@@ -16,15 +16,17 @@ configurations.all {
 dependencies {
     implementation project(':TMessagesProj')
     implementation 'androidx.multidex:multidex:2.0.1'
-    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:1.2.2'
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.2'
 }
 
 android {
-    compileSdkVersion 34
-    buildToolsVersion '34.0.0'
+    // T65 migration: namespace replaces the manifest package attribute.
+    // BuildConfig stays org.telegram.messenger.regular (ApplicationLoaderImpl
+    // imports it unchanged).
+    namespace 'org.telegram.messenger.regular'
+    compileSdk 35
 
     defaultConfig.applicationId = APP_PACKAGE
-
     // T49 (task 6) — release signing. The keystore + credentials come from the
     // CI environment (GitHub Actions secrets: RELEASE_KEYSTORE_FILE path,
     // RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS, RELEASE_KEY_PASSWORD) or from
@@ -56,15 +58,12 @@ android {
 
     sourceSets.main.jniLibs.srcDirs = ['../TMessagesProj/jni/']
 
-    lintOptions {
-        disable 'MissingTranslation'
-        disable 'ExtraTranslation'
-        disable 'BlockedPrivateApi'
+    lint {
+        disable += ['MissingTranslation', 'ExtraTranslation', 'BlockedPrivateApi']
+        checkReleaseBuilds = false
     }
 
-    dexOptions {
-        jumboMode = true
-    }
+    // T65: dexOptions was removed in AGP 8 (jumboMode is always on).
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -147,7 +146,7 @@ android {
             sourceSets.release {
                 manifest.srcFile '../TMessagesProj/config/release/AndroidManifest_SDK23.xml'
             }
-            minSdkVersion 23
+            minSdk 23
             ext {
                 abiVersionCode = 2
             }
@@ -188,8 +187,8 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 19
-        targetSdkVersion 34
+        minSdk 19
+        targetSdk 35
         versionName APP_VERSION_NAME
         ndkVersion "21.4.7075529"
 
@@ -199,7 +198,8 @@ android {
 
         externalNativeBuild {
             cmake {
-                version '3.10.2'
+                // T65: AGP 8 enforces a minimum CMake of 3.22.1.
+                version '3.22.1'
                 arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-16' // T53: -j=16 rejected by AGP 7.4 cmake configure; AGP manages build parallelism
             }
         }
@@ -209,7 +209,7 @@ android {
         buildConfig = true
     }
 
-    lintOptions {
-        checkReleaseBuilds false
+    lint {
+        checkReleaseBuilds = false
     }
 }

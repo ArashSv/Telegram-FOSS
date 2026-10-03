@@ -1,8 +1,10 @@
 name: Build APK
 
-# Telegram-FOSS specific CI (fork base pins: Gradle 7.6.4 / AGP 7.4.2 / JDK 11 /
-# compileSdk 34 / buildTools 34.0.0 / NDK 21.4.7075529 / cmake 3.10.2).
-# Do NOT reuse generic Telegram-Android (DrKLO) workflows here.
+# Telegram-FOSS specific CI (fork base pins: Gradle 8.9 / AGP 8.7.3 / JDK 17 /
+# compileSdk 35 / buildTools 35.0.0 (AGP-managed) / NDK 21.4.7075529 / cmake 3.22.1).
+# T65 migration (targetSdk 35 + AGP 8): JDK 11 -> 17, cmake 3.10.2 -> 3.22.1
+# (AGP 8 minimum), gradle.properties suppress flag removed (AGP 8.7 supports
+# SDK 35 natively). Do NOT reuse generic Telegram-Android (DrKLO) workflows here.
 #
 # ── T35 reliability redesign (why the steps are ordered the way they are) ──
 #
@@ -75,11 +77,11 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Set up JDK 11 (same toolchain pin as the build job)
+      - name: Set up JDK 17 (AGP 8.7.3 / Gradle 8.9 requirement)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
           cache: gradle
 
       - name: Install pinned NDK 21.4.7075529 (AGP configuration needs it present)
@@ -117,11 +119,11 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Set up JDK 11 (Gradle 7.6.4 / AGP 7.4.2 requirement)
+      - name: Set up JDK 17 (AGP 8.7.3 / Gradle 8.9 requirement)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '11'
+          java-version: '17'
           cache: gradle
 
       # T8-CI root-cause fix for 35-40 min builds: the dependency cache above
@@ -178,10 +180,10 @@ jobs:
 
       - name: Install pinned NDK 21.4.7075529
         run: |
-          # sdkmanager needs Java 17+, but build needs JDK 11 - use runner JVM for sdkmanager only
+          # sdkmanager needs Java 17+, build runs on the same JDK 17 now (T65).
           export JAVA_HOME="${JAVA_HOME_21_X64:-${JAVA_HOME_17_X64:-$JAVA_HOME}}"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;21.4.7075529" > /dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;21.4.7075529" "cmake;3.22.1" > /dev/null
 
       # ── T35 fast-fail gate ────────────────────────────────────────────────
       # Compiles ALL Java (library + app module) with the real classpath.
@@ -349,7 +351,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="build-${GITHUB_RUN_NUMBER}"
-          NOTES="Automated RELEASE build of develop @ ${GITHUB_SHA::7} (afat/release, UNIVERSAL — arm64-v8a + armeabi-v7a + x86_64 + x86, signed v1+v2+v3 with the Hermes release key, non-debuggable, targetSdk 34, monotonic versionCode). Installs on 32-bit and 64-bit phones alike. Install: download APK, allow unknown sources, install. sha256 in SHA256SUMS.txt."
+          NOTES="Automated RELEASE build of develop @ ${GITHUB_SHA::7} (afat/release, UNIVERSAL — arm64-v8a + armeabi-v7a + x86_64 + x86, signed v1+v2+v3 with the Hermes release key, non-debuggable, targetSdk 35 (T65 AGP8/JDK17 migration + in-app crash reporter), monotonic versionCode). Installs on 32-bit and 64-bit phones alike. If the app ever stops/crashes on launch, reopen it once: a crash report screen with a SHARE button will appear — send the text to the developer. sha256 in SHA256SUMS.txt."
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" release/* --clobber -R "$GITHUB_REPOSITORY"
           else
