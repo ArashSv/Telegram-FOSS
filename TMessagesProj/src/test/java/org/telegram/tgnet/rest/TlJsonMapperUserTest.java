@@ -38,8 +38,10 @@ public class TlJsonMapperUserTest {
         assertEquals("40430501", user.phone);           // digits-only, client prepends '+'
         assertNotNull(user.username);
 
-        // flag coherence: first_name(2) | username(8) | phone(16) | access_hash(1)
-        assertEquals(2 | 8 | 16 | 1 | 32, user.flags & (2 | 8 | 16 | 1 | 32));
+        // flag coherence: first_name(2) | username(8) | phone(16) | access_hash(1).
+        // NO bit 32: the fixture has photo=null (asserted below) and the mapper
+        // must NOT plant the photo-present flag for a null photo.
+        assertEquals(2 | 8 | 16 | 1, user.flags & (2 | 8 | 16 | 1));
         assertEquals(1L, user.access_hash);             // stable non-zero plant
     }
 

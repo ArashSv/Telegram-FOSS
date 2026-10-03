@@ -26,7 +26,8 @@ public class TlJsonMapperMessageTest {
     @Test
     public void textMessage_mapsCoreFieldsAndFlags() throws Exception {
         org.json.JSONObject msg = XoFixtures.obj("fixture_message_text");
-        TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, 10001L, false, 10001L, 10000L);
+        // receiving side: self = 10001 (sender 10000 in the fixture)
+        TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, 10001L, false, 10001L, 10001L);
 
         assertEquals(1, m.id);
         assertEquals("سلام از بک‌اند!", m.message);

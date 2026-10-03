@@ -44,7 +44,7 @@ public class XoSpecialAccountsTest {
     public void displayAndWireForms_roundTrip() {
         assertEquals("+11 1130", XoSpecialAccounts.prettyForWireDigits("40411130"));
         assertEquals("+11 1127", XoSpecialAccounts.prettyForWireDigits("40411127"));
-        assertEquals("+22 0000", XoSpecialAccounts.prettyForWireDigits("40400000"));
+        assertEquals("+22 0000", XoSpecialAccounts.prettyForWireDigits("40420000")); // "220000" -> last 5 = "20000"
         assertNull("non-special wire phones have no pretty form",
                 XoSpecialAccounts.prettyForWireDigits("40499999"));
         assertNull(XoSpecialAccounts.prettyForWireDigits(""));
