@@ -145,8 +145,10 @@ public class PrivacyWireMappingTest {
     @Test
     public void fixturePrivacyRulesKeys_areTheClosedSet() throws Exception {
         JSONObject rules = XoFixtures.obj("fixture_privacy_get").getJSONObject("rules");
-        Map<String, Object> raw = rules.toMap();
-        for (String key : raw.keySet()) {
+        // Android's org.json has NO JSONObject.toMap() — iterate keys directly
+        java.util.Iterator<String> it = rules.keys();
+        while (it.hasNext()) {
+            String key = it.next();
             assertTrue("unexpected privacy key on the wire: " + key,
                     "status_timestamp".equals(key) || "photo".equals(key)
                             || "about".equals(key) || "chat_invite".equals(key));

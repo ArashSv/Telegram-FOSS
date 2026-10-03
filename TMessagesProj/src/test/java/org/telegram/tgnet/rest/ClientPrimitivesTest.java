@@ -124,7 +124,10 @@ public class ClientPrimitivesTest {
     }
 
     private static void assertFalseInheritance(XoTransportException transport) {
-        // XoApiException.isGenuineServerRejection can never be true for a transport failure
-        org.junit.Assert.assertFalse(transport instanceof XoApiException);
+        // XoApiException.isGenuineServerRejection can never be true for a transport failure.
+        // NOTE: XoTransportException and XoApiException are SIBLING classes, so a
+        // direct `instanceof XoApiException` is a javac type error — Class.isInstance
+        // compiles to the same runtime check.
+        org.junit.Assert.assertFalse(XoApiException.class.isInstance(transport));
     }
 }

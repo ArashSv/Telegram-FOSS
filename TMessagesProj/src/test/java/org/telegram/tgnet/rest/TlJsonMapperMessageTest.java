@@ -68,8 +68,12 @@ public class TlJsonMapperMessageTest {
         org.json.JSONObject msg = XoFixtures.obj("fixture_message_media");
         TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, 10001L, false, 10001L, 10000L);
         assertTrue(m.media instanceof TLRPC.TL_messageMediaDocument);
-        TLRPC.TL_document document = ((TLRPC.TL_messageMediaDocument) m.media).document;
+        // the declared media field type is the abstract TLRPC.Document; the
+        // mapper contract (storage serialization) is the concrete TL_document
+        TLRPC.Document document = ((TLRPC.TL_messageMediaDocument) m.media).document;
         assertNotNull(document);
+        assertTrue("mapper must produce a real TL_document",
+                document instanceof TLRPC.TL_document);
         assertEquals(1L, document.id);
         assertEquals("application/octet-stream", document.mime_type);
         assertEquals(4096L, document.size);
@@ -160,7 +164,7 @@ public class TlJsonMapperMessageTest {
 
     @Test
     public void groupChat_mapsRightsAndRole() throws Exception {
-        org.json.JSONArray chats = XoFixtures.arr("fixture_dialogs").getJSONArray("chats");
+        org.json.JSONArray chats = XoFixtures.obj("fixture_dialogs").getJSONArray("chats");
         org.json.JSONObject group = chats.getJSONObject(0);
         assertEquals("group", group.getString("type"));
 
@@ -181,7 +185,7 @@ public class TlJsonMapperMessageTest {
 
     @Test
     public void adminRole_getsBanUsersRight() throws Exception {
-        org.json.JSONObject group = XoFixtures.arr("fixture_dialogs").getJSONArray("chats").getJSONObject(0);
+        org.json.JSONObject group = XoFixtures.obj("fixture_dialogs").getJSONArray("chats").getJSONObject(0);
         group.put("role", "admin");
         TLRPC.TL_chat chat = TlJsonMapper.parseGroupChat(group);
         assertNotNull(chat.admin_rights);
