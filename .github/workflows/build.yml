@@ -218,8 +218,10 @@ jobs:
       - name: "Build native prebuilts (libvpx, ffmpeg, boringssl — ALL ABIs on universal builds)"
         if: steps.nativecache.outputs.cache-hit != 'true'
         run: |
-          # Per upstream README: NDK + Ninja required; order matters
-          sudo apt-get install -y ninja-build > /dev/null
+          # Per upstream README: NDK + Ninja required; order matters.
+          # T64: yasm+nasm are required by libvpx/ffmpeg x86-family asm — the
+          # arm64-only era never needed them; universal builds do.
+          sudo apt-get install -y ninja-build yasm nasm > /dev/null
           export NDK="$ANDROID_HOME/ndk/21.4.7075529"
           export NINJA_PATH="$(which ninja)"
           cd TMessagesProj/jni
