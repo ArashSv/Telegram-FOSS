@@ -41,6 +41,15 @@ android {
                 storePassword System.getenv("RELEASE_STORE_PASSWORD")
                 keyAlias System.getenv("RELEASE_KEY_ALIAS") ?: "hermes"
                 keyPassword System.getenv("RELEASE_KEY_PASSWORD") ?: System.getenv("RELEASE_STORE_PASSWORD")
+                // T64 (install-failure audit): pin ALL signing schemes explicitly.
+                // v1 (JAR)  — needed by package loaders on Android < 7 (minSdk 19).
+                // v2        — mandatory on Android 11+ for targetSdk >= 30 apps
+                //             (INSTALL_PARSE_FAILED_NO_CERTIFICATES otherwise).
+                // v3        — same key today; pre-arms future key rotation.
+                // The CI build.yml gate enforces v1+v2+cert-pin on every artifact.
+                enableV1Signing true
+                enableV2Signing true
+                enableV3Signing true
             }
         }
     }

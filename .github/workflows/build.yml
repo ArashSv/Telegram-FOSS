@@ -1,7 +1,7 @@
 name: Build APK
 
-# Telegram-FOSS specific CI (fork base pins: Gradle 7.2 / AGP 7.0.3 / JDK 11 /
-# compileSdk 33 / buildTools 33.0.0 / NDK 21.4.7075529 / cmake 3.10.2).
+# Telegram-FOSS specific CI (fork base pins: Gradle 7.6.4 / AGP 7.4.2 / JDK 11 /
+# compileSdk 34 / buildTools 34.0.0 / NDK 21.4.7075529 / cmake 3.10.2).
 # Do NOT reuse generic Telegram-Android (DrKLO) workflows here.
 #
 # ── T35 reliability redesign (why the steps are ordered the way they are) ──
@@ -49,11 +49,11 @@ on:
   workflow_dispatch:
     inputs:
       abi:
-        description: 'ABI set to build'
+        description: 'ABI set to build (push builds are ALWAYS universal)'
         required: false
-        default: 'arm64'
+        default: 'all'
         type: choice
-        options: [arm64, all]
+        options: [all, arm64]
 
 concurrency:
   group: build-${{ github.ref }}
@@ -107,7 +107,9 @@ jobs:
   build:
     needs: [unit-tests]
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # T64: universal 4-ABI native build (libvpx/ffmpeg/boringssl x4) needs the
+    # extra headroom on the first (cache-miss) run; later runs ride the cache.
+    timeout-minutes: 180
     steps:
       - name: "Checkout (recursive submodules: ffmpeg, boringssl, libvpx, libwebp)"
         uses: actions/checkout@v4
@@ -115,7 +117,7 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Set up JDK 11 (Gradle 7.2 / AGP 7.0.3 requirement)
+      - name: Set up JDK 11 (Gradle 7.6.4 / AGP 7.4.2 requirement)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -150,8 +152,10 @@ jobs:
                         TMessagesProj/jni/patch_boringssl.sh \
                         TMessagesProj/jni/patches/ffmpeg/*.patch \
                         TMessagesProj/jni/patches/boringssl/*.patch 2>/dev/null | sha256sum | cut -d' ' -f1 | cut -c1-16)
-          echo "key=native-arm64-${SUBS}-${SCRIPTS}" >> "$GITHUB_OUTPUT"
-          echo "native cache key: native-arm64-${SUBS}-${SCRIPTS}"
+          # T64: key covers ALL four ABIs now (universal APK covers 32-bit
+          # phones — arm64-only APKs are rejected by them with 'App not installed').
+          echo "key=native-all-${SUBS}-${SCRIPTS}" >> "$GITHUB_OUTPUT"
+          echo "native cache key: native-all-${SUBS}-${SCRIPTS}"
 
       # Restored AFTER checkout (overlays the submodule dirs). A hit means the
       # exact same sources + scripts produced these artifacts on a prior run.
@@ -198,8 +202,11 @@ jobs:
       # falls back to inert placeholders when the file is absent, so CI builds
       # exercise the exact fresh-clone configuration path.
 
+      # T64: arm64-only is now the OPT-IN path (manual dispatch only). Push
+      # builds ship UNIVERSAL APKs — every ABI the flavor declares — because a
+      # 32-bit phone receiving an arm64-only APK fails with 'App not installed'.
       - name: ABI filter to arm64-v8a (CI-only transform, never committed)
-        if: ${{ github.event_name == 'push' || inputs.abi == 'arm64' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.abi == 'arm64' }}
         run: |
           sed -i 's/abiFilters "armeabi-v7a", "arm64-v8a", "x86", "x86_64"/abiFilters "arm64-v8a"/' TMessagesProj_App/build.gradle
           # Library module has no abiFilters of its own -> AGP builds ALL ABIs there.
@@ -208,7 +215,7 @@ jobs:
           echo "app module:"; grep -c 'abiFilters "arm64-v8a"' TMessagesProj_App/build.gradle
           echo "lib module:"; grep -c 'abiFilters "arm64-v8a"' TMessagesProj/build.gradle
 
-      - name: "Build native prebuilts (libvpx, ffmpeg, boringssl for arm64)"
+      - name: "Build native prebuilts (libvpx, ffmpeg, boringssl — ALL ABIs on universal builds)"
         if: steps.nativecache.outputs.cache-hit != 'true'
         run: |
           # Per upstream README: NDK + Ninja required; order matters
@@ -216,11 +223,15 @@ jobs:
           export NDK="$ANDROID_HOME/ndk/21.4.7075529"
           export NINJA_PATH="$(which ninja)"
           cd TMessagesProj/jni
-          ./build_libvpx_clang.sh arm64
-          ./build_ffmpeg_clang.sh arm64
+          # T64: build ALL four ABIs. Each script loops over its args; the two
+          # patch scripts patch SOURCES and must run exactly ONCE — patch_ffmpeg
+          # then distributes headers into every ABI build dir (it already
+          # expects all four: arm64-v8a/armeabi-v7a/x86/x86_64).
+          ./build_libvpx_clang.sh arm arm64 x86 x86_64
+          ./build_ffmpeg_clang.sh arm arm64 x86 x86_64
           ./patch_ffmpeg.sh
           ./patch_boringssl.sh
-          ./build_boringssl.sh arm64
+          ./build_boringssl.sh arm arm64 x86 x86_64
 
       - name: Build assembleAfatRelease (signed, non-debuggable)
         env:
@@ -240,7 +251,15 @@ jobs:
           test -s hermes-release.keystore
           # --build-cache: explicit twin of org.gradle.caching=true (gradle.properties).
           # Memory policy comes from gradle.properties (single daemon config).
+          # T64: MONOTONIC versioning — versionCode was frozen at 4928*10+9=49289
+          # across every build, so Android could not order two installed builds.
+          # Now: versionCode = (5000 + run_number)*10 + 9 (always > history,
+          # always increasing), versionName = 0.1.0-<run_number> (visible in
+          # Settings; -P overrides gradle.properties fallback for local builds).
+          BUILD_NUM=$((5000 + GITHUB_RUN_NUMBER))
           ./gradlew :TMessagesProj_App:assembleAfatRelease \
+            -PAPP_VERSION_CODE="$BUILD_NUM" \
+            -PAPP_VERSION_NAME="0.1.0-${GITHUB_RUN_NUMBER}" \
             --build-cache \
             --stacktrace
 
@@ -257,6 +276,42 @@ jobs:
           fi
           echo "OK: manifest has no debuggable=true flag"
 
+      # ── T64 install-failure guards: the exact 'App not installed' killers ──
+      # 1) v1+v2 signature present (v2 is MANDATORY on Android 11+ for
+      #    targetSdk>=30; Android 14 rejects v1-only outright).
+      # 2) cert pinned to the T53 Hermes release key (catches accidental
+      #    secret rotation that would orphan every existing install).
+      # 3) ABI coverage (missing armeabi-v7a = every 32-bit phone refuses).
+      # 4) versionCode is the expected monotonic value.
+      - name: "T64 gate: signature schemes + cert pin + ABI coverage + versionCode"
+        run: |
+          APK="$(ls TMessagesProj_App/build/outputs/apk/afat/release/*.apk | head -n 1)"
+          APKSIGNER="$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort | tail -n 1)"
+          AAPT2="$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort | tail -n 1)"
+          echo "== apksigner verify (verbose)"
+          "$APKSIGNER" verify --verbose "$APK" > /tmp/sigverify.txt || { cat /tmp/sigverify.txt; exit 1; }
+          cat /tmp/sigverify.txt
+          grep -E "Verified using v2 scheme" /tmp/sigverify.txt | grep -q ": true" || { echo "FATAL: v2 signature missing — Android 11+ would refuse this APK ('App not installed')" >&2; exit 1; }
+          grep -E "Verified using v1 scheme" /tmp/sigverify.txt | grep -q ": true" || { echo "FATAL: v1 signature missing — needed by Android < 7 loaders (minSdk 19)" >&2; exit 1; }
+          echo "== cert pin (Hermes T53 release key)"
+          "$APKSIGNER" verify --print-certs "$APK" | tee /tmp/certs.txt | grep -i "certificate SHA-256" || { echo "FATAL: could not read signer cert" >&2; exit 1; }
+          grep -qi "5453b3f837b61e1cce6c9d61a5749fc33ae950718d2b5fcffb4757f58d297fe7" /tmp/certs.txt || { echo "FATAL: signer cert is NOT the pinned Hermes release key — installs over existing builds would break" >&2; exit 1; }
+          echo "== ABI coverage"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.abi }}" = "arm64" ]; then
+            REQUIRED_ABIS="arm64-v8a"
+          else
+            REQUIRED_ABIS="armeabi-v7a arm64-v8a x86 x86_64"
+          fi
+          for ABI in $REQUIRED_ABIS; do
+            unzip -l "$APK" | grep -q "lib/$ABI/" || { echo "FATAL: missing lib/$ABI — 32-bit/ABI-mismatched phones would show 'App not installed'" >&2; exit 1; }
+          done
+          echo "ABI coverage OK: $REQUIRED_ABIS"
+          echo "== versionCode monotonic"
+          "$AAPT2" dump badging "$APK" | head -n 1
+          EXPECTED_VC=$(( (5000 + GITHUB_RUN_NUMBER) * 10 + 9 ))
+          "$AAPT2" dump badging "$APK" | grep -o "versionCode='[0-9]*'" | grep -q "versionCode='$EXPECTED_VC'" || { echo "FATAL: versionCode != $EXPECTED_VC (monotonic scheme broken)" >&2; exit 1; }
+          echo "T64 gate: ALL GREEN"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -270,7 +325,12 @@ jobs:
         run: |
           mkdir -p release
           APK="$(ls TMessagesProj_App/build/outputs/apk/afat/release/*.apk | head -n 1)"
-          cp "$APK" "release/Hermes-release-arm64-build-${GITHUB_RUN_NUMBER}.apk"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.abi }}" = "arm64" ]; then
+            VARIANT="arm64"
+          else
+            VARIANT="universal"
+          fi
+          cp "$APK" "release/Hermes-release-${VARIANT}-build-${GITHUB_RUN_NUMBER}.apk"
           sha256sum release/Hermes-*.apk > release/SHA256SUMS.txt
 
       - name: Publish APK to GitHub Releases (installable build for testing)
@@ -279,7 +339,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="build-${GITHUB_RUN_NUMBER}"
-          NOTES="Automated RELEASE build of develop @ ${GITHUB_SHA::7} (afat/release, arm64-v8a, signed, non-debuggable, targetSdk 34). Install: download APK, allow unknown sources, install. sha256 in SHA256SUMS.txt."
+          NOTES="Automated RELEASE build of develop @ ${GITHUB_SHA::7} (afat/release, UNIVERSAL — arm64-v8a + armeabi-v7a + x86_64 + x86, signed v1+v2+v3 with the Hermes release key, non-debuggable, targetSdk 34, monotonic versionCode). Installs on 32-bit and 64-bit phones alike. Install: download APK, allow unknown sources, install. sha256 in SHA256SUMS.txt."
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" release/* --clobber -R "$GITHUB_REPOSITORY"
           else
