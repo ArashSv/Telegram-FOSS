@@ -1,0 +1,7 @@
+{
+    "ok": false,
+    "error": {
+        "code": "VALIDATION_ERROR",
+        "message": "Invalid phone: length must be between 5 and 24"
+    }
+}

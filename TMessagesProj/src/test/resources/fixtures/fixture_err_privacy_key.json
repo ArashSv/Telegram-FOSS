@@ -1,0 +1,7 @@
+{
+    "ok": false,
+    "error": {
+        "code": "PRIVACY_KEY_UNSUPPORTED",
+        "message": "privacy key 'calls' is not modelled by this backend"
+    }
+}

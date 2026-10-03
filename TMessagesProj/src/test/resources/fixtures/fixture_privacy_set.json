@@ -1,0 +1,54 @@
+{
+    "ok": true,
+    "rules": {
+        "status_timestamp": {
+            "base": "everybody",
+            "allowed": [],
+            "disallowed": []
+        },
+        "photo": {
+            "base": "everybody",
+            "allowed": [],
+            "disallowed": []
+        },
+        "about": {
+            "base": "everybody",
+            "allowed": [],
+            "disallowed": []
+        },
+        "chat_invite": {
+            "base": "contacts",
+            "allowed": [
+                10002
+            ],
+            "disallowed": [
+                10001
+            ]
+        }
+    },
+    "users": [
+        {
+            "id": 10001,
+            "display_name": "Beata Binary",
+            "username": "beata30500",
+            "bio": "wire contract demo",
+            "phone": "40430501",
+            "avatar_file_id": null,
+            "photo": null,
+            "date": 1790986746,
+            "status": null
+        },
+        {
+            "id": 10002,
+            "display_name": "User93db",
+            "username": null,
+            "bio": null,
+            "phone": "40430502",
+            "avatar_file_id": null,
+            "photo": null,
+            "date": 1790986746,
+            "status": null
+        }
+    ],
+    "updated_at": 1790986746
+}

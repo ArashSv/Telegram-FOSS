@@ -1,0 +1,30 @@
+{
+    "ok": true,
+    "chat": {
+        "id": 1,
+        "type": "private",
+        "title": null,
+        "about": null,
+        "avatar_file_id": null,
+        "photo": null,
+        "created_at": 1790986746,
+        "role": "creator",
+        "members_count": 2,
+        "unread_count": 0,
+        "last_message": null,
+        "peer": {
+            "id": 10001,
+            "display_name": "Beata Binary",
+            "username": "beata30500",
+            "bio": "wire contract demo",
+            "phone": "40430501",
+            "avatar_file_id": null,
+            "photo": null,
+            "date": 1790986746,
+            "status": null
+        },
+        "pinned": false,
+        "pinned_order": null
+    },
+    "created": false
+}

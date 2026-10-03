@@ -1,0 +1,7 @@
+{
+    "ok": false,
+    "error": {
+        "code": "USER_IS_BLOCKED",
+        "message": "This user is not receiving your messages"
+    }
+}

@@ -1,0 +1,7 @@
+{
+    "ok": false,
+    "error": {
+        "code": "TOO_MANY_ATTEMPTS",
+        "message": "Too many attempts. Try again in 900 seconds."
+    }
+}

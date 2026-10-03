@@ -1,0 +1,15 @@
+{
+    "file_id": 1,
+    "name": "contract.bin",
+    "mime_type": "application/octet-stream",
+    "size": 4096,
+    "sha256": "9ec06a64eca0441db0123e7e4c68f344f85b883068836a5be20b363c576e17c2",
+    "status": "ready",
+    "kind": "document",
+    "width": null,
+    "height": null,
+    "duration": null,
+    "thumb_file_id": null,
+    "url": "/api/v1/files/download.php?file_id=1",
+    "created_at": 1790986746
+}

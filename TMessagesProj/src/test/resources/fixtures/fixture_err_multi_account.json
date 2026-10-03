@@ -1,0 +1,7 @@
+{
+    "ok": false,
+    "error": {
+        "code": "MULTI_ACCOUNT_FORBIDDEN",
+        "message": "Adding another account requires the +11 1130 session"
+    }
+}

@@ -1,0 +1,23 @@
+{
+    "ok": true,
+    "count": 1,
+    "blocked": [
+        {
+            "user_id": 10002,
+            "date": 1790986746
+        }
+    ],
+    "users": [
+        {
+            "id": 10002,
+            "display_name": "User93db",
+            "username": null,
+            "bio": null,
+            "phone": "40430502",
+            "avatar_file_id": null,
+            "photo": null,
+            "date": 1790986746,
+            "status": null
+        }
+    ]
+}

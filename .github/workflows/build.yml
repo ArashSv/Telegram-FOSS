@@ -60,7 +60,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # ── T63 unit-test gate ───────────────────────────────────────────────────
+  # JVM contract tests (src/test) BEFORE any native work: the JSON fixtures
+  # under TMessagesProj/src/test/resources are REAL backend outputs frozen by
+  # the backend test bed, so a wire change (client mapper drift OR backend
+  # contract change) fails the run in minutes. The APK build below refuses to
+  # start unless this is green. No native compilation here — javac + JUnit only.
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: "Checkout"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 11 (same toolchain pin as the build job)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
+          cache: gradle
+
+      - name: Install pinned NDK 21.4.7075529 (AGP configuration needs it present)
+        run: |
+          export JAVA_HOME="${JAVA_HOME_21_X64:-${JAVA_HOME_17_X64:-$JAVA_HOME}}"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null 2>&1 || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;21.4.7075529" > /dev/null
+
+      - name: "Run JVM contract tests (TlJsonMapper / envelope / privacy wire / router / specials)"
+        run: |
+          ./gradlew :TMessagesProj:testDebugUnitTest \
+            --build-cache \
+            --stacktrace \
+            --continue
+
+      - name: Upload test reports (on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports-${{ github.run_number }}
+          path: TMessagesProj/build/reports/tests/
+          retention-days: 7
+          if-no-files-found: ignore
+
   build:
+    needs: [unit-tests]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:

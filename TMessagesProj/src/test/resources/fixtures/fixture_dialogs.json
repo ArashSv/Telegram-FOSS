@@ -1,0 +1,21 @@
+{
+    "ok": true,
+    "chats": [
+        {
+            "id": 2,
+            "type": "group",
+            "title": "Fixture Group",
+            "about": null,
+            "avatar_file_id": null,
+            "photo": null,
+            "created_at": 1790986746,
+            "role": "creator",
+            "members_count": 2,
+            "unread_count": 0,
+            "last_message": null,
+            "peer": null,
+            "pinned": false,
+            "pinned_order": null
+        }
+    ]
+}

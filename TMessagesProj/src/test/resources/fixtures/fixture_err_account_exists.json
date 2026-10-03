@@ -1,0 +1,7 @@
+{
+    "ok": false,
+    "error": {
+        "code": "ACCOUNT_EXISTS",
+        "message": "This number is already registered; log in with your password"
+    }
+}

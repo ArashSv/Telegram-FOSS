@@ -1,0 +1,13 @@
+{
+    "id": 3,
+    "chat_id": 1,
+    "sender_id": 10001,
+    "content": "a reply",
+    "media": null,
+    "reply_to_id": 1,
+    "edited_at": null,
+    "deleted_at": null,
+    "date": 1790986746,
+    "group_id": null,
+    "fwd": null
+}

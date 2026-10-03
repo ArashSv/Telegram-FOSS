@@ -1,0 +1,7 @@
+{
+    "ok": false,
+    "error": {
+        "code": "NOT_FOUND",
+        "message": "File not found"
+    }
+}

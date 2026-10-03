@@ -16,6 +16,16 @@ configurations.all {
 }
 
 dependencies {
+    // T63 — JVM contract tests (src/test): the JSON fixtures under
+    // src/test/resources are REAL backend outputs frozen by the backend
+    // test bed (tests/make_fixtures.php), so a wire change fails CI here
+    // before it can reach a device. org.json:json provides a REAL JSON
+    // implementation on the JVM (android.jar ships only runtime stubs);
+    // unitTests.returnDefaultValues lets android.* helpers (Log, SystemClock)
+    // no-op instead of throwing outside a device.
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20231013'
+
     implementation 'androidx.fragment:fragment:1.2.0'
     implementation 'androidx.core:core:1.10.1'
     implementation 'androidx.palette:palette:1.0.0'
@@ -76,6 +86,21 @@ android {
     compileSdkVersion 34
     buildToolsVersion '34.0.0'
     ndkVersion "21.4.7075529"
+
+    // T63 — JVM unit tests: un-mocked android.* calls return defaults instead
+    // of throwing; failure lines print with full stacktraces on CI.
+    testOptions {
+        unitTests {
+            returnDefaultValues = true
+            all {
+                testLogging {
+                    events 'failed'
+                    exceptionFormat 'full'
+                    showStackTraces true
+                }
+            }
+        }
+    }
 
     sourceSets.main.jniLibs.srcDirs = ['./jni/']
 

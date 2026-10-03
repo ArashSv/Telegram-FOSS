@@ -1140,8 +1140,12 @@ public final class RestGateway {
         }
     }
 
-    /** Parses the v1 envelope; ok → data, failure → XoApiException with backend code. */
-    private JSONObject parseEnvelope(XoHttp.Response response, String path) {
+    /**
+     * Parses the v1 envelope; ok → data, failure → XoApiException with backend code.
+     * Package-visible + static for the JUnit contract tests (pure function of the
+     * response; no instance state) — behavior identical to the original private form.
+     */
+    static JSONObject parseEnvelope(XoHttp.Response response, String path) {
         String body = response.body == null ? "" : response.body.trim();
         if (body.length() == 0) {
             throw new XoApiException(response.code, XoApiException.MALFORMED_RESPONSE,
@@ -1166,7 +1170,7 @@ public final class RestGateway {
     }
 
     /** Best-effort error-code read for the 401 retry decision, without envelope commitment. */
-    private static String envelopeErrorCode(String body) {
+    static String envelopeErrorCode(String body) {
         try {
             JSONObject error = new JSONObject(body.trim()).optJSONObject("error");
             return error == null ? null : error.optString("code", null);

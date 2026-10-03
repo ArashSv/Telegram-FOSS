@@ -1,0 +1,27 @@
+{
+    "ok": true,
+    "rules": {
+        "status_timestamp": {
+            "base": "everybody",
+            "allowed": [],
+            "disallowed": []
+        },
+        "photo": {
+            "base": "everybody",
+            "allowed": [],
+            "disallowed": []
+        },
+        "about": {
+            "base": "everybody",
+            "allowed": [],
+            "disallowed": []
+        },
+        "chat_invite": {
+            "base": "everybody",
+            "allowed": [],
+            "disallowed": []
+        }
+    },
+    "users": [],
+    "updated_at": 1790986746
+}

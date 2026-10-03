@@ -1,0 +1,22 @@
+{
+    "ok": true,
+    "gifs": [
+        {
+            "file_id": 2,
+            "name": "clip.mp4",
+            "mime_type": "video/mp4",
+            "size": 544,
+            "sha256": "2197be53f515903ea8737621259e7e063ad8dfe4daf25c08ea688ce58bdeba30",
+            "status": "ready",
+            "kind": "gif",
+            "width": null,
+            "height": null,
+            "duration": null,
+            "thumb_file_id": null,
+            "url": "/api/v1/files/download.php?file_id=2",
+            "created_at": 1790986746
+        }
+    ],
+    "hash": "450215437",
+    "max": 30
+}
