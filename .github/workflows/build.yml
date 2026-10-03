@@ -237,7 +237,11 @@ jobs:
           for ABI in arm arm64 x86 x86_64; do ./build_ffmpeg_clang.sh "$ABI"; done
           ./patch_ffmpeg.sh
           ./patch_boringssl.sh
-          for ABI in arm arm64 x86 x86_64; do ./build_boringssl.sh "$ABI"; done
+          # build_boringssl.sh rm -rf's its shared build/ dir at startup, so
+          # it MUST get all four ABIs in ONE invocation (a per-ABI loop would
+          # leave only the last ABI's outputs). Its case bodies touch only
+          # API/CPU -> no cross-arg variable leakage inside one process.
+          ./build_boringssl.sh arm arm64 x86 x86_64
 
       - name: Build assembleAfatRelease (signed, non-debuggable)
         env:
