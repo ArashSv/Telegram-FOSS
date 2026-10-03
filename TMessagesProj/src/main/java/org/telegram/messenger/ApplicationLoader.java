@@ -228,6 +228,46 @@ public class ApplicationLoader extends Application {
         }
     }
 
+    /**
+     * T65: true when running in the default (main) process. The crash-report
+     * offer must only fire there — the :crash process re-runs onCreate and
+     * would otherwise loop. Application.getProcessName() needs API 28;
+     * older devices read /proc/self/cmdline.
+     */
+    private boolean isMainProcess() {
+        try {
+            String name = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                name = ApplicationLoader.this.getProcessName();
+            }
+            if (name == null || name.length() == 0) {
+                name = readProcCmdline();
+            }
+            if (name == null || name.length() == 0) {
+                return true; // unknown -> treat as main (report offer is idempotent)
+            }
+            return name.equals(getPackageName());
+        } catch (Throwable ignore) {
+            return true;
+        }
+    }
+
+    private static String readProcCmdline() {
+        try (java.io.FileInputStream in = new java.io.FileInputStream("/proc/self/cmdline")) {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[256];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+            String s = new String(out.toByteArray(), "UTF-8").trim();
+            int zero = s.indexOf('\0');
+            return zero >= 0 ? s.substring(0, zero) : s;
+        } catch (Throwable ignore) {
+            return null;
+        }
+    }
+
     public ApplicationLoader() {
         super();
     }
@@ -253,6 +293,33 @@ public class ApplicationLoader extends Application {
         }
         if (applicationContext == null) {
             applicationContext = getApplicationContext();
+        }
+
+        // T65: crash recorder FIRST — every process gets the black-box
+        // handler before anything can die unobserved.
+        XoCrash.install();
+
+        // T65: offer a pending crash report from the previous run. Only the
+        // MAIN process offers it; the :crash report process reads the
+        // archived text itself and must not re-trigger. Launching the report
+        // screen with CLEAR_TASK also empties the launcher task, so the
+        // crash-looping LaunchActivity never runs while the user reads the
+        // report.
+        if (isMainProcess()) {
+            String pendingReport = null;
+            try {
+                pendingReport = XoCrash.consumePendingReport();
+            } catch (Throwable ignore) {
+            }
+            if (pendingReport != null) {
+                try {
+                    Intent reportIntent = new Intent(this, XoCrashReportActivity.class);
+                    reportIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                    reportIntent.putExtra("report", pendingReport);
+                    startActivity(reportIntent);
+                } catch (Throwable ignore) {
+                }
+            }
         }
 
         NativeLoader.initNativeLibs(ApplicationLoader.applicationContext);

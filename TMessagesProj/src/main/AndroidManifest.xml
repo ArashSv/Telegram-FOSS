@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
           xmlns:tools="http://schemas.android.com/tools"
-    package="org.telegram.messenger"
     android:installLocation="auto">
+    <!-- T65: the package attribute moved to the Gradle namespace DSL
+         (org.telegram.messenger) as required by AGP 8. -->
 
     <supports-screens android:anyDensity="true"
                       android:largeScreens="true"
@@ -423,6 +424,16 @@
         <service android:name=".KeepAliveJob"
                  android:exported="false"
                  android:permission="android.permission.BIND_JOB_SERVICE"/>
+        <!-- T65: crash report screen — dedicated :crash process so the report
+             SURVIVES the crash-looping main process. Programmatic UI, no app
+             dependencies; Theme.Light works down to minSdk. -->
+        <activity android:name=".XoCrashReportActivity"
+                  android:process=":crash"
+                  android:exported="false"
+                  android:excludeFromRecents="true"
+                  android:taskAffinity=""
+                  android:theme="@android:style/Theme.Light"
+                  android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|locale|layoutDirection|uiMode|density"/>
         <!-- T57 hardening: fork-only internal services no longer exported
              (any installed app could previously start them). Same-app starts
              are unaffected by exported=false. -->
