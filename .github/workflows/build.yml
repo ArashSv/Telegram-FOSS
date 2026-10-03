@@ -324,6 +324,36 @@ jobs:
           "$AAPT2" dump badging "$APK" | grep -o "versionCode='[0-9]*'" | grep -q "versionCode='$EXPECTED_VC'" || { echo "FATAL: versionCode != $EXPECTED_VC (monotonic scheme broken)" >&2; exit 1; }
           echo "T64 gate: ALL GREEN"
 
+      # ── T66 gate: Android 15 16KB page-size compliance ──
+      # AGP 8 ships the .so uncompressed (extractNativeLibs=false); Android 15
+      # devices with 16KB kernels refuse to dlopen 4KB-aligned ELF LOAD
+      # segments ("dlopen failed: program alignment") — the 'stops right
+      # after the splash' crash. Every LOAD segment must be 16KB-aligned.
+      - name: "T66 gate: native libs are 16KB page-aligned (Android 15)"
+        run: |
+          APK="$(ls TMessagesProj_App/build/outputs/apk/afat/release/*.apk | head -n 1)"
+          READELF="$ANDROID_HOME/ndk/21.4.7075529/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf"
+          test -x "$READELF" || { echo "FATAL: llvm-readelf not found in pinned NDK" >&2; exit 1; }
+          rm -rf /tmp/t66libs && mkdir -p /tmp/t66libs
+          unzip -q "$APK" 'lib/*/libtmessages.49.so' -d /tmp/t66libs
+          SO_FILES="$(find /tmp/t66libs -name 'libtmessages.49.so')"
+          echo "$SO_FILES" | wc -l
+          FAIL=0
+          for SO in $SO_FILES; do
+            echo "== $SO"
+            ALIGNS="$("$READELF" -l "$SO" | awk '/^  LOAD/{print $NF}')"
+            echo "LOAD aligns: $ALIGNS"
+            for A in $ALIGNS; do
+              DEC=$(( A ))
+              if [ "$DEC" -lt 16384 ]; then
+                echo "FATAL: $SO has a LOAD segment aligned to $A (< 16384) — Android 15 16KB devices would dlopen-fail" >&2
+                FAIL=1
+              fi
+            done
+          done
+          [ "$FAIL" -eq 0 ] || exit 1
+          echo "T66 gate: ALL LOAD segments 16KB-aligned"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:

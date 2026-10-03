@@ -5,7 +5,14 @@ set(CMAKE_C_FLAGS "-w -std=c11 -DANDROID -D_LARGEFILE_SOURCE=1 -g")
 set(CMAKE_ASM_FLAGS "${CFLAGS} -x assembler-with-cpp")
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -ffunction-sections -fdata-sections")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffunction-sections -fdata-sections")
-set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,--exclude-libs,libtgvoip.a,libtgcalls.a,libtgcalls_tp.a,libtgnet.a,libwebp.a,libflac.a,librlottie.a,libsqlite.a,
+# T66: Android 15 16KB page-size compliance. AGP 8 ships the .so UNCOMPRESSED
+# (extractNativeLibs=false default), and Android 15 devices running 16KB-page
+# kernels refuse to dlopen ELF files whose LOAD segments are 4KB-aligned
+# ("dlopen failed: ... program alignment") — the exact 'stops right after the
+# splash' report on Android 15 while Android 13 (4KB kernels) is fine.
+# max-page-size=16384 aligns every LOAD segment to 16KB; 4KB-kernel devices
+# are unaffected. CI gates the result with llvm-readelf (build.yml).
+set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,max-page-size=16384 -Wl,--exclude-libs,libtgvoip.a,libtgcalls.a,libtgcalls_tp.a,libtgnet.a,libwebp.a,libflac.a,librlottie.a,libsqlite.a,
 ${CMAKE_HOME_DIRECTORY}/ffmpeg/build/${ANDROID_ABI}/lib/libswscale.a,
 ${CMAKE_HOME_DIRECTORY}/ffmpeg/build/${ANDROID_ABI}/lib/libavformat.a,
 ${CMAKE_HOME_DIRECTORY}/ffmpeg/build/${ANDROID_ABI}/lib/libavcodec.a,

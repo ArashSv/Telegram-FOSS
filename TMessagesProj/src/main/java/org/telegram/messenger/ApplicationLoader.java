@@ -87,6 +87,10 @@ public class ApplicationLoader extends Application {
     protected void attachBaseContext(Context base) {
         super.attachBaseContext(base);
         MultiDex.install(this);
+        // T66: install the black-box recorder BEFORE the ContentProvider
+        // phase — providers run between attachBaseContext and onCreate and
+        // were an unobserved crash window in T65.
+        XoCrash.install();
     }
 
     public static PushListenerController.IPushListenerServiceProvider getPushProvider() {
@@ -295,20 +299,15 @@ public class ApplicationLoader extends Application {
             applicationContext = getApplicationContext();
         }
 
-        // T65: crash recorder FIRST — every process gets the black-box
-        // handler before anything can die unobserved.
-        XoCrash.install();
-
-        // T65: offer a pending crash report from the previous run. Only the
-        // MAIN process offers it; the :crash report process reads the
-        // archived text itself and must not re-trigger. Launching the report
-        // screen with CLEAR_TASK also empties the launcher task, so the
-        // crash-looping LaunchActivity never runs while the user reads the
-        // report.
+        // T66: offer a pending crash report from a previous run. Only the
+        // MAIN process offers it. The report is NOT consumed here — the
+        // report activity marks it offered after it actually renders, so a
+        // silently blocked start (Android 15 background-activity-launch)
+        // or a re-crash can never destroy the report (T65 flaw).
         if (isMainProcess()) {
             String pendingReport = null;
             try {
-                pendingReport = XoCrash.consumePendingReport();
+                pendingReport = XoCrash.peekUnofferedReport();
             } catch (Throwable ignore) {
             }
             if (pendingReport != null) {
@@ -318,15 +317,36 @@ public class ApplicationLoader extends Application {
                     reportIntent.putExtra("report", pendingReport);
                     startActivity(reportIntent);
                 } catch (Throwable ignore) {
+                    // LaunchActivity.onCreate has a foreground fallback for
+                    // this exact case; nothing is lost here anymore.
                 }
+            }
+            // T66: diagnostic delivery channel — re-upload archived reports
+            // that never reached the backend + launch ping (device, version,
+            // pending-crash flag). Daemon, MIN_PRIORITY, fully guarded.
+            try {
+                Thread diag = new Thread(() -> {
+                    XoCrash.resendUnsentReports();
+                    XoCrash.sendLaunchPing();
+                }, "XoCrashDiag");
+                diag.setDaemon(true);
+                diag.setPriority(Thread.MIN_PRIORITY);
+                diag.start();
+            } catch (Throwable ignore) {
             }
         }
 
-        NativeLoader.initNativeLibs(ApplicationLoader.applicationContext);
-        try {
-            ConnectionsManager.native_setJava(false);
-        } catch (UnsatisfiedLinkError error) {
-            throw new RuntimeException("can't load native libraries " +  Build.CPU_ABI + " lookup folder " + NativeLoader.getAbiFolder());
+        // T66: the native fail-fast below killed the :crash report process
+        // before its activity could render (the "report screen never
+        // appears" bug) — native init is a MAIN-process concern only. The
+        // :crash process is fully programmatic UI with zero native deps.
+        if (isMainProcess()) {
+            NativeLoader.initNativeLibs(ApplicationLoader.applicationContext);
+            try {
+                ConnectionsManager.native_setJava(false);
+            } catch (UnsatisfiedLinkError error) {
+                throw new RuntimeException("can't load native libraries " +  Build.CPU_ABI + " lookup folder " + NativeLoader.getAbiFolder());
+            }
         }
         new ForegroundDetector(this) {
             @Override
@@ -344,7 +364,11 @@ public class ApplicationLoader extends Application {
 
         applicationHandler = new Handler(applicationContext.getMainLooper());
 
-        AndroidUtilities.runOnUIThread(ApplicationLoader::startPushService);
+        // T66: push service = FGS start + repeating alarm — main-process only.
+        // The :crash report process must stay a passive, side-effect-free UI.
+        if (isMainProcess()) {
+            AndroidUtilities.runOnUIThread(ApplicationLoader::startPushService);
+        }
 
         LauncherIconController.tryFixLauncherIconIfNeeded();
         ProxyRotationController.init();

@@ -254,4 +254,9 @@
         <item name="android:textColor">@color/widget_badge</item>
     </style>
 
+
+    <!-- T66: crash-report screen theme (platform base, minSdk-safe). -->
+    <style name="Theme.XoCrash" parent="@android:style/Theme.Light">
+    </style>
+
 </resources>

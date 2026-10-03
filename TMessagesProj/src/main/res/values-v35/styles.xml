@@ -60,4 +60,12 @@
         <item name="android:textViewStyle">@style/MyTextViewStyle</item>
     </style>
 
+
+    <!-- T66: theme for the :crash-process report screen — same platform
+         Theme.Light base as before, plus the edge-to-edge valve so the
+         screen is also enforcement-clean on Android 15. -->
+    <style name="Theme.XoCrash" parent="@android:style/Theme.Light">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+
 </resources>

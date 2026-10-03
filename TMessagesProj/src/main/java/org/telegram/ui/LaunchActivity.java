@@ -119,6 +119,8 @@ import org.telegram.messenger.TopicsController;
 import org.telegram.messenger.UserConfig;
 import org.telegram.messenger.UserObject;
 import org.telegram.messenger.Utilities;
+import org.telegram.messenger.XoCrash;
+import org.telegram.messenger.XoCrashReportActivity;
 import org.telegram.messenger.browser.Browser;
 import org.telegram.messenger.voip.VideoCapturerDevice;
 import org.telegram.messenger.voip.VoIPPendingCall;
@@ -389,6 +391,26 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
         flagSecureReason.attach();
 
         super.onCreate(savedInstanceState);
+        // T66: foreground fallback for the crash-report offer — if Android 15
+        // silently blocked the Application.onCreate start, a foreground
+        // activity start is always allowed. The report is consumed by the
+        // report screen itself after it renders, so an early return here
+        // loses nothing.
+        try {
+            String pendingCrashReport = XoCrash.peekUnofferedReport();
+            if (pendingCrashReport != null) {
+                try {
+                    Intent reportIntent = new Intent(this, XoCrashReportActivity.class);
+                    reportIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                    reportIntent.putExtra("report", pendingCrashReport);
+                    startActivity(reportIntent);
+                    finish();
+                    return;
+                } catch (Throwable ignore) {
+                }
+            }
+        } catch (Throwable ignore) {
+        }
         if (Build.VERSION.SDK_INT >= 24) {
             AndroidUtilities.isInMultiwindow = isInMultiWindowMode();
         }

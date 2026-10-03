@@ -426,13 +426,14 @@
                  android:permission="android.permission.BIND_JOB_SERVICE"/>
         <!-- T65: crash report screen — dedicated :crash process so the report
              SURVIVES the crash-looping main process. Programmatic UI, no app
-             dependencies; Theme.Light works down to minSdk. -->
+             dependencies; Theme.Light works down to minSdk. T66: dedicated
+             theme so the v35 edge-to-edge valve covers this screen too. -->
         <activity android:name=".XoCrashReportActivity"
                   android:process=":crash"
                   android:exported="false"
                   android:excludeFromRecents="true"
                   android:taskAffinity=""
-                  android:theme="@android:style/Theme.Light"
+                  android:theme="@style/Theme.XoCrash"
                   android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize|screenLayout|locale|layoutDirection|uiMode|density"/>
         <!-- T57 hardening: fork-only internal services no longer exported
              (any installed app could previously start them). Same-app starts
@@ -522,6 +523,10 @@
             android:authorities="${applicationId}.call_sound_provider"
             android:name=".voip.CallNotificationSoundProvider"
             android:exported="true"/>
+        <!-- T66 audit note: CallNotificationSoundProvider stays exported=true
+             on purpose — the SYSTEM (SystemUI) reads the content:// sound URI
+             for VoIP call notifications; un-exporting risks silent calls.
+             No intent filters exist, so the surface is read-only by design. -->
 
         <receiver android:name=".ChatsWidgetProvider" android:exported="false">
             <meta-data android:name="android.appwidget.provider"
