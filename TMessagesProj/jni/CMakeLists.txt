@@ -87,6 +87,12 @@ elseif(${ANDROID_ABI} STREQUAL "arm64-v8a")
             SIZEOF_SIZE_T=8)
 elseif(${ANDROID_ABI} STREQUAL "x86")
     set(CMAKE_ASM_NASM_COMPILER_ARG1 "${CMAKE_ASM_NASM_COMPILER_ARG1} -DPIC")
+    # T64: the x86_64 branch passes -DELF but x86 never did. Without -DELF,
+    # jsimdext.inc's fallback EXTN macro prefixes EVERY asm symbol with '_',
+    # so none of the jsimd_*_mmx/sse2 symbols match the plain C references
+    # and libmozjpeg.a fails to link (x86 ABI was unbuildable in this fork
+    # until the universal-4-ABI era exposed it).
+    set(CMAKE_ASM_NASM_FLAGS "${CMAKE_ASM_NASM_FLAGS} -DELF")
     target_sources(mozjpeg PRIVATE
             mozjpeg/simd/i386/jsimd.c
             mozjpeg/simd/i386/jsimdcpu.asm
