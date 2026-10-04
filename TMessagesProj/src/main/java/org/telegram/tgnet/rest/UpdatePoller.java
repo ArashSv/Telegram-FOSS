@@ -143,6 +143,15 @@ public final class UpdatePoller {
             lastPresenceBackground = isBackground();
             lastPresenceFlipElapsed = SystemClock.elapsedRealtime();
             FileLog.d("UpdatePoller: started for account " + account + " user " + selfId);
+            // T71: opportunistic E2EE key registration — a fresh login posts
+            // its public prekey bundle as soon as the session is live, so the
+            // FIRST incoming 1:1 message can already be encrypted. Async +
+            // idempotent; a failure retries before the first send.
+            try {
+                org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).ensureRegisteredAsync();
+            } catch (Throwable e) {
+                FileLog.e("UpdatePoller: e2ee registration kick failed", e);
+            }
             scheduler.execute(this::tick);
         }
     }
@@ -478,7 +487,7 @@ public final class UpdatePoller {
         }
         try {
             long dialogId = isGroup ? -chatId : peerUserId;
-            TLRPC.TL_message message = TlJsonMapper.parseMessage(msgJson, dialogId, isGroup, peerUserId, selfId);
+            TLRPC.TL_message message = TlJsonMapper.parseMessage(account, msgJson, dialogId, isGroup, peerUserId, selfId);
             index.rememberMessages(chatId, java.util.Collections.singletonList(message));
             TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
             update.message = message;
@@ -524,7 +533,7 @@ public final class UpdatePoller {
         }
         try {
             long dialogId = isGroup ? -chatId : peerUserId;
-            TLRPC.TL_message message = TlJsonMapper.parseMessage(msgJson, dialogId, isGroup, peerUserId, selfId);
+            TLRPC.TL_message message = TlJsonMapper.parseMessage(account, msgJson, dialogId, isGroup, peerUserId, selfId);
             index.rememberMessages(chatId, java.util.Collections.singletonList(message));
             TLRPC.TL_updateEditMessage update = new TLRPC.TL_updateEditMessage();
             update.message = message;

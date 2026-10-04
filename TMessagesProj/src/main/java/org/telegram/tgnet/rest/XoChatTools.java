@@ -107,10 +107,16 @@ public final class XoChatTools {
                     // logout/re-login. The peer gets it via the message_new poll
                     // event.
                     try {
-                        JSONObject sent = gateway.send(chatId, SEED_TEXT, 0);
+                        // T71: seed rides the E2EE path for 1:1 chats — plaintext
+                        // must never reach the server for an encrypted dialog.
+                        String seedWire = peerUserId > 0 && peerUserId != selfId
+                                ? org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
+                                        .encryptText(peerUserId, SEED_TEXT)
+                                : SEED_TEXT;
+                        JSONObject sent = gateway.send(chatId, seedWire, 0);
                         JSONObject msgJson = sent.optJSONObject("message");
                         if (msgJson != null) {
-                            seedMessage = TlJsonMapper.parseMessage(msgJson, dialogId, false, peer.id, selfId);
+                            seedMessage = TlJsonMapper.parseMessage(account, msgJson, dialogId, false, peer.id, selfId);
                             RestChatIndex.getInstance(account).rememberMessages(chatId,
                                     new ArrayList<>(java.util.Collections.singletonList(seedMessage)));
                         }

@@ -375,7 +375,7 @@ public final class RestDispatcher {
         JSONArray messagesJson = RestGateway.getInstance(account).history(chatId, req.offset_id, req.limit);
         ArrayList<TLRPC.TL_message> messages;
         try {
-            messages = TlJsonMapper.parseHistory(messagesJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+            messages = TlJsonMapper.parseHistory(account, messagesJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
         } catch (org.json.JSONException e) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed history answer: " + e.getMessage());
         }
@@ -418,14 +418,21 @@ public final class RestDispatcher {
             FileLog.d("RestDispatcher: send chat=" + chatId + " len=" + req.message.length() + " reply_to=" + replyToId);
         }
 
-        JSONObject sent = RestGateway.getInstance(account).send(chatId, req.message, replyToId);
+        // T71: E2EE — private 1:1 chats NEVER send plaintext. The send FAILS
+        // LOUDLY (never silently falls back) when the peer has no keys yet.
+        String wireContent = req.message;
+        if (!peer.isGroup && peer.userId > 0 && peer.userId != selfId) {
+            wireContent = XoE2EE.getInstance(account).encryptText(peer.userId, req.message);
+        }
+
+        JSONObject sent = RestGateway.getInstance(account).send(chatId, wireContent, replyToId);
         JSONObject msgJson = sent.optJSONObject("message");
         if (msgJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "send response lacks the message object");
         }
         TLRPC.TL_message message;
         try {
-            message = TlJsonMapper.parseMessage(msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+            message = TlJsonMapper.parseMessage(account, msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
         } catch (org.json.JSONException e) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed sent message: " + e.getMessage());
         }
@@ -536,6 +543,23 @@ public final class RestDispatcher {
         src.limit(written);
         src.get(data);
         bytes.reuse(); // single free: the tree never serializes a routed request
+
+        // T71: E2EE media — if this upload belongs to an encrypted 1:1 send,
+        // EVERY part is AEAD-encrypted on the fly with the upload's single-use
+        // file key. What reaches the server (and the size/sha attestations
+        // below) is CIPHERTEXT; the plaintext totals for the message envelope
+        // are tracked separately in the encrypted store.
+        byte[] e2eeFileKey = org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account).uploadKeyForTree(treeUploadId);
+        if (e2eeFileKey != null) {
+            try {
+                org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account)
+                        .noteUploadPart(treeUploadId, part, written);
+                data = org.telegram.tgnet.rest.e2ee.XoE2EEMedia.encryptChunk(e2eeFileKey, part, data);
+            } catch (Exception e) {
+                FileLog.e("RestDispatcher: e2ee part encryption failed", e);
+                throw new XoApiException(500, "E2EE_ENCRYPT_FAILED", "could not encrypt upload part");
+            }
+        }
 
         long backendId = RestFileBridge.getInstance(account).ensureBackendFile(treeUploadId, chunksTotalEstimate);
         // T14: the host WAF rejects binary POST bodies under ~10 KB, which
@@ -796,20 +820,61 @@ public final class RestDispatcher {
         // (planted by the receive mapper) — skip finalize, the file is ready.
         boolean alreadyBackend = req.media instanceof TLRPC.TL_inputMediaPhoto
                 || req.media instanceof TLRPC.TL_inputMediaDocument;
+
+        // T71: resolve the peer FIRST — the E2EE decision must shape the
+        // finalize declaration (encrypted uploads land as opaque e2ee blobs,
+        // no plaintext mime/name/dimensions ever reach the file row).
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        PeerRef peer = resolvePeer(account, req.peer);
+        if (peer == null) {
+            throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable peer for send-media");
+        }
+        boolean e2eeChat = !peer.isGroup && peer.userId > 0 && peer.userId != selfId;
+        org.telegram.tgnet.rest.e2ee.XoE2EEStore e2eeStore = e2eeChat
+                ? org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account) : null;
+        byte[] bodyFileKey = e2eeStore != null && !alreadyBackend ? e2eeStore.uploadKeyForTree(treeUploadId) : null;
+        byte[] thumbFileKey = e2eeStore != null && thumbTreeId != 0 ? e2eeStore.uploadKeyForTree(thumbTreeId) : null;
+        // An encrypted chat NEVER references plaintext media: either the
+        // upload carries an E2EE key, or the item is a re-encrypted forward
+        // envelope (alreadyBackend + envelope content). Otherwise — fail loudly.
+        boolean e2ee = false;
+        if (e2eeChat) {
+            if (!alreadyBackend && bodyFileKey == null) {
+                throw new XoApiException(400, "E2EE_MEDIA_KEY_MISSING",
+                        "encrypted upload lost its key; cancel and resend the media");
+            }
+            e2ee = !alreadyBackend || org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.isEnvelope(req.message);
+            if (!e2ee) {
+                throw new XoApiException(400, "E2EE_PLAINTEXT_MEDIA_REFUSED",
+                        "plaintext media cannot be referenced in an encrypted chat");
+            }
+        }
+
         long thumbBackendId = 0;
         if (!alreadyBackend) {
+            if (e2ee) {
+                // ciphertext metadata: the server stores an opaque blob
+                mime = null;
+                name = null;
+                width = height = duration = null;
+                asGif = false;
+            }
             // finalize is the single metadata injection point; the tree's real
             // part count patches any streaming-extended estimate (v1.1b). T14:
             // declare the exact streamed byte total (corruption cross-check).
             long declaredBytes = bridge.uploadedBytesFor(treeUploadId);
-            JSONObject finalizeEnvelope = bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes, asGif);
+            JSONObject finalizeEnvelope = e2ee
+                    ? bridge.finalizeUploadE2ee(treeUploadId, Math.max(1, parts), declaredBytes)
+                    : bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes, asGif);
             // T29: the finalize answer is the server's final {size, sha256}
             // attestation for the new file — feed the download-integrity index
             // so this client's own later downloads of it verify too.
             RestFileBridge.noteFileMetaFromJson(finalizeEnvelope == null ? null : finalizeEnvelope.optJSONObject("file"));
             if (thumbTreeId != 0) {
                 try {
-                    JSONObject thumbEnvelope = bridge.finalizeUpload(thumbTreeId, 1, "image/jpeg", null, null, null, null, bridge.uploadedBytesFor(thumbTreeId));
+                    JSONObject thumbEnvelope = e2ee
+                            ? bridge.finalizeUploadE2ee(thumbTreeId, 1, bridge.uploadedBytesFor(thumbTreeId))
+                            : bridge.finalizeUpload(thumbTreeId, 1, "image/jpeg", null, null, null, null, bridge.uploadedBytesFor(thumbTreeId));
                     JSONObject thumbJson = thumbEnvelope != null ? thumbEnvelope.optJSONObject("file") : null;
                     thumbBackendId = thumbJson != null ? thumbJson.optLong("file_id", 0) : 0;
                     RestFileBridge.noteFileMetaFromJson(thumbJson);
@@ -827,11 +892,6 @@ public final class RestDispatcher {
             throw new XoApiException(400, "FILE_ID_INVALID", "upload was never routed through this client");
         }
 
-        long selfId = UserConfig.getInstance(account).clientUserId;
-        PeerRef peer = resolvePeer(account, req.peer);
-        if (peer == null) {
-            throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable peer for send-media");
-        }
         long chatId = requireChatId(account, peer);
         int replyToId = 0;
         if (req.reply_to instanceof TLRPC.TL_inputReplyToMessage) {
@@ -841,18 +901,74 @@ public final class RestDispatcher {
             replyToId = 0;
         }
         String caption = req.message == null ? "" : req.message;
+        String wireCaption = caption;
+        if (e2ee) {
+            org.telegram.tgnet.rest.e2ee.XoE2EE e2eeMgr = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account);
+            if (!alreadyBackend) {
+                // fresh encrypted upload — build the media envelope from the
+                // upload manifest (real metadata lives ONLY inside the
+                // encrypted payload; the server file row stays opaque)
+                long[] totals = e2eeStore.uploadPlaintextTotals(treeUploadId);
+                long plainLen = totals != null ? totals[0] : 0;
+                int chunkSize = totals != null && totals[1] > 0 ? (int) totals[1] : 131072;
+                org.json.JSONObject manifest = e2eeStore.uploadManifest(treeUploadId);
+                String realMime = manifest != null && manifest.has("mi") ? manifest.optString("mi") : null;
+                String realName = manifest != null && manifest.has("na") ? manifest.optString("na") : null;
+                int realW = manifest != null ? manifest.optInt("w", 0) : 0;
+                int realH = manifest != null ? manifest.optInt("h", 0) : 0;
+                int realDur = manifest != null ? manifest.optInt("du", 0) : 0;
+                byte[] thumbKey = thumbFileKey;
+                String inner;
+                try {
+                    inner = org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerMedia(
+                            bodyFileKey, plainLen, chunkSize, realMime, realName, realW, realH, realDur,
+                            caption, thumbKey != null,
+                            thumbKey, thumbBackendId);
+                    wireCaption = e2eeMgr.encryptForPeer(peer.userId, inner);
+                } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                    throw new XoApiException(400, e.reasonCode, e.getMessage());
+                } catch (Exception e) {
+                    FileLog.e("RestDispatcher: e2ee media envelope failed", e);
+                    throw new XoApiException(400, "E2EE_ENCRYPT_FAILED", "could not encrypt the media message");
+                }
+                // register media keys so THIS device can decrypt its own later
+                // downloads (the receiver gains the same keys via the envelope)
+                try {
+                    org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta =
+                            org.telegram.tgnet.rest.e2ee.XoE2EE.parseMediaMeta(new org.json.JSONObject(inner));
+                    e2eeMgr.noteMediaKeys(mediaFileId, meta);
+                    if (thumbBackendId > 0 && thumbKey != null) {
+                        org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta thumbMeta =
+                                new org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta();
+                        thumbMeta.fileKey = thumbKey;
+                        thumbMeta.chunkSize = chunkSize;
+                        thumbMeta.plaintextLen = 0;
+                        thumbMeta.thumbEncrypted = true;
+                        e2eeMgr.noteMediaKeys(thumbBackendId, thumbMeta);
+                    }
+                } catch (Exception e) {
+                    FileLog.e("RestDispatcher: media key registration failed", e);
+                }
+                e2eeStore.dropUploadIntent(treeUploadId);
+                if (thumbTreeId != 0) {
+                    e2eeStore.dropUploadIntent(thumbTreeId);
+                }
+            }
+            // alreadyBackend: req.message IS the pre-built envelope (re-encrypted
+            // forward) — passed through untouched by policy (E2EE_PLAINTEXT_MEDIA_REFUSED guard above)
+        }
         if (BuildVars.LOGS_ENABLED) {
-            FileLog.d("RestDispatcher: send-media chat=" + chatId + " file=" + mediaFileId + " caption=" + caption.length());
+            FileLog.d("RestDispatcher: send-media chat=" + chatId + " file=" + mediaFileId + " e2ee=" + e2ee);
         }
 
-        JSONObject sent = RestGateway.getInstance(account).sendMedia(chatId, mediaFileId, caption, replyToId, thumbBackendId);
+        JSONObject sent = RestGateway.getInstance(account).sendMedia(chatId, mediaFileId, wireCaption, replyToId, thumbBackendId);
         JSONObject msgJson = sent.optJSONObject("message");
         if (msgJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "send response lacks the message object");
         }
         TLRPC.TL_message message;
         try {
-            message = TlJsonMapper.parseMessage(msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+            message = TlJsonMapper.parseMessage(account, msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
         } catch (org.json.JSONException e) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed sent media message: " + e.getMessage());
         }
@@ -942,7 +1058,21 @@ public final class RestDispatcher {
         }
 
         long declaredBytes = bridge.uploadedBytesFor(treeUploadId);
-        JSONObject finalizeEnvelope = bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes, asGif);
+        // T71: albums — the uploadMedia step is chat-agnostic, so the E2EE
+        // decision rides the upload intent (only 1:1-destined uploads carry
+        // a key). Encrypted items finalize as opaque e2ee blobs; the real
+        // metadata rides the per-item envelope built later in send-multi.
+        boolean e2eeItem = org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account)
+                .uploadKeyForTree(treeUploadId) != null;
+        if (e2eeItem) {
+            mime = null;
+            name = null;
+            width = height = duration = null;
+            asGif = false;
+        }
+        JSONObject finalizeEnvelope = e2eeItem
+                ? bridge.finalizeUploadE2ee(treeUploadId, Math.max(1, parts), declaredBytes)
+                : bridge.finalizeUpload(treeUploadId, Math.max(1, parts), mime, name, width, height, duration, declaredBytes, asGif);
         RestFileBridge.noteFileMetaFromJson(finalizeEnvelope == null ? null : finalizeEnvelope.optJSONObject("file"));
         if (finalizeEnvelope == null || finalizeEnvelope.optJSONObject("file") == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "finalize response lacks the file object");
@@ -950,7 +1080,11 @@ public final class RestDispatcher {
         JSONObject fileJson = finalizeEnvelope.optJSONObject("file");
         if (thumbTreeId != 0) {
             try {
-                JSONObject thumbEnvelope = bridge.finalizeUpload(thumbTreeId, 1, "image/jpeg", null, null, null, null, bridge.uploadedBytesFor(thumbTreeId));
+                boolean e2eeThumb = org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account)
+                        .uploadKeyForTree(thumbTreeId) != null;
+                JSONObject thumbEnvelope = e2eeThumb
+                        ? bridge.finalizeUploadE2ee(thumbTreeId, 1, bridge.uploadedBytesFor(thumbTreeId))
+                        : bridge.finalizeUpload(thumbTreeId, 1, "image/jpeg", null, null, null, null, bridge.uploadedBytesFor(thumbTreeId));
                 RestFileBridge.noteFileMetaFromJson(thumbEnvelope == null ? null : thumbEnvelope.optJSONObject("file"));
             } catch (Exception e) {
                 // a thumb must never fail the item; the server-side link falls
@@ -987,6 +1121,14 @@ public final class RestDispatcher {
             throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable peer for send-multi-media");
         }
         long chatId = requireChatId(account, peer);
+        // T71: E2EE albums — per-item envelopes. The items are backend-file
+        // references; the per-item upload keys are found through the bridge's
+        // reverse index (treeUploadIdForBackend). A 1:1 album item WITHOUT a
+        // key (already on the server as plaintext, e.g. a re-sent GIF) is
+        // REFUSED — encrypted chats never reference plaintext media.
+        boolean e2eeChat = !peer.isGroup && peer.userId > 0 && peer.userId != selfId;
+        org.telegram.tgnet.rest.e2ee.XoE2EEStore e2eeStore = e2eeChat
+                ? org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account) : null;
 
         JSONArray items = new JSONArray();
         for (int a = 0; a < req.multi_media.size(); a++) {
@@ -1003,10 +1145,45 @@ public final class RestDispatcher {
             if (mediaFileId == 0) {
                 throw new XoApiException(400, "FILE_ID_INVALID", "sendMultiMedia item " + a + " carries no backend file id");
             }
+            String wireContent = single.message == null ? "" : single.message;
+            if (e2eeChat) {
+                long treeUploadId = RestFileBridge.getInstance(account).treeUploadIdForBackend(mediaFileId);
+                byte[] fileKey = e2eeStore.uploadKeyForTree(treeUploadId);
+                if (fileKey == null) {
+                    throw new XoApiException(400, "E2EE_PLAINTEXT_MEDIA_REFUSED",
+                            "album item " + a + " carries no encryption key for an encrypted chat");
+                }
+                long[] totals = e2eeStore.uploadPlaintextTotals(treeUploadId);
+                int chunkSize = totals != null && totals[1] > 0 ? (int) totals[1] : 131072;
+                org.json.JSONObject manifest = e2eeStore.uploadManifest(treeUploadId);
+                try {
+                    String inner = org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerMedia(
+                            fileKey,
+                            totals != null ? totals[0] : 0,
+                            chunkSize,
+                            manifest != null && manifest.has("mi") ? manifest.optString("mi") : null,
+                            manifest != null && manifest.has("na") ? manifest.optString("na") : null,
+                            manifest != null ? manifest.optInt("w", 0) : 0,
+                            manifest != null ? manifest.optInt("h", 0) : 0,
+                            manifest != null ? manifest.optInt("du", 0) : 0,
+                            wireContent, false, null, 0);
+                    wireContent = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
+                            .encryptForPeer(peer.userId, inner);
+                    org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta =
+                            org.telegram.tgnet.rest.e2ee.XoE2EE.parseMediaMeta(new org.json.JSONObject(inner));
+                    org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteMediaKeys(mediaFileId, meta);
+                    e2eeStore.dropUploadIntent(treeUploadId);
+                } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                    throw new XoApiException(400, e.reasonCode, e.getMessage());
+                } catch (Exception e) {
+                    FileLog.e("RestDispatcher: e2ee album envelope failed", e);
+                    throw new XoApiException(400, "E2EE_ENCRYPT_FAILED", "could not encrypt album item " + a);
+                }
+            }
             JSONObject item = new JSONObject();
             try {
                 item.put("media_file_id", mediaFileId);
-                item.put("content", single.message == null ? "" : single.message);
+                item.put("content", wireContent);
             } catch (org.json.JSONException e) {
                 throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "item json build failed: " + e.getMessage());
             }
@@ -1030,7 +1207,7 @@ public final class RestDispatcher {
             }
             TLRPC.TL_message message;
             try {
-                message = TlJsonMapper.parseMessage(msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+                message = TlJsonMapper.parseMessage(account, msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
             } catch (org.json.JSONException e) {
                 throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed send-multi row: " + e.getMessage());
             }
@@ -1083,6 +1260,18 @@ public final class RestDispatcher {
             ids[a] = req.id.get(a);
         }
 
+        // T71: E2EE forwards — the server forward endpoint copies content rows
+        // VERBATIM, which for an encrypted 1:1 target would either leak
+        // plaintext rows or place unreadable ciphertext in the target chat.
+        // ALL forwards INTO an encrypted 1:1 chat are therefore re-encrypted
+        // client-side as fresh messages (text) / re-envelope'd references
+        // (media whose bytes are already E2EE ciphertext). Plaintext media
+        // sources are REFUSED (the hard no-plaintext guarantee).
+        boolean targetPrivate = !peer.isGroup && peer.userId > 0 && peer.userId != selfId;
+        if (targetPrivate) {
+            return forwardEncryptedIntoPrivate(account, req, peer, toChatId, ids, selfId);
+        }
+
         JSONObject sent = RestGateway.getInstance(account).forward(toChatId, ids, req.drop_author, req.drop_media_captions);
         JSONArray messagesJson = sent.optJSONArray("messages");
         if (messagesJson == null || messagesJson.length() != ids.length) {
@@ -1100,7 +1289,7 @@ public final class RestDispatcher {
             }
             TLRPC.TL_message message;
             try {
-                message = TlJsonMapper.parseMessage(msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+                message = TlJsonMapper.parseMessage(account, msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
             } catch (org.json.JSONException e) {
                 throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed forward row: " + e.getMessage());
             }
@@ -1122,6 +1311,126 @@ public final class RestDispatcher {
         updates.seq = 0;
         updates.users.addAll(hydrateSenders(account, parsed));
         return updates;
+    }
+
+    /**
+     * T71: client-side re-encryption for forwards whose TARGET is an
+     * encrypted 1:1 chat. Text sources are re-sent as fresh encrypted
+     * messages; E2EE media sources are re-referenced with a freshly
+     * encrypted envelope carrying the same file keys; plaintext media is
+     * REFUSED (it would leak plaintext bytes into the encrypted chat's
+     * server history). Sources the device has never seen fail loudly
+     * instead of silently server-copying ciphertext.
+     *
+     * <p>Trade-off (documented in docs/E2EE.md): converted forwards do not
+     * carry the "Forwarded from" header — messages/send.php is content-blind
+     * by design and cannot accept forward provenance.
+     */
+    private static TLObject forwardEncryptedIntoPrivate(int account, TLRPC.TL_messages_forwardMessages req,
+                                                        PeerRef target, long toChatId, int[] ids, long selfId) {
+        RestChatIndex index = RestChatIndex.getInstance(account);
+        org.telegram.tgnet.rest.e2ee.XoE2EE e2ee = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account);
+        TLRPC.TL_updates updates = new TLRPC.TL_updates();
+        ArrayList<TLRPC.TL_message> parsed = new ArrayList<>();
+        for (int a = 0; a < ids.length; a++) {
+            TLRPC.TL_message src = index.seenMessage(ids[a]);
+            if (src == null) {
+                throw new XoApiException(400, "E2EE_FORWARD_UNAVAILABLE",
+                        "forwarding into an encrypted chat needs the source message on this device");
+            }
+            long randomId = req.random_id != null && a < req.random_id.size() ? req.random_id.get(a) : 0;
+
+            // media reference (backend id) when the source carries media
+            long mediaFileId = 0;
+            if (src.media instanceof TLRPC.TL_messageMediaPhoto && src.media.photo != null) {
+                mediaFileId = src.media.photo.id;
+            } else if (src.media instanceof TLRPC.TL_messageMediaDocument
+                    && src.media.document instanceof TLRPC.TL_document) {
+                mediaFileId = src.media.document.id;
+            }
+
+            String wireContent;
+            JSONObject sent;
+            if (mediaFileId > 0) {
+                if (!org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.isEnvelope(src.message)) {
+                    throw new XoApiException(400, "E2EE_PLAINTEXT_MEDIA_REFUSED",
+                            "plaintext media cannot be forwarded into an encrypted chat");
+                }
+                String inner = e2ee.decryptFromPeer(counterpartOf(account, src, selfId), src.message);
+                if (inner == null) {
+                    throw new XoApiException(400, "E2EE_FORWARD_UNAVAILABLE",
+                            "source media could not be decrypted on this device");
+                }
+                try {
+                    wireContent = e2ee.encryptForPeer(target.userId, inner);
+                } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                    throw new XoApiException(400, e.reasonCode, e.getMessage());
+                }
+                sent = RestGateway.getInstance(account).sendMedia(toChatId, mediaFileId, wireContent, 0, 0);
+            } else {
+                String text = src.message == null ? "" : src.message;
+                if (org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.isEnvelope(text)) {
+                    String inner = e2ee.decryptFromPeer(counterpartOf(account, src, selfId), text);
+                    if (inner == null) {
+                        throw new XoApiException(400, "E2EE_FORWARD_UNAVAILABLE",
+                                "source message could not be decrypted on this device");
+                    }
+                    try {
+                        text = new org.json.JSONObject(inner).optString("x", "");
+                    } catch (org.json.JSONException e) {
+                        throw new XoApiException(400, "E2EE_FORWARD_UNAVAILABLE", "malformed source payload");
+                    }
+                }
+                try {
+                    wireContent = e2ee.encryptForPeer(target.userId,
+                            org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerText(text));
+                } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                    throw new XoApiException(400, e.reasonCode, e.getMessage());
+                } catch (Exception e) {
+                    FileLog.e("RestDispatcher: forward innerText failed", e);
+                    throw new XoApiException(400, "E2EE_ENCRYPT_FAILED", "could not encrypt the forwarded message");
+                }
+                sent = RestGateway.getInstance(account).send(toChatId, wireContent, 0);
+            }
+
+            JSONObject msgJson = sent.optJSONObject("message");
+            if (msgJson == null) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "forwarded send lost its message object");
+            }
+            TLRPC.TL_message message;
+            try {
+                message = TlJsonMapper.parseMessage(account, msgJson, target.dialogId, target.isGroup, target.userId, selfId);
+            } catch (org.json.JSONException e) {
+                throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed forwarded row");
+            }
+            parsed.add(message);
+            if (randomId != 0) {
+                TLRPC.TL_updateMessageID idUpdate = new TLRPC.TL_updateMessageID();
+                idUpdate.id = message.id;
+                idUpdate.random_id = randomId;
+                updates.updates.add(idUpdate);
+            }
+            TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
+            update.message = message;
+            update.pts = 0;
+            update.pts_count = 0;
+            updates.updates.add(update);
+        }
+        RestChatIndex.getInstance(account).rememberMessages(toChatId, parsed);
+        updates.date = nowSeconds();
+        updates.seq = 0;
+        updates.users.addAll(hydrateSenders(account, parsed));
+        return updates;
+    }
+
+    /** The OTHER side of the conversation a message belongs to (session key owner). */
+    private static long counterpartOf(int account, TLRPC.TL_message message, long selfId) {
+        boolean out = message.out || (message.from_id != null && message.from_id.user_id == selfId);
+        if (out) {
+            return message.peer_id != null && message.peer_id.user_id != 0
+                    ? message.peer_id.user_id : selfId;
+        }
+        return message.from_id != null ? message.from_id.user_id : selfId;
     }
 
     /**
@@ -2298,7 +2607,15 @@ public final class RestDispatcher {
         if (req.id <= 0) {
             throw new XoApiException(400, "MESSAGE_ID_INVALID", "invalid message id");
         }
-        JSONObject answer = RestGateway.getInstance(account).messagesEdit(chatId, req.id, req.message);
+        // T71: edits of 1:1 messages re-encrypt the new text (the stored
+        // content column only ever holds ciphertext for E2EE chats).
+        long selfIdEarly = UserConfig.getInstance(account).clientUserId;
+        String wireContent = req.message;
+        if (!peer.isGroup && peer.userId > 0 && peer.userId != selfIdEarly) {
+            wireContent = XoE2EE.getInstance(account).encryptForPeer(peer.userId,
+                    org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerEdit(req.message));
+        }
+        JSONObject answer = RestGateway.getInstance(account).messagesEdit(chatId, req.id, wireContent);
         JSONObject msgJson = answer.optJSONObject("message");
         if (msgJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "edit response lacks the message object");
@@ -2306,7 +2623,7 @@ public final class RestDispatcher {
         long selfId = UserConfig.getInstance(account).clientUserId;
         TLRPC.TL_message message;
         try {
-            message = TlJsonMapper.parseMessage(msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
+            message = TlJsonMapper.parseMessage(account, msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
         } catch (org.json.JSONException e) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "malformed edited message: " + e.getMessage());
         }

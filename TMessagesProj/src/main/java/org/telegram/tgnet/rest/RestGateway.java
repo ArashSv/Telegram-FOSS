@@ -247,6 +247,23 @@ public final class RestGateway {
         return authenticatedRequest("POST", "messages/send.php", body);
     }
 
+    // ------------------------------------------------------------------ T71: E2EE key transport
+
+    /**
+     * POST an E2EE key-management call (e2ee/keys/register.php,
+     * e2ee/keys/refill.php). The bodies carry PUBLIC key material only —
+     * see XoE2EEApi for the contract and docs/API.md §e2ee for the wire
+     * format.
+     */
+    public JSONObject e2eePost(String path, String jsonBody) throws org.json.JSONException {
+        return authenticatedRequest("POST", path, new JSONObject(jsonBody));
+    }
+
+    /** GET an E2EE key-management call (e2ee/keys/bundle.php?user_id=N). */
+    public JSONObject e2eeGet(String path) {
+        return authenticatedRequest("GET", path, null);
+    }
+
     /**
      * POST /messages/edit.php {message_id, content} — text & caption edits
      * (T38/13). The backend validates ownership + membership server-side,
@@ -513,6 +530,25 @@ public final class RestGateway {
         if (asGif) {
             putBool(body, "as_gif", true);
         }
+        return fileRequestRetry("files/finalize.php",
+                () -> authenticatedRequest("POST", "files/finalize.php", body));
+    }
+
+    /**
+     * T71: E2EE finalize — declares the upload as an END-TO-END ENCRYPTED
+     * blob: the backend skips ALL content inspection (there is nothing to
+     * inspect — the bytes are ciphertext), stamps kind='e2ee' with
+     * application/octet-stream, and applies the global size cap. No mime,
+     * name, or dimensions are ever declared (privacy: the real ones ride
+     * the encrypted message envelope).
+     */
+    public JSONObject fileFinalizeE2ee(long backendFileId, int chunksTotal, long declaredBytes) {
+        JSONObject body = putNumber(new JSONObject(), "file_id", backendFileId);
+        putNumber(body, "chunks_total", Math.max(1, chunksTotal));
+        if (declaredBytes > 0) {
+            putNumber(body, "size", declaredBytes);
+        }
+        putBool(body, "e2ee", true);
         return fileRequestRetry("files/finalize.php",
                 () -> authenticatedRequest("POST", "files/finalize.php", body));
     }

@@ -4212,7 +4212,7 @@ public class MessagesController extends BaseController implements NotificationCe
             LiteMode.updatePresets(liteAppOptions);
         }
         if (keelAliveChanged) {
-            // T67: startPushService() removed — the keep-alive foreground
+            // T71: startPushService() removed — the keep-alive foreground
             // service is eradicated (Android 14/15/16 launch-crash root cause).
             // Only the connection keep-alive policy is re-asserted here.
             ConnectionsManager connectionsManager = getConnectionsManager();
@@ -14220,6 +14220,13 @@ public class MessagesController extends BaseController implements NotificationCe
             RestAuthStore.getInstance(currentAccount).clear();
         } catch (Exception e) {
             FileLog.e("performLogout: RestAuthStore clear failed", e);
+        }
+        // T71: the E2EE protocol state (identity, ratchet sessions, media
+        // keys) is per-login and NEVER escrowed — destroy it with the session.
+        try {
+            org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(currentAccount).wipeLocal();
+        } catch (Exception e) {
+            FileLog.e("performLogout: e2ee wipe failed", e);
         }
         if (type == 1) {
             unregistedPush();

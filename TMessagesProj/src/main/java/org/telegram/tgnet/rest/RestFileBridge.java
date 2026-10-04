@@ -340,6 +340,39 @@ public final class RestFileBridge {
     }
 
     /**
+     * T71: E2EE finalize — declares the upload as an opaque encrypted blob
+     * (no mime/name/dimensions ever leave the device). See
+     * RestGateway.fileFinalizeE2ee for the wire contract.
+     */
+    public JSONObject finalizeUploadE2ee(long treeUploadId, int chunksTotal, long declaredBytes) {
+        long backendId = backendFileIdFor(treeUploadId);
+        if (backendId == 0) {
+            return null;
+        }
+        return RestGateway.getInstance(account).fileFinalizeE2ee(backendId, chunksTotal, declaredBytes);
+    }
+
+    /**
+     * T71: reverse lookup for the ALBUM path — send-multi items arrive as
+     * backend-file references (uploadMedia replaced the uploads), so the
+     * per-item E2EE key must be found from the backend id. Maintained
+     * alongside the forward mapping in {@link #ensureBackendFile}.
+     */
+    public long treeUploadIdForBackend(long backendFileId) {
+        if (backendFileId == 0) {
+            return 0;
+        }
+        synchronized (cache) {
+            for (int a = 0; a < cache.size(); a++) {
+                if (cache.valueAt(a) == backendFileId) {
+                    return cache.keyAt(a);
+                }
+            }
+        }
+        return 0;
+    }
+
+    /**
      * T46: full-shape finalize. {@code asGif} marks the Telegram-style GIF
      * contract (muted MP4 animated document) — the backend stamps kind='gif'
      * over the detected video family when its own inspection sees video bytes.

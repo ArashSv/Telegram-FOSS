@@ -59,6 +59,12 @@ public final class RestChatIndex {
     private final HashMap<Long, String> chatTypes = new HashMap<>();
     /** message id -> backend chat_id, for revoke deletes (deleteMessages carries ids only). */
     private final SparseArray<Long> chatByMessageId = new SparseArray<>();
+    /** T71: bounded cache of recently SEEN messages — the E2EE forward
+     * conversion needs the source plaintext/envelope, which no other
+     * component keeps in memory (the server stores ciphertext only). */
+    private final java.util.LinkedHashMap<Integer, TLRPC.TL_message> recentMessages =
+            new java.util.LinkedHashMap<>(128, 0.75f, true);
+    private static final int RECENT_MESSAGES_MAX = 600;
 
     private RestChatIndex() {
     }
@@ -71,6 +77,7 @@ public final class RestChatIndex {
             groupChats.clear();
             chatTypes.clear();
             chatByMessageId.clear();
+            recentMessages.clear();
         }
     }
 
@@ -145,8 +152,21 @@ public final class RestChatIndex {
         }
         synchronized (this) {
             for (int a = 0; a < messages.size(); a++) {
-                chatByMessageId.put(messages.get(a).id, chatId);
+                TLRPC.TL_message message = messages.get(a);
+                chatByMessageId.put(message.id, chatId);
+                recentMessages.put(message.id, message);
+                while (recentMessages.size() > RECENT_MESSAGES_MAX) {
+                    Integer eldest = recentMessages.keySet().iterator().next();
+                    recentMessages.remove(eldest);
+                }
             }
+        }
+    }
+
+    /** T71: the last-seen TL_message with this id, or null (session-scoped). */
+    public TLRPC.TL_message seenMessage(int messageId) {
+        synchronized (this) {
+            return recentMessages.get(messageId);
         }
     }
 

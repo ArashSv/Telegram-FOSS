@@ -370,13 +370,15 @@ public final class TlJsonMapper {
     /**
      * Message JSON (API.md §4) to a filled {@link TLRPC.TL_message}.
      *
+     * @param account    the owning account — the E2EE decrypt hook is
+     *                   per-account (multi-account isolation)
      * @param dialogId   Telegram-space dialog id (peer user id, or -chat_id for groups)
      * @param isGroup    false = private dialog (peer_id is the peer user)
      * @param peerUserId peer of the private dialog (ignored for groups)
      * @param selfId     current account user id — decides the out flag
      * @throws JSONException when the JSON is not a usable v1 message
      */
-    public static TLRPC.TL_message parseMessage(JSONObject msg, long dialogId, boolean isGroup,
+    public static TLRPC.TL_message parseMessage(int account, JSONObject msg, long dialogId, boolean isGroup,
                                                 long peerUserId, long selfId) throws JSONException {
         TLRPC.TL_message message = new TLRPC.TL_message();
         message.id = (int) msg.getLong("id");
@@ -389,6 +391,36 @@ public final class TlJsonMapper {
         // sha256 parse below; the backend also ships "" instead of null now.
         String content = msg.isNull("content") ? null : msg.optString("content", null);
         message.message = content == null ? "" : content;
+
+        // T71: E2EE decrypt hook — the SINGLE JSON→TL boundary. Every 1:1
+        // envelope is opened here; failures degrade to a neutral placeholder
+        // (never an exception into the update pipeline, never garbage text).
+        // The ratchet counterpart is the OTHER side of the conversation:
+        // outgoing echoes use the dialog peer, incoming uses the sender.
+        org.json.JSONObject e2eeInner = null;
+        if (!isGroup && org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.isEnvelope(message.message)) {
+            long counterpart = senderId == selfId ? peerUserId : senderId;
+            String inner = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
+                    .decryptFromPeer(counterpart, message.message);
+            if (inner != null) {
+                try {
+                    e2eeInner = new org.json.JSONObject(inner);
+                    String type = e2eeInner.optString("t", "t");
+                    String text = e2eeInner.optString("x", "");
+                    if ("m".equals(type)) {
+                        // media envelope: the caption (if any) becomes the text
+                        String cap = e2eeInner.isNull("cap") ? "" : e2eeInner.optString("cap", "");
+                        message.message = cap;
+                    } else {
+                        message.message = text;
+                    }
+                } catch (org.json.JSONException e) {
+                    message.message = "";
+                }
+            } else {
+                message.message = "🔒";
+            }
+        }
 
         message.from_id = new TLRPC.TL_peerUser();
         message.from_id.user_id = senderId;
@@ -500,6 +532,35 @@ public final class TlJsonMapper {
         message.media = parseMedia(mediaJson, message.date);
         message.flags |= 512;
         message.dialog_id = dialogId;
+
+        // T71: media envelope post-processing — for kind='e2ee' rows the
+        // decrypted payload carries the REAL mime/name/dimensions/caption
+        // (the server row is opaque octet-stream). Rebuild the media shape
+        // from the plaintext metadata and register the media keys for the
+        // download-decrypt step. Caption was already applied above.
+        if (e2eeInner != null && "m".equals(e2eeInner.optString("t", ""))) {
+            try {
+                org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta =
+                        org.telegram.tgnet.rest.e2ee.XoE2EE.parseMediaMeta(e2eeInner);
+                if (meta != null) {
+                    long fileId = mediaJson != null ? mediaJson.optLong("file_id", 0) : 0;
+                    org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteMediaKeys(fileId, meta);
+                    long thumbFileId = mediaJson != null ? mediaJson.optLong("thumb_file_id", 0) : 0;
+                    if (thumbFileId > 0 && meta.thumbKey != null) {
+                        org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta tm =
+                                new org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta();
+                        tm.fileKey = meta.thumbKey;
+                        tm.chunkSize = meta.chunkSize;
+                        tm.thumbEncrypted = true;
+                        tm.thumbFileId = meta.thumbFileId;
+                        org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteMediaKeys(thumbFileId, tm);
+                    }
+                    message.media = rebuildE2eeMedia(meta, mediaJson, message.date);
+                }
+            } catch (Exception e) {
+                FileLog.e("TlJsonMapper: e2ee media patch failed", e);
+            }
+        }
 
         // T33: the REST pipeline carries no message entities, so @mentions were
         // never tappable. Detect Telegram-style handles client-side and plant
@@ -895,16 +956,51 @@ public final class TlJsonMapper {
      * ordering Telegram expects (descending for getHistory) — the mapper
      * stays a pure JSON->TL translator.
      */
-    public static ArrayList<TLRPC.TL_message> parseHistory(JSONArray messagesJson, long dialogId,
+    public static ArrayList<TLRPC.TL_message> parseHistory(int account, JSONArray messagesJson, long dialogId,
                                                            boolean isGroup, long peerUserId,
                                                            long selfId) throws JSONException {
         ArrayList<TLRPC.TL_message> messages = new ArrayList<>();
         if (messagesJson != null) {
             for (int a = 0; a < messagesJson.length(); a++) {
                 JSONObject msg = messagesJson.getJSONObject(a);
-                messages.add(parseMessage(msg, dialogId, isGroup, peerUserId, selfId));
+                messages.add(parseMessage(account, msg, dialogId, isGroup, peerUserId, selfId));
             }
         }
         return messages;
+    }
+
+    /**
+     * T71: rebuilds the display media for an E2EE file row. The server row
+     * is kind='e2ee' + application/octet-stream + no dimensions; the
+     * decrypted envelope carries the real mime/name/w/h/duration. The SIZE
+     * stays the CIPHERTEXT size from the server row on purpose — the
+     * download attestation (X-File-Size / X-Range-Sha256) is over the
+     * ciphertext bytes and must not be patched.
+     */
+    private static TLRPC.MessageMedia rebuildE2eeMedia(org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta,
+                                                       JSONObject mediaJson, int messageDate) {
+        if (mediaJson == null) {
+            return new TLRPC.TL_messageMediaEmpty();
+        }
+        long fileId = mediaJson.optLong("file_id", 0);
+        long size = Math.max(0, mediaJson.optLong("size", 0));
+        long thumbFileId = mediaJson.optLong("thumb_file_id", 0);
+        String mime = meta.mime == null ? "application/octet-stream" : meta.mime;
+        if (mime.startsWith("image/") && meta.width > 0 && meta.height > 0
+                && !"image/gif".equals(mime)) {
+            return photoMedia(fileId, size, meta.width, meta.height, thumbFileId, messageDate);
+        }
+        TLRPC.MessageMedia media = documentMedia(fileId, mime, size, meta.name, "e2ee",
+                meta.width, meta.height, meta.duration, thumbFileId, messageDate);
+        // animated mime (Telegram-style gif sent inside an encrypted chat)
+        if (mime.startsWith("video/") && meta.name != null && meta.name.endsWith(".mp4")) {
+            TLRPC.TL_document document = media.document instanceof TLRPC.TL_document
+                    ? (TLRPC.TL_document) media.document : null;
+            if (document != null) {
+                TLRPC.TL_documentAttributeAnimated animated = new TLRPC.TL_documentAttributeAnimated();
+                document.attributes.add(animated);
+            }
+        }
+        return media;
     }
 }

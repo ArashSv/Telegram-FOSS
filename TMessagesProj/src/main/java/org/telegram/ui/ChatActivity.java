@@ -1401,6 +1401,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
     private final static int clear_history = 15;
     private final static int delete_chat = 16;
     private final static int share_contact = 17;
+    private final static int xo_e2ee_info = 140; // T71: encryption / safety number screen
     private final static int mute = 18;
     private final static int report = 21;
     private final static int star = 22;
@@ -3431,6 +3432,12 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                         args.putBoolean("addContact", true);
                         presentFragment(new ContactAddActivity(args));
                     }
+                } else if (id == xo_e2ee_info) {
+                    // T71: the encryption / safety-number verification screen
+                    if (currentUser == null || getParentActivity() == null) {
+                        return;
+                    }
+                    presentFragment(new org.telegram.ui.XoE2EEInfoFragment(currentUser.id));
                 } else if (id == mute) {
                     toggleMute(false);
                 } else if (id == add_shortcut) {
@@ -3909,6 +3916,10 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             }
             if (currentUser != null) {
                 addContactItem = headerItem.lazilyAddSubItem(share_contact, R.drawable.msg_addcontact, LocaleController.getString("AddToContacts", R.string.AddToContacts));
+            }
+            // T71: encryption / safety-number entry — 1:1 chats only (self excluded)
+            if (currentUser != null && !currentUser.self) {
+                headerItem.lazilyAddSubItem(xo_e2ee_info, R.drawable.ic_lock_header, LocaleController.getString(R.string.XoE2eeMenu));
             }
             if (currentEncryptedChat != null) {
                 timeItem2 = headerItem.lazilyAddSubItem(chat_enc_timer, R.drawable.msg_autodelete, LocaleController.getString("SetTimer", R.string.SetTimer));

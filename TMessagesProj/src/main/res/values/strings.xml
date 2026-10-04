@@ -9101,4 +9101,18 @@
     <string name="StarsConfirmPurchaseMediaTwo2_one">Do you want to unlock %2$s and %3$s in **%4$s** for **%1$d star**?</string>
     <string name="StarsConfirmPurchaseMediaTwo2_other">Do you want to unlock %2$s and %3$s in **%4$s** for **%1$d stars**?</string>
     <string name="AttachPaidMedia">⭐️ %s</string>
+    <!-- T71: end-to-end encryption for 1:1 chats (fixed Persian product strings) -->
+    <string name="XoE2eeMenu">رمزنگاری</string>
+    <string name="XoE2eeTitle">رمزنگاری سرتاسری</string>
+    <string name="XoE2eeActive">پیام‌های این چت (متن، عکس، ویدیو و فایل) فقط روی دستگاه شما و دستگاه گیرنده رمزگشایی می‌شوند؛ سرور حتی به محتوای رمزشده دسترسی معناداری ندارد.</string>
+    <string name="XoE2eeSafetyNumberHeader">کد امنیتی</string>
+    <string name="XoE2eeSafetyNumberHint">این کد را با طرف مقابل (حضوری یا از راه مطمئن دیگر) مقایسه کنید. اگر یکسان بود، چت کاملاً امن است.</string>
+    <string name="XoE2eeMarkVerified">تایید کردم، کدها یکسان است</string>
+    <string name="XoE2eeUnverify">حذف وضعیت تایید</string>
+    <string name="XoE2eeVerifiedBadge">تایید شده ✓</string>
+    <string name="XoE2eeNotVerifiedBadge">هنوز تایید نشده</string>
+    <string name="XoE2eeIdentityChanged">هشدار امنیتی: کلید رمزنگاری طرف مقابل تغییر کرده است! تا وقتی هویت جدید را تایید نکنید، ارسال پیام متوقف است.</string>
+    <string name="XoE2eeResetSession">هویت جدید تایید شد؛ بازنشانی سشن</string>
+    <string name="XoE2eeNotReady">رمزنگاری هنوز آماده نیست. بعد از آنلاین شدن هر دو طرف دوباره بررسی کنید.</string>
+    <string name="XoE2eeLockedMessage">🔒 این پیام قابل رمزگشایی نیست (سشن قدیمی یا تغییر هویت).</string>
 </resources>

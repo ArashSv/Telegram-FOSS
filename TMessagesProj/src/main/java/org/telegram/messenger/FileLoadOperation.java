@@ -1560,6 +1560,19 @@ public class FileLoadOperation {
                         Utilities.stageQueue.postRunnable(() -> onFail(true, 0));
                         return;
                     }
+                    // T71: E2EE media decrypt pass — the assembled temp holds
+                    // CIPHERTEXT (AEAD chunks) when this location belongs to an
+                    // encrypted 1:1 message. Decrypt chunk-wise (bounded RAM)
+                    // over the temp and swap it in place BEFORE the rename, so
+                    // every consumer sees the plaintext file exactly as before.
+                    // Any tamper/truncate/reorder fails the operation — the
+                    // ciphertext blob is never exposed to the UI.
+                    if (location != null && !decryptRestE2eeMedia(cacheFileTempLocal)) {
+                        //noinspection ResultOfMethodCallIgnored
+                        cacheFileTempLocal.delete();
+                        Utilities.stageQueue.postRunnable(() -> onFail(true, 0));
+                        return;
+                    }
                     if (ungzip) {
                         try {
                             GZIPInputStream gzipInputStream = new GZIPInputStream(new FileInputStream(cacheFileTempLocal));
@@ -1735,6 +1748,158 @@ public class FileLoadOperation {
             // the checker itself must never take a legitimate download down
             FileLog.e("REST integrity: checker failed, finishing anyway", t);
             return true;
+        }
+    }
+
+    /**
+     * T71: E2EE media decrypt pass. When this download belongs to an
+     * encrypted 1:1 message (media keys registered from the message
+     * envelope), the assembled temp file holds AEAD ciphertext: chunk-wise
+     * decrypt it IN PLACE (bounded RAM, no whole-file buffering) and swap
+     * the plaintext over the temp before any consumer sees the file.
+     *
+     * @return true when the file is NOT E2EE (normal flow) or decrypted
+     *         successfully; false fails the download (tamper/truncate,
+     *         missing keys, corrupt layout — the ciphertext is never shown).
+     */
+    private boolean decryptRestE2eeMedia(File tempFile) {
+        try {
+            if (webLocation != null || location == null) {
+                return true;
+            }
+            org.telegram.tgnet.rest.RestFileBridge bridge =
+                    org.telegram.tgnet.rest.RestFileBridge.getInstance(currentAccount);
+            long backendId = bridge.resolveBackendFileId(location);
+            if (backendId <= 0) {
+                return true;
+            }
+            org.telegram.tgnet.rest.e2ee.XoE2EE e2ee =
+                    org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(currentAccount);
+            org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta = e2ee.mediaKeysFor(backendId);
+            if (meta == null || meta.fileKey == null) {
+                return true; // not an E2EE file — untouched flow
+            }
+            boolean thumbRequest = isRestThumbRequest(location);
+            if (thumbRequest) {
+                byte[] key = meta.thumbKey != null ? meta.thumbKey : meta.fileKey;
+                byte[] blob = readFileBytes(tempFile, 4 * 1024 * 1024);
+                byte[] plain = org.telegram.tgnet.rest.e2ee.XoE2EEMedia.decryptChunk(key, 0, blob);
+                writeFileBytes(tempFile, plain);
+                return true;
+            }
+            // full body: deterministic chunk split from the envelope's
+            // plaintext length + chunk size (no ambiguity at the tail)
+            long plainLen = meta.plaintextLen;
+            int chunkSize = meta.chunkSize > 0 ? meta.chunkSize : 131072;
+            if (plainLen <= 0) {
+                FileLog.e("E2EE decrypt: envelope lacks the plaintext length for file " + backendId);
+                return false;
+            }
+            long chunks = (plainLen + chunkSize - 1) / chunkSize;
+            File out = new File(tempFile.getParentFile(), tempFile.getName() + ".e2eeout");
+            long totalPlain = 0;
+            try (java.io.FileInputStream in = new java.io.FileInputStream(tempFile);
+                 java.io.FileOutputStream outStream = new java.io.FileOutputStream(out)) {
+                byte[] buffer = new byte[chunkSize + 16];
+                for (long i = 0; i < chunks; i++) {
+                    int expect = (int) (i == chunks - 1 ? plainLen - (chunks - 1) * chunkSize + 16 : chunkSize + 16);
+                    int read = readFully(in, buffer, expect);
+                    if (read != expect) {
+                        FileLog.e("E2EE decrypt: truncated ciphertext at chunk " + i + " of file " + backendId);
+                        //noinspection ResultOfMethodCallIgnored
+                        out.delete();
+                        return false;
+                    }
+                    byte[] chunk = new byte[expect];
+                    System.arraycopy(buffer, 0, chunk, 0, expect);
+                    byte[] plain = org.telegram.tgnet.rest.e2ee.XoE2EEMedia.decryptChunk(meta.fileKey, (int) i, chunk);
+                    outStream.write(plain);
+                    totalPlain += plain.length;
+                }
+                outStream.flush();
+                outStream.getFD().sync();
+            }
+            if (totalPlain != plainLen) {
+                FileLog.e("E2EE decrypt: plaintext length mismatch for file " + backendId
+                        + " (" + totalPlain + " of " + plainLen + ")");
+                //noinspection ResultOfMethodCallIgnored
+                out.delete();
+                return false;
+            }
+            if (!out.renameTo(tempFile)) {
+                //noinspection ResultOfMethodCallIgnored
+                tempFile.delete();
+                if (!out.renameTo(tempFile)) {
+                    //noinspection ResultOfMethodCallIgnored
+                    out.delete();
+                    FileLog.e("E2EE decrypt: swap failed for file " + backendId);
+                    return false;
+                }
+            }
+            return true;
+        } catch (Throwable t) {
+            // ANY decrypt failure (tamper, reorder, wrong key) must not hand
+            // ciphertext or a corrupt file to the UI
+            FileLog.e("E2EE decrypt failed", t);
+            return false;
+        }
+    }
+
+    /** T71: mirrors RestFileBridge's thumb-request convention for the decrypt decision. */
+    private static boolean isRestThumbRequest(TLRPC.InputFileLocation location) {
+        if (location instanceof TLRPC.TL_inputPhotoFileLocation) {
+            String thumbSize = ((TLRPC.TL_inputPhotoFileLocation) location).thumb_size;
+            return org.telegram.tgnet.rest.TlJsonMapper.PHOTO_SIZE_THUMB.equals(thumbSize)
+                    || org.telegram.tgnet.rest.TlJsonMapper.PHOTO_SIZE_BUBBLE.equals(thumbSize);
+        }
+        if (location instanceof TLRPC.TL_inputFileLocation) {
+            int localId = ((TLRPC.TL_inputFileLocation) location).local_id;
+            return localId == 's' || localId == 'm';
+        }
+        if (location instanceof TLRPC.TL_inputDocumentFileLocation) {
+            int localId = ((TLRPC.TL_inputDocumentFileLocation) location).local_id;
+            return localId >= 1000 && localId < 2000;
+        }
+        return false;
+    }
+
+    private static int readFully(java.io.InputStream in, byte[] buffer, int len) throws java.io.IOException {
+        int off = 0;
+        while (off < len) {
+            int read = in.read(buffer, off, len - off);
+            if (read < 0) {
+                break;
+            }
+            off += read;
+        }
+        return off;
+    }
+
+    private static byte[] readFileBytes(File file, int cap) throws java.io.IOException {
+        if (file.length() > cap) {
+            throw new java.io.IOException("e2ee blob exceeds cap");
+        }
+        byte[] buf = new byte[(int) file.length()];
+        try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+            int read = readFully(in, buf, buf.length);
+            if (read != buf.length) {
+                throw new java.io.IOException("short blob read");
+            }
+        }
+        return buf;
+    }
+
+    private static void writeFileBytes(File file, byte[] data) throws java.io.IOException {
+        File out = new File(file.getParentFile(), file.getName() + ".e2eeout");
+        try (java.io.FileOutputStream stream = new java.io.FileOutputStream(out)) {
+            stream.write(data);
+            stream.flush();
+            stream.getFD().sync();
+        }
+        //noinspection ResultOfMethodCallIgnored
+        file.delete();
+        if (!out.renameTo(file)) {
+            throw new java.io.IOException("e2ee swap failed");
         }
     }
 

@@ -345,6 +345,12 @@ public class FileUploadOperation {
                 boolean rewrite = false;
                 if (!uploadFirstPartLater && !nextPartFirst && estimatedSize == 0 && fileSize == totalFileSize) {
                     currentFileId = preferences.getLong(fileKey + "_id", 0);
+                    // T71: restore path — rebind the E2EE upload intent to the
+                    // persisted tree id so resumed parts stay encrypted
+                    if (currentFileId != 0) {
+                        org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(currentAccount)
+                                .bindTreeUploadId(uploadingFilePath, currentFileId);
+                    }
                     int date = preferences.getInt(fileKey + "_time", 0);
                     long uploadedSize = preferences.getLong(fileKey + "_uploaded", 0);
                     if (isEncrypted) {
@@ -444,6 +450,10 @@ public class FileUploadOperation {
                         System.arraycopy(iv, 0, ivChange, 0, 32);
                     }
                     currentFileId = Utilities.random.nextLong();
+                    // T71: fresh start — bind the E2EE upload intent (if any)
+                    // to the new tree upload id
+                    org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(currentAccount)
+                            .bindTreeUploadId(uploadingFilePath, currentFileId);
                     if (!nextPartFirst && !uploadFirstPartLater && estimatedSize == 0) {
                         storeFileUploadInfo();
                     }

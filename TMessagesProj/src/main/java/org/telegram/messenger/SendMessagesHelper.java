@@ -6964,6 +6964,45 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             delayedMessages.put(location, arrayList);
         }
         arrayList.add(message);
+        // T71: E2EE upload intent — every upload whose destination is an
+        // encrypted 1:1 chat registers a single-use file key + REAL media
+        // metadata manifest here (the ONLY choke point that sees both the
+        // upload location and the destination peer before any part flows).
+        // FileUploadOperation binds the tree upload id to this intent when
+        // the uploader starts; uploadPart then AEAD-encrypts every part.
+        noteE2eeUploadIntent(location, message);
+    }
+
+    /**
+     * T71: registers the per-location E2EE upload manifest (key, peer, real
+     * mime/name/w/h/duration) for encrypted 1:1 destinations. Idempotent:
+     * re-scheduling the same delayed message keeps the SAME key so resumed
+     * uploads after a process death stay decryptable.
+     *
+     * <p>Dialog id conventions: private = the peer USER id (positive);
+     * groups = -chat_id (negative). Self-chats are excluded (plaintext v1).
+     */
+    private void noteE2eeUploadIntent(String location, DelayedMessage message) {
+        try {
+            if (location == null || message == null || location.length() == 0) {
+                return;
+            }
+            long peerDialogId = message.peer;
+            if (peerDialogId <= 0) {
+                return; // groups stay plaintext (v1 scope: 1:1 chats only)
+            }
+            long selfId = UserConfig.getInstance(currentAccount).clientUserId;
+            if (peerDialogId == selfId) {
+                return; // Saved Messages self-chat stays plaintext (server-inserted relay target)
+            }
+            // real metadata for the encrypted envelope: documents/videos carry
+            // everything on the TL_document; photos only on the PhotoSize
+            TLRPC.TL_document document = message.obj != null ? (TLRPC.TL_document) message.obj.getDocument() : null;
+            org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(currentAccount)
+                    .noteUploadIntent(location, peerDialogId, message.photoSize, document);
+        } catch (Throwable e) {
+            FileLog.e("SendMessagesHelper: e2ee upload intent failed", e);
+        }
     }
 
     protected ArrayList<DelayedMessage> getDelayedMessages(String location) {
@@ -9209,15 +9248,36 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             }
             final int account = currentAccount;
             Utilities.globalQueue.postRunnable(() -> {
-                long treeId = RestDispatcher.uploadSmallBlocking(account, thumbBytes);
+                // T71: encrypt the thumb for 1:1 destinations BEFORE the
+                // blocking upload — a single chunk-0 AEAD blob under its own
+                // key; the key travels inside the message envelope (tk) and
+                // is bound to the tree id for the e2ee finalize declaration.
+                long peerDialogId = msgObj != null ? msgObj.getDialogId() : 0;
+                boolean e2eeThumb = peerDialogId > 0 && peerDialogId != UserConfig.getInstance(account).clientUserId;
+                byte[] payload = thumbBytes;
+                byte[] thumbKey = null;
+                if (e2eeThumb) {
+                    try {
+                        thumbKey = org.telegram.tgnet.rest.e2ee.XoE2EEMedia.newFileKey();
+                        payload = org.telegram.tgnet.rest.e2ee.XoE2EEMedia.encryptChunk(thumbKey, 0, thumbBytes);
+                    } catch (Exception e) {
+                        FileLog.e("ensureRestThumb: thumb encryption failed, sending without thumb", e);
+                        payload = null;
+                    }
+                }
+                long treeId = payload == null ? 0 : RestDispatcher.uploadSmallBlocking(account, payload);
                 if (treeId != 0) {
+                    if (thumbKey != null) {
+                        org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account)
+                                .putDirectTreeIntent(treeId, peerDialogId, thumbKey);
+                    }
                     TLRPC.TL_inputFile inputFile = new TLRPC.TL_inputFile();
                     inputFile.id = treeId;
                     inputFile.parts = 1;
                     inputFile.name = "thumb.jpg";
                     input.thumb = inputFile;
                     input.flags |= 4;
-                    FileLog.d("ensureRestThumb: attached a " + thumbBytes.length + "B video thumb at send time");
+                    FileLog.d("ensureRestThumb: attached a " + payload.length + "B video thumb at send time");
                 } else {
                     FileLog.w("ensureRestThumb: background thumb upload failed, sending without it");
                 }
