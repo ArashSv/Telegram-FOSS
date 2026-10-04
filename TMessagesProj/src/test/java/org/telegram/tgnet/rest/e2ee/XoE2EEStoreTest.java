@@ -176,7 +176,7 @@ public class XoE2EEStoreTest {
         } else {
             // documented fallback: app-private storage (same level as the
             // legacy auth-key file). The blob still exists and round-trips.
-            assertTrue(blob.length() > 0);
+            assertTrue(blob.length > 0);
         }
     }
 }
