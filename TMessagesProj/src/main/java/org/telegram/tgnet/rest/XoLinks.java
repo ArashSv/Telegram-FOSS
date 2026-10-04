@@ -1,6 +1,6 @@
 package org.telegram.tgnet.rest;
 
-import org.telegram.Utilities;
+import org.telegram.messenger.Utilities;
 
 import java.util.Arrays;
 import java.util.HashSet;
