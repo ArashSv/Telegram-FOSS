@@ -423,7 +423,12 @@ public final class RestDispatcher {
         // LOUDLY (never silently falls back) when the peer has no keys yet.
         String wireContent = req.message;
         if (!peer.isGroup && peer.userId > 0 && peer.userId != selfId) {
-            wireContent = XoE2EE.getInstance(account).encryptText(peer.userId, req.message);
+            try {
+                wireContent = XoE2EE.getInstance(account).encryptText(peer.userId, req.message);
+            } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                // the tree's typed error path renders this as a failed message
+                throw new XoApiException(400, e.reasonCode, e.getMessage());
+            }
         }
 
         JSONObject sent = RestGateway.getInstance(account).send(chatId, wireContent, replyToId);
@@ -2613,8 +2618,15 @@ public final class RestDispatcher {
         long selfIdEarly = UserConfig.getInstance(account).clientUserId;
         String wireContent = req.message;
         if (!peer.isGroup && peer.userId > 0 && peer.userId != selfIdEarly) {
-            wireContent = XoE2EE.getInstance(account).encryptForPeer(peer.userId,
-                    org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerEdit(req.message));
+            try {
+                wireContent = XoE2EE.getInstance(account).encryptForPeer(peer.userId,
+                        org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerEdit(req.message));
+            } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                throw new XoApiException(400, e.reasonCode, e.getMessage());
+            } catch (Exception e) {
+                FileLog.e("RestDispatcher: e2ee edit failed", e);
+                throw new XoApiException(400, "E2EE_ENCRYPT_FAILED", "could not encrypt the edit");
+            }
         }
         JSONObject answer = RestGateway.getInstance(account).messagesEdit(chatId, req.id, wireContent);
         JSONObject msgJson = answer.optJSONObject("message");
