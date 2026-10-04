@@ -22,7 +22,10 @@ public class AppStartReceiver extends BroadcastReceiver {
                     SharedConfig.appLocked = true;
                     SharedConfig.saveConfig();
                 }
-                ApplicationLoader.startPushService();
+                // T67: ApplicationLoader.startPushService() removed — the
+                // keep-alive NotificationsService was the root cause of the
+                // Android 14/15/16 launch crash and is fully eradicated.
+                // Starting it from BOOT would have crashed the app on boot.
             });
         }
     }

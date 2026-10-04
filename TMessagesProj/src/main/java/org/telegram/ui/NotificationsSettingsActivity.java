@@ -96,8 +96,6 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
     private int accountsAllRow;
     private int accountsInfoRow;
 
-    private int notificationsServiceRow;
-    private int notificationsServiceConnectionRow;
 
     private int notificationsSectionRow;
     private int privateRow;
@@ -192,7 +190,8 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
         otherSection2Row = rowCount++;
 
         otherSectionRow = rowCount++;
-        notificationsServiceConnectionRow = rowCount++;
+        // T67: the "Background Connection" / keep-alive service rows were
+        // removed together with the eradicated NotificationsService.
         androidAutoAlertRow = -1;
         repeatRow = rowCount++;
         resetSection2Row = rowCount++;
@@ -674,20 +673,6 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
                 editor.putBoolean("badgeNumberMessages", getNotificationsController().showBadgeMessages);
                 editor.commit();
                 getNotificationsController().updateBadge();
-            } else if (position == notificationsServiceConnectionRow) {
-                SharedPreferences preferences = MessagesController.getNotificationsSettings(currentAccount);
-                enabled = preferences.getBoolean("pushConnection", getMessagesController().backgroundConnection);
-                SharedPreferences.Editor editor = preferences.edit();
-                editor.putBoolean("pushConnection", !enabled);
-                enabled = preferences.getBoolean("pushService", getMessagesController().keepAliveService);
-                editor.putBoolean("pushService", !enabled);
-                editor.commit();
-                if (!enabled) {
-                    ConnectionsManager.getInstance(currentAccount).setPushConnectionEnabled(true);
-                } else {
-                    ConnectionsManager.getInstance(currentAccount).setPushConnectionEnabled(false);
-                }
-                ApplicationLoader.startPushService();
             } else if (position == accountsAllRow) {
                 SharedPreferences preferences = MessagesController.getGlobalNotificationsSettings();
                 enabled = preferences.getBoolean("AllAccounts", true);
@@ -968,8 +953,6 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
                         checkCell.setTextAndCheck(getString("PinnedMessages", R.string.PinnedMessages), preferences.getBoolean("PinnedMessages", true), false);
                     } else if (position == androidAutoAlertRow) {
                         checkCell.setTextAndCheck("Android Auto", preferences.getBoolean("EnableAutoNotifications", false), true);
-                    } else if (position == notificationsServiceConnectionRow) {
-                        checkCell.setTextAndValueAndCheck(getString("NotificationsServiceConnection", R.string.NotificationsServiceConnection), "You won't be notified of new messages, if you disable this", preferences.getBoolean("pushConnection", getMessagesController().backgroundConnection), true, true);
                     } else if (position == badgeNumberShowRow) {
                         checkCell.setTextAndCheck(getString("BadgeNumberShow", R.string.BadgeNumberShow), getNotificationsController().showBadgeNumber, true);
                     } else if (position == badgeNumberMutedRow) {
@@ -1153,9 +1136,9 @@ public class NotificationsSettingsActivity extends BaseFragment implements Notif
                     position == callsSectionRow || position == badgeNumberSection || position == inappSectionRow ||
                     position == notificationsSectionRow || position == accountsSectionRow) {
                 return 0;
-            } else if (position == inappSoundRow || position == inappVibrateRow || position == notificationsServiceConnectionRow ||
+            } else if (position == inappSoundRow || position == inappVibrateRow ||
                     position == inappPreviewRow || position == contactJoinedRow || position == pinnedMessageRow ||
-                    position == notificationsServiceRow || position == badgeNumberMutedRow || position == badgeNumberMessagesRow ||
+                    position == badgeNumberMutedRow || position == badgeNumberMessagesRow ||
                     position == badgeNumberShowRow || position == inappPriorityRow || position == inchatSoundRow ||
                     position == androidAutoAlertRow || position == accountsAllRow) {
                 return 1;

@@ -4212,7 +4212,9 @@ public class MessagesController extends BaseController implements NotificationCe
             LiteMode.updatePresets(liteAppOptions);
         }
         if (keelAliveChanged) {
-            ApplicationLoader.startPushService();
+            // T67: startPushService() removed — the keep-alive foreground
+            // service is eradicated (Android 14/15/16 launch-crash root cause).
+            // Only the connection keep-alive policy is re-asserted here.
             ConnectionsManager connectionsManager = getConnectionsManager();
             connectionsManager.setPushConnectionEnabled(connectionsManager.isPushConnectionEnabled());
         }

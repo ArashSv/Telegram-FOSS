@@ -653,15 +653,31 @@ public class MusicPlayerService extends Service implements NotificationCenter.No
     }
 
     public void setListeners(RemoteViews view) {
-        PendingIntent pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0, new Intent(NOTIFY_PREVIOUS), fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+        // T67: every intent here MUST be EXPLICIT. These used to be action-only
+        // implicit intents (new Intent(NOTIFY_...) with no component) combined
+        // with FLAG_MUTABLE — on Android 14/15/16 with targetSdk 34+ that is
+        // the same IllegalArgumentException class that killed the app at launch
+        // via NotificationsService ("Targeting U+ disallows ... FLAG_MUTABLE,
+        // an implicit Intent"). fixIntentFlags() does NOT fix it on SDK >= S.
+        PendingIntent pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0,
+                new Intent(NOTIFY_PREVIOUS).setComponent(new ComponentName(this, MusicPlayerReceiver.class)),
+                fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
         view.setOnClickPendingIntent(R.id.player_previous, pendingIntent);
-        pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0, new Intent(NOTIFY_CLOSE), fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+        pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0,
+                new Intent(NOTIFY_CLOSE).setComponent(new ComponentName(this, MusicPlayerReceiver.class)),
+                fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
         view.setOnClickPendingIntent(R.id.player_close, pendingIntent);
-        pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0, new Intent(NOTIFY_PAUSE), fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+        pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0,
+                new Intent(NOTIFY_PAUSE).setComponent(new ComponentName(this, MusicPlayerReceiver.class)),
+                fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
         view.setOnClickPendingIntent(R.id.player_pause, pendingIntent);
-        pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0, new Intent(NOTIFY_NEXT), fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+        pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0,
+                new Intent(NOTIFY_NEXT).setComponent(new ComponentName(this, MusicPlayerReceiver.class)),
+                fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
         view.setOnClickPendingIntent(R.id.player_next, pendingIntent);
-        pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0, new Intent(NOTIFY_PLAY), fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
+        pendingIntent = PendingIntent.getBroadcast(getApplicationContext(), 0,
+                new Intent(NOTIFY_PLAY).setComponent(new ComponentName(this, MusicPlayerReceiver.class)),
+                fixIntentFlags(PendingIntent.FLAG_MUTABLE | PendingIntent.FLAG_UPDATE_CURRENT));
         view.setOnClickPendingIntent(R.id.player_play, pendingIntent);
     }
 

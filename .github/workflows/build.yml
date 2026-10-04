@@ -77,6 +77,15 @@ jobs:
         with:
           fetch-depth: 1
 
+      # T67 static crash-hygiene gate: encodes the FIELD-PROVEN Android 14/15/16
+      # crash classes (FLAG_MUTABLE + implicit-intent PendingIntents — the
+      # NotificationsService splash-exit crash on POCO serenity A15 / Samsung
+      # a36xq A16; the :crash process UnsatisfiedLinkError) so they can never
+      # regress. Pure-python stdlib, fails the run in seconds before any
+      # Gradle work. See TMessagesProj/tests/static/test_t67_crash_hygiene.py.
+      - name: "T67 static crash-hygiene gate (PendingIntent U+ rules / FGS eradication / :crash guard)"
+        run: python3 TMessagesProj/tests/static/test_t67_crash_hygiene.py
+
       - name: Set up JDK 17 (AGP 8.7.3 / Gradle 8.9 requirement)
         uses: actions/setup-java@v4
         with:

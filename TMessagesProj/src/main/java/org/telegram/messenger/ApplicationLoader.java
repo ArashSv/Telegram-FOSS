@@ -10,14 +10,11 @@ package org.telegram.messenger;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.app.AlarmManager;
 import android.app.Application;
-import android.app.PendingIntent;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -34,7 +31,6 @@ import android.telephony.TelephonyManager;
 import android.view.ViewGroup;
 
 import android.text.TextUtils;
-import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.multidex.MultiDex;
@@ -55,7 +51,6 @@ import java.io.File;
 import java.util.ArrayList;
 
 public class ApplicationLoader extends Application {
-    private static PendingIntent pendingIntent;
 
     public static ApplicationLoader applicationLoaderInstance;
 
@@ -377,11 +372,14 @@ public class ApplicationLoader extends Application {
 
         applicationHandler = new Handler(applicationContext.getMainLooper());
 
-        // T66: push service = FGS start + repeating alarm — main-process only.
-        // The :crash report process must stay a passive, side-effect-free UI.
-        if (isMainProcess()) {
-            AndroidUtilities.runOnUIThread(ApplicationLoader::startPushService);
-        }
+        // T67: the keep-alive foreground service (NotificationsService) is
+        // eradicated. Its onCreate built a FLAG_MUTABLE PendingIntent with an
+        // implicit intent — a hard IllegalArgumentException on Android 14/15/16
+        // for targetSdk 34+ apps. The system killed the process at service
+        // creation, i.e. the moment the splash exits ("Unable to create service
+        // org.telegram.messenger.NotificationsService": POCO serenity A15,
+        // Samsung a36xq A16, crash-1ccc947c/139f58be/95488ca2/dd357528).
+        // Nothing starts a push service anymore; see NotificationsService.java.
 
         // T70 hardening: getComponentEnabledSetting/setComponentEnabledSetting
         // have thrown on OEM builds (both processes run this — Application.onCreate).
@@ -408,65 +406,35 @@ public class ApplicationLoader extends Application {
         org.osmdroid.config.Configuration.getInstance().setOsmdroidBasePath(new File(getCacheDir(),"osmdroid"));
     }
 
-    public static void startPushService() {
-        SharedPreferences preferences = MessagesController.getGlobalNotificationsSettings();
-        boolean enabled;
-        if (preferences.contains("pushService")) {
-            enabled = preferences.getBoolean("pushService", true);
-        } else {
-            enabled = MessagesController.getMainSettings(UserConfig.selectedAccount).getBoolean("keepAliveService", true);
-            SharedPreferences.Editor editor = preferences.edit();
-            editor.putBoolean("pushService", enabled);
-            editor.putBoolean("pushConnection", enabled);
-            editor.commit();
-            SharedPreferences preferencesCA = MessagesController.getNotificationsSettings(UserConfig.selectedAccount);
-            SharedPreferences.Editor editorCA = preferencesCA.edit();
-            editorCA.putBoolean("pushConnection", enabled);
-            editorCA.putBoolean("pushService", enabled);
-            editorCA.commit();
-            ConnectionsManager.getInstance(UserConfig.selectedAccount).setPushConnectionEnabled(true);
-        }
-        if (enabled) {
-            Log.d("TFOSS", "Trying to start push service every minute");
-            // Telegram-FOSS: unconditionally enable push service
-            AlarmManager am = (AlarmManager) applicationContext.getSystemService(Context.ALARM_SERVICE);
-            Intent i = new Intent(applicationContext, NotificationsService.class);
-            pendingIntent = PendingIntent.getBroadcast(applicationContext, 0, i, PendingIntent.FLAG_MUTABLE);
-
-            am.cancel(pendingIntent);
-            am.setRepeating(AlarmManager.RTC_WAKEUP, System.currentTimeMillis(), 60000, pendingIntent);
-            try {
-                Log.d("TFOSS", "Starting push service...");
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    applicationContext.startForegroundService(new Intent(applicationContext, NotificationsService.class));
-                } else {
-                    applicationContext.startService(new Intent(applicationContext, NotificationsService.class));
-                }
-            } catch (Throwable ignore) {
-                Log.d("TFOSS", "Failed to start push service");
-            }
-        } else {
-            applicationContext.stopService(new Intent(applicationContext, NotificationsService.class));
-
-            PendingIntent pintent = PendingIntent.getService(applicationContext, 0, new Intent(applicationContext, NotificationsService.class), PendingIntent.FLAG_MUTABLE);
-            AlarmManager alarm = (AlarmManager)applicationContext.getSystemService(Context.ALARM_SERVICE);
-            alarm.cancel(pintent);
-                if (pendingIntent != null) {
-                    alarm.cancel(pendingIntent);
-                }
-        }
-    }
+    // T67: ApplicationLoader.startPushService() was DELETED here — it was the
+    // only thing launching the keep-alive NotificationsService whose onCreate
+    // crashed the whole process on Android 14/15/16 (see NotificationsService).
+    // All former call sites (onCreate, AppStartReceiver BOOT_COMPLETED,
+    // MessagesController, NotificationsSettingsActivity) were removed with it.
 
     @Override
     public void onConfigurationChanged(Configuration newConfig) {
         super.onConfigurationChanged(newConfig);
+        // T67: the :crash report process re-runs ApplicationLoader by design
+        // (T66) but native libs are main-process-only, so it must NEVER touch
+        // Telegram singletons: LocaleController.getInstance() pulls
+        // MessagesController.getGlobalMainSettings() -> ConnectionsManager ->
+        // native_isTestBackend -> UnsatisfiedLinkError inside the crash
+        // reporter itself (field report crash-06d40a41, POCO serenity A15).
+        if (!isMainProcess()) {
+            return;
+        }
         try {
             LocaleController.getInstance().onDeviceConfigurationChange(newConfig);
             AndroidUtilities.checkDisplaySize(applicationContext, newConfig);
             VideoCapturerDevice.checkScreenCapturerSize();
             AndroidUtilities.resetTabletFlag();
-        } catch (Exception e) {
-            e.printStackTrace();
+        } catch (Throwable t) {
+            // A configuration change must never kill ANY process. Note:
+            // UnsatisfiedLinkError and friends are Errors, not Exceptions —
+            // the previous "catch (Exception e)" is exactly how the :crash
+            // process died despite being wrapped.
+            t.printStackTrace();
         }
     }
 /*

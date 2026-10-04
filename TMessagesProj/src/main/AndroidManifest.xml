@@ -439,7 +439,12 @@
              (any installed app could previously start them). Same-app starts
              are unaffected by exported=false. -->
         <service android:name=".BringAppForegroundService" android:enabled="true"  android:exported="false"/>
-        <service android:name=".NotificationsService" android:enabled="true"  android:exported="true" android:foregroundServiceType="specialUse">
+        <!-- T67: intentionally inert stub — the keep-alive FGS was the root cause
+             of the Android 14/15/16 launch crash (FLAG_MUTABLE + implicit intent
+             in onCreate). The entry is kept ONLY so a stale sticky-restart from a
+             previous install resolves to a no-op; nothing may start it anymore.
+             exported=false: no external component has any business with it. -->
+        <service android:name=".NotificationsService" android:enabled="true" android:exported="false" android:foregroundServiceType="specialUse">
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Foreground service that keeps push notification handling alive"/>
         </service>
         <service android:name=".NotificationRepeat" android:exported="false"/>
