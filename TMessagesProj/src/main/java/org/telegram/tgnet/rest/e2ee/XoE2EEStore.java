@@ -160,7 +160,7 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
         synchronized (lock) {
             loadLocked();
             if (identityPrivateKey != null) {
-                return new IdentityKeyPair(identityPairBytes());
+                return getIdentityKeyPairObj();
             }
             IdentityKeyPair pair = org.whispersystems.libsignal.util.KeyHelper.generateIdentityKeyPair();
             identityPrivateKey = pair.getPrivateKey().serialize();
@@ -328,7 +328,7 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
                 return false;
             }
             try {
-                return new SessionRecord(data).getSessionStates().size() > 0;
+                return !new SessionRecord(data).isFresh();
             } catch (Exception e) {
                 return false;
             }

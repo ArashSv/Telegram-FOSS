@@ -13,6 +13,7 @@ import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.RequestDelegate;
+import org.telegram.tgnet.rest.e2ee.XoE2EE; // T71: E2EE facade (subpackage needs the explicit import)
 import org.telegram.tgnet.RequestDelegateTimestamp;
 import org.telegram.messenger.Utilities;
 
@@ -314,7 +315,7 @@ public final class RestDispatcher {
         long selfId = UserConfig.getInstance(account).clientUserId;
         RestChatIndex index = RestChatIndex.getInstance(account);
         TLRPC.TL_messages_dialogs dialogs = TlJsonMapper.parseDialogs(
-                RestGateway.getInstance(account).chatsList(), selfId, index);
+                account, RestGateway.getInstance(account).chatsList(), selfId, index);
         // last messages are deletable content — feed the revoke id map
         for (int a = 0; a < dialogs.messages.size(); a++) {
             TLRPC.TL_message message = (TLRPC.TL_message) dialogs.messages.get(a);

@@ -884,7 +884,7 @@ public final class TlJsonMapper {
      *
      * @param index chat index warmed with every scanned chat (peer<->chat_id map)
      */
-    public static TLRPC.TL_messages_dialogs parseDialogs(JSONArray chatsJson, long selfId, RestChatIndex index) {
+    public static TLRPC.TL_messages_dialogs parseDialogs(int account, JSONArray chatsJson, long selfId, RestChatIndex index) {
         TLRPC.TL_messages_dialogs container = new TLRPC.TL_messages_dialogs();
         RestChatIndex.ScanResult scan = index.scanChats(chatsJson);
         container.users.addAll(scan.users);
@@ -931,7 +931,7 @@ public final class TlJsonMapper {
 
                     JSONObject lastJson = chat.optJSONObject("last_message");
                     if (lastJson != null) {
-                        TLRPC.TL_message last = parseMessage(lastJson, dialogId, isGroup,
+                        TLRPC.TL_message last = parseMessage(account, lastJson, dialogId, isGroup,
                                 isGroup ? 0 : peer.id, selfId);
                         dialog.top_message = last.id;
                         dialog.last_message_date = last.date;
