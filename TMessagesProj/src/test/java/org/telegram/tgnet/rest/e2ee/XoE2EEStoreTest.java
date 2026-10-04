@@ -70,9 +70,12 @@ public class XoE2EEStoreTest {
         assertTrue(store.hasIdentity());
         assertTrue(blobFile(0).length() > 0);
 
-        // corrupt the blob (bit rot / tamper / keystore invalidation sim)
+        // corrupt the blob (bit rot / tamper / keystore invalidation sim).
+        // Byte 0 breaks the container structure: on API 23+ ANY single flipped
+        // byte fails the Keystore GCM auth (the stronger production path);
+        // on the JVM fallback it breaks the JSON container itself.
         byte[] blob = Files.readAllBytes(blobFile(0).toPath());
-        blob[blob.length / 2] ^= 0x7F;
+        blob[0] ^= 0x7F;
         Files.write(blobFile(0).toPath(), blob);
 
         XoE2EEStore.resetForTests();

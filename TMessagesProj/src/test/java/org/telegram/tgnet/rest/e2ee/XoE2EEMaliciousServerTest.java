@@ -115,16 +115,20 @@ public class XoE2EEMaliciousServerTest {
 
     @Test
     public void userApprovedResetRecoversTheSession() throws Exception {
-        // set up the flag (identity substitution attack at session-build time:
-        // session dropped, pin retained — the "peer reinstalls with a new key
-        // that the server replaces" shape)
+        // baseline: pin Bob's REAL key through a normal exchange (a pin is the
+        // precondition for detecting ANY substitution)
+        String baseline = alice.encryptText(BOB_ID, "baseline");
+        assertNotNull(bob.decryptFromPeer(ALICE_ID, baseline));
+
+        // attack at session-build time: session dropped, PIN retained — the
+        // "peer reinstalls, server serves attacker keys" shape
         server.substituteIdentity = true;
         server.substituteIdentityKey = XoE2EEMedia.newFileKey();
         org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(0).deleteSession(
                 new org.whispersystems.libsignal.SignalProtocolAddress("3002", XoE2EEStore.DEVICE_ID));
         try {
             alice.encryptText(BOB_ID, "attack");
-            org.junit.Assert.fail();
+            org.junit.Assert.fail("substitution against a pinned key must fail the send");
         } catch (XoE2EE.E2eeUnavailableException ignore) {
         }
         assertTrue(alice.isFlagged(BOB_ID));
