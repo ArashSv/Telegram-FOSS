@@ -90,7 +90,7 @@ public class XoE2EEMaliciousServerTest {
         // already-pinned real key by design), so simulate the natural trigger:
         // session loss (device wipe / new chat) while the pin REMAINS.
         server.substituteIdentity = true;
-        server.substituteIdentityKey = XoE2EEMedia.newFileKey(); // attacker's key
+        server.substituteIdentityKey = org.whispersystems.libsignal.util.KeyHelper.generateIdentityKeyPair().getPublicKey().serialize() // a VALID attacker Curve25519 point (random bytes fail decodePoint before the trust check)
         org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(0).deleteSession(
                 new org.whispersystems.libsignal.SignalProtocolAddress("3002", XoE2EEStore.DEVICE_ID));
 
@@ -123,7 +123,7 @@ public class XoE2EEMaliciousServerTest {
         // attack at session-build time: session dropped, PIN retained — the
         // "peer reinstalls, server serves attacker keys" shape
         server.substituteIdentity = true;
-        server.substituteIdentityKey = XoE2EEMedia.newFileKey();
+        server.substituteIdentityKey = org.whispersystems.libsignal.util.KeyHelper.generateIdentityKeyPair().getPublicKey().serialize() // a VALID attacker Curve25519 point (random bytes fail decodePoint before the trust check);
         org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(0).deleteSession(
                 new org.whispersystems.libsignal.SignalProtocolAddress("3002", XoE2EEStore.DEVICE_ID));
         try {
