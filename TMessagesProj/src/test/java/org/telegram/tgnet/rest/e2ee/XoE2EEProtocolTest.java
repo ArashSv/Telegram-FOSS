@@ -149,6 +149,11 @@ public class XoE2EEProtocolTest {
         alice.ensureRegistered();
         bob.ensureRegistered();
 
+        // the peer identity key becomes locally available through a session
+        // build (X3DH) — exactly the app's flow before the screen is opened
+        String warmup = alice.encryptText(BOB_ID, "pin the peer key");
+        assertNotNull(bob.decryptFromPeer(ALICE_ID, warmup));
+
         String a1 = alice.safetyNumber(ALICE_ID, BOB_ID);
         String a2 = alice.safetyNumber(ALICE_ID, BOB_ID);
         String b1 = bob.safetyNumber(BOB_ID, ALICE_ID);
