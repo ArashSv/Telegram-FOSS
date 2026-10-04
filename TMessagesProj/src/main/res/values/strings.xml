@@ -1394,7 +1394,7 @@
     <string name="GroupEmptyTitle2">Groups can have:</string>
     <string name="GroupDescription1">Up to 200,000 members</string>
     <string name="GroupDescription2">Persistent chat history</string>
-    <string name="GroupDescription3">Public links such as t.me/title</string>
+    <string name="GroupDescription3">Public links such as xorbit.ir/title</string>
     <string name="GroupDescription4">Admins with different rights</string>
     <string name="ChatYourSelfDescription1">Forward messages here to save them</string>
     <string name="ChatYourSelfDescription2">Send media and files to store them</string>
@@ -2428,7 +2428,7 @@
     <string name="TelegramFAQ">Hermes FAQ</string>
     <string name="TelegramFaq">Hermes FAQ</string>
     <string name="TelegramFeatures">Hermes Features</string>
-    <string name="TelegramFeaturesUrl">https://t.me/TelegramTips</string>
+    <string name="TelegramFeaturesUrl">https://hermes.xorbit.ir/</string>
     <string name="AddAccount">Add Account</string>
     <string name="SelectAccount">Select Account</string>
     <string name="TelegramFaqUrl">https://telegram.org/faq</string>
@@ -6234,7 +6234,7 @@
     <string name="PinChatsLimitTitle">Pinned Chats</string>
     <string name="PinChatsLimitSubtitle">Pin up to %d chats in your main chat list</string>
     <string name="PublicLinksLimitTitle">Public Links</string>
-    <string name="PublicLinksLimitSubtitle">Reserve up to %d t.me/name links</string>
+    <string name="PublicLinksLimitSubtitle">Reserve up to %d xorbit.ir/name links</string>
     <string name="SavedGifsLimitTitle">Saved GIFs</string>
     <string name="SavedGifsLimitSubtitle">Save up to %d GIFs in your Favorite GIFs</string>
     <string name="FavoriteStickersLimitTitle">Favorite Stickers</string>

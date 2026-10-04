@@ -1399,6 +1399,21 @@ public class ChangeUsernameActivity extends BaseFragment {
                     }
                     finishFragment();
                 });
+            } else if ("USERNAME_RESERVED".equals(error.text)) {
+                // T70: the backend refuses IDs colliding with xorbit.ir webroot
+                // entries (folder names like /hadifan) as already taken — the
+                // set call must say exactly what the live check said.
+                AndroidUtilities.runOnUIThread(() -> {
+                    try {
+                        progressDialog.dismiss();
+                    } catch (Exception e) {
+                        FileLog.e(e);
+                    }
+                    shakeIfOff();
+                    BulletinFactory.of(ChangeUsernameActivity.this)
+                            .createErrorBulletin(LocaleController.getString("UsernameInUse", R.string.UsernameInUse))
+                            .show();
+                });
             } else if ("USERNAME_PURCHASE_AVAILABLE".equals(error.text) || "USERNAME_INVALID".equals(error.text)) {
                 AndroidUtilities.runOnUIThread(() -> {
                     try {

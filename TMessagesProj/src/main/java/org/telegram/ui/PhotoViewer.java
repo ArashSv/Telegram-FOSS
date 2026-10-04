@@ -182,6 +182,7 @@ import org.telegram.messenger.video.VideoPlayerRewinder;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.rest.XoLinks;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.ActionBarMenu;
 import org.telegram.ui.ActionBar.ActionBarMenuItem;
@@ -197,6 +198,7 @@ import org.telegram.ui.Cells.CheckBoxCell;
 import org.telegram.ui.Cells.PhotoPickerPhotoCell;
 import org.telegram.ui.Cells.TextSelectionHelper;
 import org.telegram.ui.Components.AlertsCreator;
+import org.telegram.ui.Components.XoWebView;
 import org.telegram.ui.Components.AnimatedEmojiDrawable;
 import org.telegram.ui.Components.AnimatedEmojiSpan;
 import org.telegram.ui.Components.AnimatedFileDrawable;
@@ -1229,13 +1231,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                             TLRPC.Chat currentChat = MessagesController.getInstance(currentAccount).getChat(-dialogId);
                             String username = ChatObject.getPublicUsername(currentChat);
                             if (username != null) {
-                                url1 = "https://t.me/" + username + "/" + messageId + "?t=" + finalTimestamp;
+                                url1 = XoLinks.BASE + username + "/" + messageId + "?t=" + finalTimestamp;
                             }
                         } else {
                             TLRPC.User user = MessagesController.getInstance(currentAccount).getUser(dialogId);
                             String username = UserObject.getPublicUsername(user);
                             if (user != null && username != null) {
-                                url1 = "https://t.me/" + username + "/" + messageId + "?t=" + finalTimestamp;
+                                url1 = XoLinks.BASE + username + "/" + messageId + "?t=" + finalTimestamp;
                             }
                         }
                     }
@@ -16045,6 +16047,12 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
     private void initEmbedVideo(int embedSeekTime) {
         if (!isEmbedVideo) {
+            return;
+        }
+        // T70 hardening: no WebView provider on this ROM -> skip the embed
+        // instead of crashing on `new WebView` inside PhotoViewerWebView.
+        if (!XoWebView.isAvailable()) {
+            isEmbedVideo = false;
             return;
         }
         photoViewerWebView = new PhotoViewerWebView(this, parentActivity, pipItem) {

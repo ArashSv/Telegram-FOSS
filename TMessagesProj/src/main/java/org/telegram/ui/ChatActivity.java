@@ -179,6 +179,7 @@ import org.telegram.messenger.voip.VoIPService;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.rest.XoLinks;
 import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.ActionBarLayout;
@@ -32758,13 +32759,13 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                                 TLRPC.Chat currentChat = MessagesController.getInstance(currentAccount).getChat(-dialogId);
                                 String username = ChatObject.getPublicUsername(currentChat);
                                 if (currentChat != null && username != null) {
-                                    link = "https://t.me/" + username + "/" + messageId + "?t=" + finalTimestamp;
+                                    link = XoLinks.BASE + username + "/" + messageId + "?t=" + finalTimestamp;
                                 }
                             } else {
                                 TLRPC.User user = MessagesController.getInstance(currentAccount).getUser(dialogId);
                                 String username = UserObject.getPublicUsername(user);
                                 if (user != null && username != null) {
-                                    link = "https://t.me/" + username + "/" + messageId + "?t=" + finalTimestamp;
+                                    link = XoLinks.BASE + username + "/" + messageId + "?t=" + finalTimestamp;
                                 }
                             }
                             if (link == null) {
@@ -39317,13 +39318,13 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                     TLRPC.Chat currentChat = MessagesController.getInstance(currentAccount).getChat(-dialogId);
                     String username = ChatObject.getPublicUsername(currentChat);
                     if (currentChat != null && username != null) {
-                        link = "https://t.me/" + username + "/" + messageId + "?t=" + timestamp;
+                        link = XoLinks.BASE + username + "/" + messageId + "?t=" + timestamp;
                     }
                 } else {
                     TLRPC.User user = MessagesController.getInstance(currentAccount).getUser(dialogId);
                     String username = UserObject.getPublicUsername(user);
                     if (user != null && username != null) {
-                        link = "https://t.me/" + username + "/" + messageId + "?t=" + timestamp;
+                        link = XoLinks.BASE + username + "/" + messageId + "?t=" + timestamp;
                     }
                 }
                 if (link == null) {

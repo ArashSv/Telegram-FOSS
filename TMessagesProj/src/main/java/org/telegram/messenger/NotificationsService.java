@@ -26,23 +26,35 @@ public class NotificationsService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        ApplicationLoader.postInitApplication();
+        // T70 hardening (multi-device guarantee): reach startForeground BEFORE
+        // the heavy one-shot app init. On slow/low-RAM devices
+        // postInitApplication() could eat into the 5-second
+        // ForegroundServiceDidNotStartInTime window and kill the whole app
+        // right when push recovery needed it most. The notification only
+        // needs the channel, not the loaded singletons.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            String CHANNEL_ID = "push_service_channel";
-            NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
-            NotificationChannel channel = new NotificationChannel(CHANNEL_ID,"Push Notifications Service",NotificationManager.IMPORTANCE_DEFAULT);
-            notificationManager.createNotificationChannel(channel);
-            Intent explainIntent = new Intent("android.intent.action.VIEW");
-            explainIntent.setData(Uri.parse("https://github.com/ArashSv/Telegram-FOSS/blob/develop/Notifications.md"));
-            PendingIntent explainPendingIntent = PendingIntent.getActivity(this, 0, explainIntent, PendingIntent.FLAG_MUTABLE);
-            Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
-                    .setContentIntent(explainPendingIntent)
-                    .setShowWhen(false)
-                    .setOngoing(true)
-                    .setSmallIcon(R.drawable.notification)
-                    .setContentText("Push service: tap to learn more").build();
-            startForeground(9999,notification);
+            try {
+                String CHANNEL_ID = "push_service_channel";
+                NotificationManager notificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                NotificationChannel channel = new NotificationChannel(CHANNEL_ID, "Push Notifications Service", NotificationManager.IMPORTANCE_DEFAULT);
+                notificationManager.createNotificationChannel(channel);
+                Intent explainIntent = new Intent("android.intent.action.VIEW");
+                explainIntent.setData(Uri.parse("https://github.com/ArashSv/Telegram-FOSS/blob/develop/Notifications.md"));
+                PendingIntent explainPendingIntent = PendingIntent.getActivity(this, 0, explainIntent, PendingIntent.FLAG_MUTABLE);
+                Notification notification = new NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setContentIntent(explainPendingIntent)
+                        .setShowWhen(false)
+                        .setOngoing(true)
+                        .setSmallIcon(R.drawable.notification)
+                        .setContentText("Push service: tap to learn more").build();
+                startForeground(9999, notification);
+            } catch (Throwable e) {
+                // OEM channel/notification quirks must not crash the push
+                // service process — degrade to a background service instead.
+                FileLog.e(e);
+            }
         }
+        ApplicationLoader.postInitApplication();
     }
 
     @Override

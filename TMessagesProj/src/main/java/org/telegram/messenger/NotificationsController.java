@@ -3813,7 +3813,25 @@ public class NotificationsController extends BaseController {
                 FileLog.d("create new channel " + channelId);
             }
             lastNotificationChannelCreateTime = SystemClock.elapsedRealtime();
-            systemNotificationManager.createNotificationChannel(notificationChannel);
+            try {
+                systemNotificationManager.createNotificationChannel(notificationChannel);
+            } catch (Throwable e) {
+                // T70 hardening (the upstream "vendor messed up crash" todo):
+                // some OEM builds throw from createNotificationChannel on the
+                // sound/AudioAttributes path — the exception escapes on the
+                // notifications queue thread and kills the whole process.
+                // Degrade to a silent default channel instead.
+                FileLog.e(e);
+                try {
+                    NotificationChannel fallback = new NotificationChannel(channelId, notificationChannel.getName(), notificationChannel.getImportance());
+                    fallback.setSound(null, null);
+                    fallback.enableVibration(false);
+                    fallback.enableLights(false);
+                    systemNotificationManager.createNotificationChannel(fallback);
+                } catch (Throwable e2) {
+                    FileLog.e(e2);
+                }
+            }
             preferences.edit().putString(key, channelId).putString(key + "_s", newSettingsHash).commit();
         }
         return channelId;

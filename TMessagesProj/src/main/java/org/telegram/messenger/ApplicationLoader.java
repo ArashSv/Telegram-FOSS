@@ -130,9 +130,13 @@ public class ApplicationLoader extends Application {
 
     public static File getFilesDirFixed() {
         for (int a = 0; a < 10; a++) {
-            File path = ApplicationLoader.applicationContext.getFilesDir();
-            if (path != null) {
-                return path;
+            try {
+                File path = ApplicationLoader.applicationContext != null ? ApplicationLoader.applicationContext.getFilesDir() : null;
+                if (path != null) {
+                    return path;
+                }
+            } catch (Exception e) {
+                FileLog.e(e);
             }
         }
         try {
@@ -143,7 +147,16 @@ public class ApplicationLoader extends Application {
         } catch (Exception e) {
             FileLog.e(e);
         }
-        return new File("/data/data/org.telegram.messenger/files");
+        // T70 hardening: the hardcoded fallback was org.telegram.messenger —
+        // stale since the applicationId became com.hermes.chat.
+        String pkg = "com.hermes.chat";
+        try {
+            if (applicationContext != null) {
+                pkg = applicationContext.getPackageName();
+            }
+        } catch (Exception ignore) {
+        }
+        return new File("/data/data/" + pkg + "/files");
     }
 
     public static void postInitApplication() {
@@ -370,8 +383,18 @@ public class ApplicationLoader extends Application {
             AndroidUtilities.runOnUIThread(ApplicationLoader::startPushService);
         }
 
-        LauncherIconController.tryFixLauncherIconIfNeeded();
-        ProxyRotationController.init();
+        // T70 hardening: getComponentEnabledSetting/setComponentEnabledSetting
+        // have thrown on OEM builds (both processes run this — Application.onCreate).
+        try {
+            LauncherIconController.tryFixLauncherIconIfNeeded();
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
+        try {
+            ProxyRotationController.init();
+        } catch (Throwable e) {
+            FileLog.e(e);
+        }
         // SET TFOSS USERAGENT FOR OSM SERVERS
         PackageInfo pInfo;
         String VERSIONNAME="";

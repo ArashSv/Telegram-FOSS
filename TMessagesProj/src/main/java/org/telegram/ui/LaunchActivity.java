@@ -128,6 +128,7 @@ import org.telegram.messenger.voip.VoIPService;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.rest.XoLinks;
 import org.telegram.tgnet.tl.TL_chatlists;
 import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.ActionBar.ActionBarLayout;
@@ -2411,7 +2412,30 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                                             }
                                         }
                                     }
-                                    break;
+                                } else if (XoLinks.isProfileHost(host)) {
+                                    // T70: https://xorbit.ir/{username} — the Hermes
+                                    // identity link (t.me replacement). Resolved like
+                                    // any username deep link below. A trailing numeric
+                                    // segment mirrors t.me/{user}/{msg} semantics.
+                                    // EVERYTHING else on the domain belongs to the
+                                    // site (folders, pages, /tele) and goes back to
+                                    // the browser — App Links verification can route
+                                    // site URLs here, and they must not be swallowed.
+                                    java.util.List<String> xoSegments = data.getPathSegments();
+                                    if (xoSegments.size() >= 1 && XoLinks.isResolvableProfile(xoSegments.get(0))) {
+                                        username = xoSegments.get(0);
+                                        if (xoSegments.size() == 2) {
+                                            int msgId = Utilities.parseInt(xoSegments.get(1));
+                                            if (msgId != 0) {
+                                                messageId = msgId;
+                                            }
+                                        }
+                                    } else {
+                                        final Uri siteUrl = data;
+                                        AndroidUtilities.runOnUIThread(() -> Browser.openUrl(LaunchActivity.this, siteUrl));
+                                    }
+                                }
+                                break;
                                 }
                                 case "tg": {
                                     String url = data.toString();

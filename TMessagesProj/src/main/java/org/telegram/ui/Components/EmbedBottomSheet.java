@@ -229,6 +229,18 @@ public class EmbedBottomSheet extends BottomSheet {
     }
 
     public static void show(BaseFragment fragment, MessageObject message, PhotoViewer.PhotoViewerProvider photoViewerProvider, String title, String description, String originalUrl, final String url, int w, int h, int seekTime, boolean keyboardVisible) {
+        // T70 hardening: on ROMs without a WebView provider the embed below
+        // would crash on `new WebView`. Fall back to the external browser.
+        if (!XoWebView.isAvailable()) {
+            try {
+                String fallback = url != null ? url : originalUrl;
+                if (fragment != null && fragment.getParentActivity() != null && fallback != null) {
+                    org.telegram.messenger.browser.Browser.openUrl(fragment.getParentActivity(), fallback);
+                }
+            } catch (Throwable ignore) {
+            }
+            return;
+        }
         if (instance != null) {
             instance.destroy();
         }

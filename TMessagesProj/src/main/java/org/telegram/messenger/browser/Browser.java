@@ -40,6 +40,7 @@ import org.telegram.messenger.support.customtabs.CustomTabsServiceConnection;
 import org.telegram.messenger.support.customtabs.CustomTabsSession;
 import org.telegram.messenger.support.customtabsclient.shared.CustomTabsHelper;
 import org.telegram.messenger.support.customtabsclient.shared.ServiceConnection;
+import org.telegram.tgnet.rest.XoLinks;
 import org.telegram.messenger.support.customtabsclient.shared.ServiceConnectionCallback;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
@@ -189,6 +190,19 @@ public class Browser {
         }
         if (link.startsWith("@")) {
             return link.substring(1);
+        }
+        // T70: xorbit.ir — the Hermes identity domain (t.me replacement).
+        if (link.startsWith("xorbit.ir/")) {
+            return link.substring(10);
+        }
+        if (link.startsWith("www.xorbit.ir/")) {
+            return link.substring(14);
+        }
+        if (link.startsWith("https://xorbit.ir/") || link.startsWith("https://www.xorbit.ir/")) {
+            return link.substring(link.indexOf('/', 8) + 1);
+        }
+        if (link.startsWith("http://xorbit.ir/") || link.startsWith("http://www.xorbit.ir/")) {
+            return link.substring(link.indexOf('/', 7) + 1);
         }
         if (link.startsWith("t.me/")) {
             return link.substring(5);
@@ -537,6 +551,11 @@ public class Browser {
                 }
                 return true;
             }
+        } else if (XoLinks.isProfileHost(host)) {
+            // T70: xorbit.ir is OUR identity domain — profile links open
+            // in-app exactly like t.me did; every other path (folders, pages,
+            // /tele) is site content for the browser.
+            return XoLinks.isProfileUri(uri);
         } else if ("telegram.org".equals(host) && uri != null && uri.getPath() != null && uri.getPath().startsWith("/blog/")) {
             return true;
         } else if (all) {

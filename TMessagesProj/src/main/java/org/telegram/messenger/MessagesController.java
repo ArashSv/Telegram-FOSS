@@ -51,6 +51,7 @@ import org.telegram.messenger.support.LongSparseLongArray;
 import org.telegram.messenger.voip.VoIPService;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.rest.RestAuthStore;
+import org.telegram.tgnet.rest.XoLinks;
 import org.telegram.tgnet.NativeByteBuffer;
 import org.telegram.tgnet.RequestDelegate;
 import org.telegram.tgnet.SerializedData;
@@ -1390,7 +1391,13 @@ public class MessagesController extends BaseController implements NotificationCe
         // product rule.
         maxEditTime = mainPreferences.getInt("maxEditTime", 172800);
         ratingDecay = mainPreferences.getInt("ratingDecay", 2419200);
-        linkPrefix = mainPreferences.getString("linkPrefix", "t.me");
+        // T70: xorbit.ir is the Hermes identity domain. The default changed
+        // from "t.me"; a persisted legacy value (never expected on REST
+        // accounts) is migrated instead of being honored.
+        linkPrefix = mainPreferences.getString("linkPrefix", XoLinks.LINK_PREFIX);
+        if (TextUtils.isEmpty(linkPrefix) || "t.me".equals(linkPrefix) || "telegram.me".equals(linkPrefix) || "telegram.dog".equals(linkPrefix)) {
+            linkPrefix = XoLinks.LINK_PREFIX;
+        }
         callReceiveTimeout = mainPreferences.getInt("callReceiveTimeout", 20000);
         callRingTimeout = mainPreferences.getInt("callRingTimeout", 90000);
         callConnectTimeout = mainPreferences.getInt("callConnectTimeout", 30000);
@@ -4810,6 +4817,10 @@ public class MessagesController extends BaseController implements NotificationCe
                 linkPrefix = linkPrefix.substring(8);
             } else if (linkPrefix.startsWith("http://")) {
                 linkPrefix = linkPrefix.substring(7);
+            }
+            // T70: no server config may point the identity domain back at t.me.
+            if (TextUtils.isEmpty(linkPrefix) || "t.me".equals(linkPrefix) || "telegram.me".equals(linkPrefix) || "telegram.dog".equals(linkPrefix)) {
+                linkPrefix = XoLinks.LINK_PREFIX;
             }
             callReceiveTimeout = config.call_receive_timeout_ms;
             callRingTimeout = config.call_ring_timeout_ms;

@@ -3005,7 +3005,7 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			builder.setLargeIcon(photo);
 		}
 		try {
-			startForeground(ID_ONGOING_CALL_NOTIFICATION, builder.getNotification());
+			startForegroundTyped(ID_ONGOING_CALL_NOTIFICATION, builder.getNotification(), false);
 		} catch (Exception e) {
 			if (photo != null && e instanceof IllegalArgumentException) {
 				showNotification(name, null);
@@ -3656,7 +3656,11 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			} else {
 				bldr.setSmallIcon(R.drawable.ic_call);
 			}
-			startForeground(ID_ONGOING_CALL_NOTIFICATION, bldr.build());
+			try {
+				startForegroundTyped(ID_ONGOING_CALL_NOTIFICATION, bldr.build(), false);
+			} catch (Throwable e) {
+				FileLog.e(e);
+			}
 		}
 	}
 
@@ -4240,8 +4244,34 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 			builder.addAction(R.drawable.ic_call, answerTitle, answerPendingIntent);
 			incomingNotification = builder.getNotification();
 		}
-		startForeground(ID_INCOMING_CALL_NOTIFICATION, incomingNotification);
+		try {
+			startForegroundTyped(ID_INCOMING_CALL_NOTIFICATION, incomingNotification, true);
+		} catch (Throwable e) {
+			FileLog.e(e);
+		}
 		startRingtoneAndVibration();
+	}
+
+	/**
+	 * T70 hardening (multi-device guarantee): on Android 14+ the two-arg
+	 * startForeground adopts the FULL manifest type set - including
+	 * mediaProjection/camera, whose prerequisites are not held during an
+	 * ordinary call - and ringing can start from the background where the
+	 * microphone type is restricted. Both are OEM-visible
+	 * ForegroundServiceTypeException vectors. An explicit, per-state type
+	 * mask (mediaPlayback always; microphone only once the call is live)
+	 * is the upstream-correct behavior; pre-14 keeps the plain call.
+	 */
+	private void startForegroundTyped(int id, android.app.Notification notification, boolean ringing) {
+		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+			int types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+			if (!ringing) {
+				types |= android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+			}
+			androidx.core.app.ServiceCompat.startForeground(this, id, notification, types);
+		} else {
+			startForeground(id, notification);
+		}
 	}
 
 	private void callFailed(String error) {

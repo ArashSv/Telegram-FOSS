@@ -1790,7 +1790,8 @@ public final class RestDispatcher {
      * TL_boolTrue = available (green), TL_error USERNAME_INVALID = red
      * ("too short" when length == 4), everything else = "in use" (red).
      * The backend encodes rule violations as reason codes; only invalid-shape
-     * reasons surface as USERNAME_INVALID — occupied (and unknown codes) fall
+     * reasons surface as USERNAME_INVALID — occupied, RESERVED (T70: webroot
+     * folder names like /hadifan — "already selected") and unknown codes fall
      * to TL_boolFalse so the UI shows the standard in-use state.
      */
     private static TLObject handleCheckUsername(int account, TLRPC.TL_account_checkUsername req) {
@@ -1806,8 +1807,7 @@ public final class RestDispatcher {
         if ("USERNAME_TOO_SHORT".equals(reason)
                 || "USERNAME_TOO_LONG".equals(reason)
                 || "USERNAME_INVALID".equals(reason)
-                || "USERNAME_INVALID_START".equals(reason)
-                || "USERNAME_RESERVED".equals(reason)) {
+                || "USERNAME_INVALID_START".equals(reason)) {
             throw new XoApiException(400, "USERNAME_INVALID", reason);
         }
         return new TLRPC.TL_boolFalse();
