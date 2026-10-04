@@ -1,7 +1,5 @@
 package org.telegram.tgnet.rest;
 
-import android.text.TextUtils;
-
 import org.telegram.Utilities;
 
 import java.util.Arrays;
@@ -121,7 +119,10 @@ public final class XoLinks {
 
     /** The canonical profile URL for a username. */
     public static String profileUrl(String username) {
-        if (TextUtils.isEmpty(username)) {
+        // Pure-Java null/empty handling: this class must stay runnable on the
+        // JVM test gate (returnDefaultValues makes android.text.TextUtils
+        // answer false for everything, which would concat "null" here).
+        if (username == null || username.length() == 0) {
             return BASE;
         }
         return BASE + username;
