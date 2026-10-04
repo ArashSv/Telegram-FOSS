@@ -2411,8 +2411,7 @@ public class LaunchActivity extends BasePermissionsActivity implements INavigati
                                                 }
                                             }
                                         }
-                                    }
-                                } else if (XoLinks.isProfileHost(host)) {
+                                    } else if (XoLinks.isProfileHost(host)) {
                                     // T70: https://xorbit.ir/{username} — the Hermes
                                     // identity link (t.me replacement). Resolved like
                                     // any username deep link below. A trailing numeric

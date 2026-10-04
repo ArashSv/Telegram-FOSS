@@ -4264,11 +4264,14 @@ public class VoIPService extends Service implements SensorEventListener, AudioMa
 	 */
 	private void startForegroundTyped(int id, android.app.Notification notification, boolean ringing) {
 		if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+			// framework 3-arg startForeground (API 29+): an explicit, minimal
+			// type mask instead of the manifest-set adoption. androidx.core in
+			// this project is 1.10.1 — its ServiceCompat has no typed overload.
 			int types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
 			if (!ringing) {
 				types |= android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
 			}
-			androidx.core.app.ServiceCompat.startForeground(this, id, notification, types);
+			startForeground(id, notification, types);
 		} else {
 			startForeground(id, notification);
 		}
