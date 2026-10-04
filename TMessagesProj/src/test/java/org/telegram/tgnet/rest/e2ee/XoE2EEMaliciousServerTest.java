@@ -123,7 +123,7 @@ public class XoE2EEMaliciousServerTest {
         // attack at session-build time: session dropped, PIN retained — the
         // "peer reinstalls, server serves attacker keys" shape
         server.substituteIdentity = true;
-        server.substituteIdentityKey = org.whispersystems.libsignal.util.KeyHelper.generateIdentityKeyPair().getPublicKey().serialize() // a VALID attacker Curve25519 point (random bytes fail decodePoint before the trust check);
+        server.substituteIdentityKey = org.whispersystems.libsignal.util.KeyHelper.generateIdentityKeyPair().getPublicKey().serialize(); // a VALID attacker Curve25519 point
         org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(0).deleteSession(
                 new org.whispersystems.libsignal.SignalProtocolAddress("3002", XoE2EEStore.DEVICE_ID));
         try {
