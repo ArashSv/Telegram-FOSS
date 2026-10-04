@@ -56,18 +56,31 @@ public final class XoLinks {
     private XoLinks() {
     }
 
-    /** true for the identity hosts (xorbit.ir / www.xorbit.ir), scheme-less. */
+    /** true for the identity hosts (xorbit.ir / www.xorbit.ir), scheme-less,
+     *  case-insensitive defensively. */
     public static boolean isProfileHost(String host) {
-        return HOST.equals(host) || WWW_HOST.equals(host);
+        if (host == null) {
+            return false;
+        }
+        String h = host.toLowerCase();
+        return HOST.equals(h) || WWW_HOST.equals(h);
     }
 
-    /** Backend-exact username shape: 5..32, [A-Za-z0-9_], no leading digit. */
+    /** Backend-exact username shape: 5..32, [A-Za-z0-9_], no leading digit,
+     *  no leading/trailing underscore (both are USERNAME_INVALID server-side
+     *  and in the username editor). */
     public static boolean isUsernameShape(String s) {
         if (s == null || !USERNAME_RE.matcher(s).matches()) {
             return false;
         }
-        char c = s.charAt(0);
-        return c < '0' || c > '9';
+        char first = s.charAt(0);
+        if (first >= '0' && first <= '9') {
+            return false;
+        }
+        if (first == '_' || s.charAt(s.length() - 1) == '_') {
+            return false;
+        }
+        return true;
     }
 
     /** Site-owned namespace (never a profile), case-insensitive. */
