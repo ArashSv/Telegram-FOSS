@@ -27,7 +27,7 @@ public class TlJsonMapperMessageTest {
     public void textMessage_mapsCoreFieldsAndFlags() throws Exception {
         org.json.JSONObject msg = XoFixtures.obj("fixture_message_text");
         // receiving side: self = 10001 (sender 10000 in the fixture)
-        TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, 10001L, false, 10001L, 10001L);
+        TLRPC.TL_message m = TlJsonMapper.parseMessage(0, msg, 10001L, false, 10001L, 10001L);
 
         assertEquals(1, m.id);
         assertEquals("سلام از بک‌اند!", m.message);
@@ -46,7 +46,7 @@ public class TlJsonMapperMessageTest {
     @Test
     public void ownMessage_getsTheOutFlag() throws Exception {
         org.json.JSONObject msg = XoFixtures.obj("fixture_message_text");
-        TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, 10001L, false, 10001L, 10000L /* self == sender */);
+        TLRPC.TL_message m = TlJsonMapper.parseMessage(0, msg, 10001L, false, 10001L, 10000L /* self == sender */);
         assertTrue(m.out);
         assertTrue((m.flags & 2) != 0);
     }
@@ -54,7 +54,7 @@ public class TlJsonMapperMessageTest {
     @Test
     public void replyMessage_buildsFlagCoherentHeader() throws Exception {
         org.json.JSONObject msg = XoFixtures.obj("fixture_message_reply");
-        TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, 10001L, false, 10000L, 10001L);
+        TLRPC.TL_message m = TlJsonMapper.parseMessage(0, msg, 10001L, false, 10000L, 10001L);
         assertNotNull(m.reply_to);
         assertTrue(m.reply_to instanceof TLRPC.TL_messageReplyHeader);
         TLRPC.TL_messageReplyHeader header = (TLRPC.TL_messageReplyHeader) m.reply_to;
@@ -67,7 +67,7 @@ public class TlJsonMapperMessageTest {
     @Test
     public void documentMediaMessage_carriesServerAttestation() throws Exception {
         org.json.JSONObject msg = XoFixtures.obj("fixture_message_media");
-        TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, 10001L, false, 10001L, 10000L);
+        TLRPC.TL_message m = TlJsonMapper.parseMessage(0, msg, 10001L, false, 10001L, 10000L);
         assertTrue(m.media instanceof TLRPC.TL_messageMediaDocument);
         // the declared media field type is the abstract TLRPC.Document; the
         // mapper contract (storage serialization) is the concrete TL_document
@@ -94,7 +94,7 @@ public class TlJsonMapperMessageTest {
     public void historyParser_preservesBackendAscendingOrder() throws Exception {
         org.json.JSONArray history = XoFixtures.obj("fixture_history").getJSONArray("messages");
         assertTrue(history.length() >= 4);
-        java.util.ArrayList<TLRPC.TL_message> parsed = TlJsonMapper.parseHistory(history, 10001L, false, 10001L, 10000L);
+        java.util.ArrayList<TLRPC.TL_message> parsed = TlJsonMapper.parseHistory(0, history, 10001L, false, 10001L, 10000L);
         assertEquals(history.length(), parsed.size());
         for (int a = 1; a < parsed.size(); a++) {
             assertTrue("backend order (asc) must survive",
@@ -109,11 +109,11 @@ public class TlJsonMapperMessageTest {
         org.json.JSONObject event = XoFixtures.obj("fixture_sync_message_new");
         assertEquals("message_new", event.getString("type"));
         org.json.JSONObject msgJson = event.getJSONObject("message");
-        TLRPC.TL_message m = TlJsonMapper.parseMessage(msgJson, 10001L, false, 10001L, 10000L);
+        TLRPC.TL_message m = TlJsonMapper.parseMessage(0, msgJson, 10001L, false, 10001L, 10000L);
         assertEquals(1, m.id);
         assertEquals(10000L, ((TLRPC.TL_peerUser) m.from_id).user_id);
         // own sends are skipped by the poller, but a parsed own message carries out=true
-        TLRPC.TL_message own = TlJsonMapper.parseMessage(msgJson, 10001L, false, 10001L, msgJson.getLong("sender_id"));
+        TLRPC.TL_message own = TlJsonMapper.parseMessage(0, msgJson, 10001L, false, 10001L, msgJson.getLong("sender_id"));
         assertTrue(own.out);
     }
 
@@ -121,7 +121,7 @@ public class TlJsonMapperMessageTest {
     public void groupMessage_mapsPeerChatWithNegativeDialogId() throws Exception {
         org.json.JSONObject msg = XoFixtures.obj("fixture_message_text");
         // group convention: dialog id = -chat_id
-        TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, -7L, true, 0L, 10000L);
+        TLRPC.TL_message m = TlJsonMapper.parseMessage(0, msg, -7L, true, 0L, 10000L);
         assertTrue(m.peer_id instanceof TLRPC.TL_peerChat);
         assertEquals(7L, ((TLRPC.TL_peerChat) m.peer_id).chat_id);
         assertEquals(-7L, m.dialog_id);
@@ -131,7 +131,7 @@ public class TlJsonMapperMessageTest {
     public void editedMessage_getsEditDateFlag() throws Exception {
         org.json.JSONObject msg = XoFixtures.obj("fixture_message_text");
         msg.put("edited_at", 1790986800);
-        TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, 10001L, false, 10001L, 10000L);
+        TLRPC.TL_message m = TlJsonMapper.parseMessage(0, msg, 10001L, false, 10001L, 10000L);
         assertEquals(1790986800, m.edit_date);
         assertTrue("MESSAGE_FLAG_HAS_EDIT_DATE or storage drops it", (m.flags & 32768) != 0);
     }
@@ -140,7 +140,7 @@ public class TlJsonMapperMessageTest {
     public void albumGroupId_parsesAndPlantsFlag() throws Exception {
         org.json.JSONObject msg = XoFixtures.obj("fixture_message_text");
         msg.put("group_id", "-9007199254740993"); // a negative 64-bit value as string
-        TLRPC.TL_message m = TlJsonMapper.parseMessage(msg, 10001L, false, 10001L, 10000L);
+        TLRPC.TL_message m = TlJsonMapper.parseMessage(0, msg, 10001L, false, 10001L, 10000L);
         assertTrue((m.flags & 131072) != 0);
         assertEquals(-9007199254740993L, m.grouped_id);
     }

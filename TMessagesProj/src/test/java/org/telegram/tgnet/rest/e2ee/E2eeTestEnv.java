@@ -33,7 +33,8 @@ import java.util.Set;
 public final class E2eeTestEnv {
 
     private static boolean initialized;
-    private static File currentFilesDir;
+    /** Current temp files dir (test-visible for blob assertions). */
+    public static File currentFilesDir;
     private static final Set<String> WHITELISTED_PREFS = new HashSet<>();
 
     /** Resets everything: new temp files dir, fresh singletons. */
@@ -91,7 +92,7 @@ public final class E2eeTestEnv {
         }
 
         @Override
-        public String[] getStringSet(String key, String[] defValues) {
+        public java.util.Set<String> getStringSet(String key, java.util.Set<String> defValues) {
             return defValues;
         }
 
@@ -238,6 +239,11 @@ public final class E2eeTestEnv {
 
         @Override
         public JSONObject post(String path, JSONObject body) {
+            throw new UnsupportedOperationException("use the account-bound backend");
+        }
+
+        @Override
+        public JSONObject get(String path) {
             throw new UnsupportedOperationException("use the account-bound backend");
         }
 
