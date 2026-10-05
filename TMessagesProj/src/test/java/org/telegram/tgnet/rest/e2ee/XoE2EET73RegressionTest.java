@@ -93,7 +93,7 @@ public class XoE2EET73RegressionTest {
     }
 
     @Test
-    public void sentInnerCacheEvictsOldestBeyondCap() {
+    public void sentInnerCacheEvictsOldestBeyondCap() throws Exception {
         XoE2EE alice = XoE2EE.getInstance(0);
         for (int i = 0; i < 300; i++) {
             alice.noteSentInner(10_000L + i, "{\"t\":\"t\",\"x\":\"m" + i + "\"}");
