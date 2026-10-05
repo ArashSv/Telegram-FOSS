@@ -213,10 +213,18 @@ public final class XoE2EE {
         try {
             // a FLAGGED peer (identity key changed under us) stops all 1:1
             // traffic until the user re-verifies + resets — even an existing
-            // session is not trusted after the pin mismatch
+            // session is not trusted after the pin mismatch. T73: before
+            // failing, VERIFY the flag against the live server identity —
+            // build 108 could leave FALSE-POSITIVE flags behind (its own-echo
+            // decrypt consult isTrustedIdentity with OUR key under the
+            // peer's address). A flag whose peer identity is unchanged on
+            // the server is healed; a genuine substitution stays blocked.
             if (store().isFlagged(peerUserId)) {
-                throw new E2eeUnavailableException("E2EE_IDENTITY_CHANGED",
-                        "recipient identity key changed; verify the safety number before continuing");
+                healFalsePositiveFlag(peerUserId);
+                if (store().isFlagged(peerUserId)) {
+                    throw new E2eeUnavailableException("E2EE_IDENTITY_CHANGED",
+                            "recipient identity key changed; verify the safety number before continuing");
+                }
             }
             ensureRegistered();
             SessionCipher cipher = cipherFor(peerUserId);
@@ -256,6 +264,51 @@ public final class XoE2EE {
             return (E2eeUnavailableException) e;
         }
         return new E2eeUnavailableException("E2EE_ENCRYPT_FAILED", "could not encrypt the message");
+    }
+
+    /**
+     * T73 — flag auto-heal. A flag is only legitimate when the peer's
+     * CURRENT server-side identity differs from the key we pinned. If the
+     * server still serves exactly the pinned key, nothing changed and the
+     * flag must have been a false positive (the T71 own-echo defect); it is
+     * cleared and traffic resumes. A real substitution (server-served key
+     * differs) keeps the flag — the user must verify the safety number.
+     * Transport failures NEVER clear a flag (an unreachable server cannot
+     * vouch for anyone).
+     */
+    private void healFalsePositiveFlag(long peerUserId) {
+        try {
+            JSONObject bundle = api().bundle(peerUserId);
+            if (bundle == null || !bundle.optBoolean("ok", false)) {
+                return; // no keys / transport problem — stay flagged
+            }
+            byte[] served = XoE2EEEnvelope.b64Decode(bundle.getString("identity_key"));
+            IdentityKey pinned = store().getIdentity(addressFor(peerUserId));
+            if (pinned != null && java.util.Arrays.equals(pinned.serialize(), served)) {
+                FileLog.w("XoE2EE: false-positive identity flag healed for peer " + peerUserId
+                        + " (server identity still matches the pinned key)");
+                store().clearFlag(peerUserId);
+            }
+        } catch (Throwable t) {
+            FileLog.e("XoE2EE: flag heal check failed (staying flagged)", t);
+        }
+    }
+
+    // ------------------------------------------------------- own-echo rendering (T73)
+
+    /**
+     * Records the plaintext inner JSON of an OWN outgoing 1:1 message under
+     * its server id (dispatcher calls this right after the send is accepted).
+     * libsignal cannot re-open the sender's own ciphertext; the cache is what
+     * history/send echoes render from instead.
+     */
+    public void noteSentInner(long messageId, String innerJson) {
+        store().noteSentInner(messageId, innerJson);
+    }
+
+    /** Plaintext inner JSON for an OWN outgoing message id, or null. */
+    public String getSentInnerForRender(long messageId) {
+        return store().getSentInner(messageId);
     }
 
     private void maybeRefillOtk() {
@@ -492,6 +545,14 @@ public final class XoE2EE {
         meta.chunkSize = chunkSize;
         meta.thumbEncrypted = thumbEncrypted;
         noteMediaKeys(backendFileId, meta);
+    }
+
+    /** Test seam: drops ONLY the session (trust pins stay) — the next send
+     *  re-fetches the bundle. Used by the T73 heal regression tests. */
+    void forceNewSessionForTests(long peerUserId) {
+        synchronized (lock) {
+            store().deleteSession(addressFor(peerUserId));
+        }
     }
 
     /** Destroys ALL E2EE state for this account (logout). */

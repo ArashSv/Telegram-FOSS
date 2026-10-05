@@ -134,6 +134,25 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
     // media: backendFileId -> envelope meta JSON (contains the SECRET file key)
     private final Map<Long, String> mediaKeys = new HashMap<>();
 
+    // T73: server message id -> PLAINTEXT inner JSON of an OWN outgoing 1:1
+    // message. libsignal can never re-open the sender's own ciphertext (the
+    // owning chains live on the peer), so history/send echoes restore the
+    // inner from here instead of "decrypting" — a PreKey-type attempt would
+    // also consult isTrustedIdentity with OUR key under the peer's address
+    // and FLAG the peer (the T73 send-killer). LRU-capped; lives inside the
+    // Keystore-encrypted blob like every other secret.
+    private static final int SENT_INNER_CACHE_MAX = 250;
+    private final Map<Long, String> sentInners = new java.util.LinkedHashMap<>();
+
+    // T73: consumed one-time prekeys are ARCHIVED (Signal-standard) instead
+    // of hard-deleted. If a prekey message arrives whose OTK was already
+    // consumed (a bundle re-served after a client re-register resurrected
+    // the row, duplicate delivery, restart races), libsignal still finds the
+    // private key here and the session builds — the message is no longer
+    // silently lost. Bounded: the archive keeps the most recent entries.
+    private static final int ARCHIVED_PREKEYS_MAX = 20;
+    private final Map<Integer, byte[]> archivedPreKeys = new java.util.LinkedHashMap<>();
+
     // pending upload intents: location -> {peer, key}; tree upload id -> location
     private final Map<String, String> uploadIntents = new HashMap<>();
     private final Map<Long, String> uploadTreeLocations = new HashMap<>();
@@ -370,6 +389,12 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
             loadLocked();
             byte[] data = preKeys.get(preKeyId);
             if (data == null) {
+                // T73: the live pool missed — fall back to the consumed archive
+                // so a late-arriving prekey message whose OTK was already used
+                // still bootstraps its session instead of dying unreadable
+                data = archivedPreKeys.get(preKeyId);
+            }
+            if (data == null) {
                 throw new org.whispersystems.libsignal.InvalidKeyIdException("no such prekey " + preKeyId);
             }
             try {
@@ -393,7 +418,7 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
     public boolean containsPreKey(int preKeyId) {
         synchronized (lock) {
             loadLocked();
-            return preKeys.containsKey(preKeyId);
+            return preKeys.containsKey(preKeyId) || archivedPreKeys.containsKey(preKeyId);
         }
     }
 
@@ -401,7 +426,15 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
     public void removePreKey(int preKeyId) {
         synchronized (lock) {
             loadLocked();
-            if (preKeys.remove(preKeyId) != null) {
+            byte[] consumed = preKeys.remove(preKeyId);
+            if (consumed != null) {
+                // T73: archive instead of hard-delete (bounded, most-recent-wins)
+                archivedPreKeys.remove(preKeyId);
+                archivedPreKeys.put(preKeyId, consumed);
+                while (archivedPreKeys.size() > ARCHIVED_PREKEYS_MAX) {
+                    Integer oldest = archivedPreKeys.keySet().iterator().next();
+                    archivedPreKeys.remove(oldest);
+                }
                 markDirtyLocked();
             }
         }
@@ -605,6 +638,42 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
         synchronized (lock) {
             loadLocked();
             return mediaKeys.get(backendFileId);
+        }
+    }
+
+    // ------------------------------------------------------- sent-inner cache (T73 own-echo rendering)
+
+    /**
+     * Records the PLAINTEXT inner JSON of an OWN outgoing 1:1 message under
+     * its server message id. Called by the dispatcher right after the server
+     * accepts the send (and by the edit path), so the sender's own echoes
+     * (send response, history reload) render the true text instead of
+     * attempting an impossible self-decrypt. Never called for peers' rows.
+     */
+    public void noteSentInner(long messageId, String innerJson) {
+        if (messageId <= 0 || innerJson == null || innerJson.isEmpty()) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            sentInners.remove(messageId); // LinkedHashMap: re-insert moves to newest
+            sentInners.put(messageId, innerJson);
+            while (sentInners.size() > SENT_INNER_CACHE_MAX) {
+                Long oldest = sentInners.keySet().iterator().next();
+                sentInners.remove(oldest);
+            }
+            markDirtyLocked();
+        }
+    }
+
+    /** Inner JSON for an OWN outgoing message (echo rendering), or null. */
+    public String getSentInner(long messageId) {
+        if (messageId <= 0) {
+            return null;
+        }
+        synchronized (lock) {
+            loadLocked();
+            return sentInners.get(messageId);
         }
     }
 
@@ -864,6 +933,8 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
         flaggedPeers.clear();
         verifiedPeers.clear();
         mediaKeys.clear();
+        sentInners.clear();
+        archivedPreKeys.clear();
         uploadIntents.clear();
         uploadTreeLocations.clear();
         dirty = false;
@@ -935,6 +1006,18 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
                 ut.put(String.valueOf(e.getKey()), e.getValue());
             }
             json.put("uploadtrees", ut);
+
+            JSONObject si = new JSONObject();
+            for (Map.Entry<Long, String> e : sentInners.entrySet()) {
+                si.put(String.valueOf(e.getKey()), e.getValue());
+            }
+            json.put("sentinners", si);
+
+            JSONObject ap = new JSONObject();
+            for (Map.Entry<Integer, byte[]> e : archivedPreKeys.entrySet()) {
+                ap.put(String.valueOf(e.getKey()), XoE2EEEnvelope.b64Encode(e.getValue()));
+            }
+            json.put("archivedprekeys", ap);
 
             byte[] plain = json.toString().getBytes("UTF-8");
             byte[] blob = protect(plain);
@@ -1034,6 +1117,22 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
                 while (it.hasNext()) {
                     String k = it.next();
                     uploadTreeLocations.put(Long.parseLong(k), ut.optString(k));
+                }
+            }
+            JSONObject si = json.optJSONObject("sentinners");
+            if (si != null) {
+                java.util.Iterator<String> it = si.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    sentInners.put(Long.parseLong(k), si.optString(k));
+                }
+            }
+            JSONObject ap = json.optJSONObject("archivedprekeys");
+            if (ap != null) {
+                java.util.Iterator<String> it = ap.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    archivedPreKeys.put(Integer.parseInt(k), XoE2EEEnvelope.b64Decode(ap.optString(k)));
                 }
             }
         } catch (Throwable t) {

@@ -392,16 +392,27 @@ public final class TlJsonMapper {
         String content = msg.isNull("content") ? null : msg.optString("content", null);
         message.message = content == null ? "" : content;
 
-        // T71: E2EE decrypt hook — the SINGLE JSON→TL boundary. Every 1:1
+        // T71/T73: E2EE decrypt hook — the SINGLE JSON→TL boundary. Every 1:1
         // envelope is opened here; failures degrade to a neutral placeholder
         // (never an exception into the update pipeline, never garbage text).
-        // The ratchet counterpart is the OTHER side of the conversation:
-        // outgoing echoes use the dialog peer, incoming uses the sender.
+        //
+        // T73 (critical): OWN outgoing echoes (sender == self) are NEVER run
+        // through decryptFromPeer. The sender's ciphertext is encrypted under
+        // the SENDING chain — libsignal cannot re-open it (UntrustedIdentity/
+        // InvalidMessage), and a PreKey-type attempt consults isTrustedIdentity
+        // with OUR OWN key under the PEER's address, which flags the peer and
+        // kills ALL further sends to them (the "no messages can be sent" bug).
+        // Own rows render from the sent-inner cache recorded at send time.
         org.json.JSONObject e2eeInner = null;
         if (!isGroup && org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.isEnvelope(message.message)) {
-            long counterpart = senderId == selfId ? peerUserId : senderId;
-            String inner = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
-                    .decryptFromPeer(counterpart, message.message);
+            final String inner;
+            if (senderId == selfId) {
+                inner = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
+                        .getSentInnerForRender(msg.optLong("id", 0L));
+            } else {
+                inner = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
+                        .decryptFromPeer(senderId, message.message);
+            }
             if (inner != null) {
                 try {
                     e2eeInner = new org.json.JSONObject(inner);

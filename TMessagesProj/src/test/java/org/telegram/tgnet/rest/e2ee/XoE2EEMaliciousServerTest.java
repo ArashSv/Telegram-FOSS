@@ -103,14 +103,25 @@ public class XoE2EEMaliciousServerTest {
         }
 
         assertTrue("the peer is FLAGGED for the UI warning", alice.isFlagged(BOB_ID));
-        // even a fresh bundle fetch cannot bypass: the pinned key governs
-        server.substituteIdentity = false;
+        // even a fresh bundle fetch cannot bypass: the pinned key governs.
+        // T73: the flag STAYS while the hostile substitution PERSISTS (the
+        // heal compares the served identity with the pin — a hostile answer
+        // can never vouch for the pinned key)
         try {
             alice.encryptText(BOB_ID, "still flagged");
-            org.junit.Assert.fail("flagged state persists until user re-verification");
+            org.junit.Assert.fail("flagged state persists while the substitution persists");
         } catch (XoE2EE.E2eeUnavailableException expected) {
             assertEquals("E2EE_IDENTITY_CHANGED", expected.reasonCode);
         }
+        assertTrue("still flagged while the server stays hostile", alice.isFlagged(BOB_ID));
+
+        // T73: when the server returns to serving the PINNED key (the
+        // false-positive signature — nothing actually changed), the heal
+        // unblocks traffic automatically. A genuine reinstall keeps the flag.
+        server.substituteIdentity = false;
+        String healed = alice.encryptText(BOB_ID, "healed");
+        assertNotNull("an unchanged identity heals automatically", healed);
+        assertTrue("flag cleared after the verified heal", !alice.isFlagged(BOB_ID));
     }
 
     @Test

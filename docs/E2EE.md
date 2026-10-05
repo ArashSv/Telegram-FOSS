@@ -1,6 +1,6 @@
 # End-to-End Encryption (E2EE) for 1:1 Chats — Architecture & Threat Model
 
-**Version:** 1.0 (backend v2.11.0, client build T71)
+**Version:** 1.1 (backend v2.11.1, client build T73)
 **Scope:** private 1:1 chats (text, media, files). Groups stay plaintext in this
 milestone (Sender Keys is the next milestone, per the roadmap below).
 Self-chats ("Saved Messages") stay plaintext: they are the server-inserted
@@ -93,6 +93,17 @@ Alice types "سلام"
   endpoint is never used for that direction, because it would either leak
   plaintext rows or copy unreadable ciphertext. Trade-off: converted
   forwards lose the "Forwarded from" header.
+- **Own-echo rendering (T73):** libsignal can never re-open the sender's
+  own ciphertext (the owning chains live on the peer), and a PreKey-type
+  self-decrypt consults `isTrustedIdentity` with OUR key under the peer's
+  address — flagging the peer and killing all further sends (the T73
+  "no messages can be sent" defect, proven against the real backend).
+  The mapper therefore NEVER self-decrypts: own rows render from the
+  sent-inner cache the dispatcher records at send time. A cache miss
+  (message sent from another device, or beyond the 250-entry LRU)
+  degrades to the neutral 🔒 placeholder. Consumed OTKs are also
+  ARCHIVED client-side (last 20) so a re-served prekey message still
+  bootstraps instead of dying unreadable.
 
 ### No-plaintext-fallback policy (hard requirement)
 
@@ -180,11 +191,11 @@ traces).
 
 ---
 
-## 8. Server surface (v2.11.0) — and why it stays "dumb"
+## 8. Server surface (v2.11.1) — and why it stays "dumb"
 
 | Endpoint | Semantics |
 |---|---|
-| `POST /e2ee/keys/register.php` | full (re-)registration of the caller's PUBLIC key set (replaces identity + signed prekey + OTK pool) |
+| `POST /e2ee/keys/register.php` | full (re-)registration of the caller's PUBLIC key set. **v2.11.1:** a re-register with an UNCHANGED identity is a re-confirm — the OTK pool is PRESERVED (consumed rows stay consumed; submitted keys dedupe-insert). An identity CHANGE is the recovery path: full REPLACE. (The old delete-all behavior resurrected served OTKs and permanently broke late-arriving prekey messages.) |
 | `GET /e2ee/keys/bundle.php?user_id=` | serve the peer bundle; CONSUME one OTK atomically; `otk_remaining` count for refills |
 | `POST /e2ee/keys/refill.php` | append OTKs (identity untouched) |
 

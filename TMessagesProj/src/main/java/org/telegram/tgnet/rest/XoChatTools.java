@@ -109,13 +109,25 @@ public final class XoChatTools {
                     try {
                         // T71: seed rides the E2EE path for 1:1 chats — plaintext
                         // must never reach the server for an encrypted dialog.
-                        String seedWire = peerUserId > 0 && peerUserId != selfId
+                        boolean seedE2ee = peerUserId > 0 && peerUserId != selfId;
+                        String seedWire = seedE2ee
                                 ? org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
                                         .encryptText(peerUserId, SEED_TEXT)
                                 : SEED_TEXT;
                         JSONObject sent = gateway.send(chatId, seedWire, 0);
                         JSONObject msgJson = sent.optJSONObject("message");
                         if (msgJson != null) {
+                            // T73: own-echo rendering — the seed's plaintext inner
+                            // must be noted before the own-row parse reads it back
+                            if (seedE2ee) {
+                                try {
+                                    org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteSentInner(
+                                            msgJson.optLong("id", 0L),
+                                            org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerText(SEED_TEXT));
+                                } catch (Exception e2) {
+                                    FileLog.e("XoChatTools: seed sent-inner note failed", e2);
+                                }
+                            }
                             seedMessage = TlJsonMapper.parseMessage(account, msgJson, dialogId, false, peer.id, selfId);
                             RestChatIndex.getInstance(account).rememberMessages(chatId,
                                     new ArrayList<>(java.util.Collections.singletonList(seedMessage)));

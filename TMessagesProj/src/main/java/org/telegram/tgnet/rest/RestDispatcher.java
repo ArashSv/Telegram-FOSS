@@ -436,6 +436,17 @@ public final class RestDispatcher {
         if (msgJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "send response lacks the message object");
         }
+        // T73: own-echo rendering — record the plaintext inner under the server
+        // id BEFORE parsing (the parse of an own row reads it back; libsignal
+        // can never re-open the sender's own ciphertext)
+        if (!peer.isGroup && peer.userId > 0 && peer.userId != selfId) {
+            try {
+                XoE2EE.getInstance(account).noteSentInner(msgJson.optLong("id", 0L),
+                        org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerText(req.message));
+            } catch (Exception e) {
+                FileLog.e("RestDispatcher: sent-inner note failed", e);
+            }
+        }
         TLRPC.TL_message message;
         try {
             message = TlJsonMapper.parseMessage(account, msgJson, peer.dialogId, peer.isGroup, peer.userId, selfId);
@@ -844,6 +855,7 @@ public final class RestDispatcher {
         // upload carries an E2EE key, or the item is a re-encrypted forward
         // envelope (alreadyBackend + envelope content). Otherwise — fail loudly.
         boolean e2ee = false;
+        String sentInnerForEcho = null;
         if (e2eeChat) {
             if (!alreadyBackend && bodyFileKey == null) {
                 throw new XoApiException(400, "E2EE_MEDIA_KEY_MISSING",
@@ -931,6 +943,7 @@ public final class RestDispatcher {
                             caption, thumbKey != null,
                             thumbKey, thumbBackendId);
                     wireCaption = e2eeMgr.encryptForPeer(peer.userId, inner);
+                    sentInnerForEcho = inner; // T73: own-echo rendering source
                 } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
                     throw new XoApiException(400, e.reasonCode, e.getMessage());
                 } catch (Exception e) {
@@ -960,8 +973,8 @@ public final class RestDispatcher {
                     e2eeStore.dropUploadIntent(thumbTreeId);
                 }
             }
-            // alreadyBackend: req.message IS the pre-built envelope (re-encrypted
-            // forward) — passed through untouched by policy (E2EE_PLAINTEXT_MEDIA_REFUSED guard above)
+            // alreadyBackend (re-encrypted forward): the inner is noted by
+            // forwardEncryptedIntoPrivate right after its send response.
         }
         if (BuildVars.LOGS_ENABLED) {
             FileLog.d("RestDispatcher: send-media chat=" + chatId + " file=" + mediaFileId + " e2ee=" + e2ee);
@@ -971,6 +984,10 @@ public final class RestDispatcher {
         JSONObject msgJson = sent.optJSONObject("message");
         if (msgJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "send response lacks the message object");
+        }
+        // T73: own-echo rendering for media rows (the caption envelope inner)
+        if (e2ee && sentInnerForEcho != null) {
+            XoE2EE.getInstance(account).noteSentInner(msgJson.optLong("id", 0L), sentInnerForEcho);
         }
         TLRPC.TL_message message;
         try {
@@ -1137,6 +1154,9 @@ public final class RestDispatcher {
                 ? org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account) : null;
 
         JSONArray items = new JSONArray();
+        // T73: per-item plaintext inner for own-echo rendering — LOCAL ONLY,
+        // index-paired with items; never serialized onto the wire
+        ArrayList<String> sentInnersParallel = new ArrayList<>();
         for (int a = 0; a < req.multi_media.size(); a++) {
             TLRPC.TL_inputSingleMedia single = req.multi_media.get(a);
             long mediaFileId;
@@ -1152,6 +1172,7 @@ public final class RestDispatcher {
                 throw new XoApiException(400, "FILE_ID_INVALID", "sendMultiMedia item " + a + " carries no backend file id");
             }
             String wireContent = single.message == null ? "" : single.message;
+            String sentInnerForEcho = null;
             if (e2eeChat) {
                 long treeUploadId = RestFileBridge.getInstance(account).treeUploadIdForBackend(mediaFileId);
                 byte[] fileKey = e2eeStore.uploadKeyForTree(treeUploadId);
@@ -1175,6 +1196,7 @@ public final class RestDispatcher {
                             wireContent, false, null, 0);
                     wireContent = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
                             .encryptForPeer(peer.userId, inner);
+                    sentInnerForEcho = inner; // T73: own-echo rendering source
                     org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta =
                             org.telegram.tgnet.rest.e2ee.XoE2EE.parseMediaMeta(new org.json.JSONObject(inner));
                     org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteMediaKeys(mediaFileId, meta);
@@ -1194,6 +1216,7 @@ public final class RestDispatcher {
                 throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "item json build failed: " + e.getMessage());
             }
             items.put(item);
+            sentInnersParallel.add(sentInnerForEcho); // T73: local-only pairing (NEVER on the wire)
         }
 
         JSONObject sent = RestGateway.getInstance(account).sendMultiMedia(chatId, items);
@@ -1210,6 +1233,14 @@ public final class RestDispatcher {
             JSONObject msgJson = messagesJson.optJSONObject(a);
             if (msgJson == null) {
                 throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "send-multi row " + a + " is not an object");
+            }
+            // T73: pair the per-item plaintext inner (kept in a LOCAL parallel
+            // list — never serialized) with its server id before the own-row
+            // parse reads it back
+            String itemInner = a < sentInnersParallel.size() ? sentInnersParallel.get(a) : null;
+            if (itemInner != null) {
+                org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
+                        .noteSentInner(msgJson.optLong("id", 0L), itemInner);
             }
             TLRPC.TL_message message;
             try {
@@ -1357,6 +1388,7 @@ public final class RestDispatcher {
 
             String wireContent;
             JSONObject sent;
+            String echoInner = null;
             if (mediaFileId > 0) {
                 if (!org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.isEnvelope(src.message)) {
                     throw new XoApiException(400, "E2EE_PLAINTEXT_MEDIA_REFUSED",
@@ -1369,6 +1401,7 @@ public final class RestDispatcher {
                 }
                 try {
                     wireContent = e2ee.encryptForPeer(target.userId, inner);
+                    echoInner = inner; // T73
                 } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
                     throw new XoApiException(400, e.reasonCode, e.getMessage());
                 }
@@ -1390,6 +1423,7 @@ public final class RestDispatcher {
                 try {
                     wireContent = e2ee.encryptForPeer(target.userId,
                             org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerText(text));
+                    echoInner = org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerText(text); // T73
                 } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
                     throw new XoApiException(400, e.reasonCode, e.getMessage());
                 } catch (Exception e) {
@@ -1402,6 +1436,11 @@ public final class RestDispatcher {
             JSONObject msgJson = sent.optJSONObject("message");
             if (msgJson == null) {
                 throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "forwarded send lost its message object");
+            }
+            // T73: own-echo rendering for re-encrypted forwards (inner is what
+            // was just re-encrypted: media envelope or innerText)
+            if (echoInner != null) {
+                e2ee.noteSentInner(msgJson.optLong("id", 0L), echoInner);
             }
             TLRPC.TL_message message;
             try {
@@ -2632,6 +2671,16 @@ public final class RestDispatcher {
         JSONObject msgJson = answer.optJSONObject("message");
         if (msgJson == null) {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "edit response lacks the message object");
+        }
+        // T73: the edit re-encrypted the text — refresh the own-echo source so
+        // the edited row renders the NEW text on this device
+        if (!peer.isGroup && peer.userId > 0 && peer.userId != selfIdEarly) {
+            try {
+                XoE2EE.getInstance(account).noteSentInner(req.id,
+                        org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerEdit(req.message));
+            } catch (Exception e) {
+                FileLog.e("RestDispatcher: edit sent-inner note failed", e);
+            }
         }
         long selfId = UserConfig.getInstance(account).clientUserId;
         TLRPC.TL_message message;
