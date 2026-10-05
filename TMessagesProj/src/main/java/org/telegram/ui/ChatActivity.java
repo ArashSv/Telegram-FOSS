@@ -22312,8 +22312,24 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             updateVisibleRows(msg -> msg != null && msg.getFactCheck() != null);
         } else if (id == NotificationCenter.availableEffectsUpdate) {
             updateVisibleRows(msg -> msg != null && msg.getEffect() != null);
+        } else if (id == NotificationCenter.xoE2eeSendBlocked) {
+            // T74: E2EE send failures are NEVER silent — explain what happened
+            // and point at the verification surface, once per peer per fragment.
+            if (account == currentAccount && dialog_id != 0 && args != null && args.length >= 2 && args[0] instanceof Long) {
+                long blockedPeer = (Long) args[0];
+                if (blockedPeer > 0 && dialog_id == -blockedPeer && xoE2eeBlockedBulletins.add(blockedPeer)) {
+                    String reason = String.valueOf(args[1]);
+                    int textRes = "E2EE_IDENTITY_CHANGED".equals(reason)
+                            ? R.string.XoE2eeIdentityChanged
+                            : R.string.XoE2eeNotReady;
+                    BulletinFactory.of(this).createErrorBulletin(LocaleController.getString(textRes), themeDelegate).show();
+                }
+            }
         }
     }
+
+    /** T74: peers already shown the E2EE-send-blocked bulletin in this fragment instance. */
+    private final java.util.HashSet<Long> xoE2eeBlockedBulletins = new java.util.HashSet<>();
 
     private AlertDialog quoteMessageUpdateAlert;
     public void showQuoteMessageUpdate() {

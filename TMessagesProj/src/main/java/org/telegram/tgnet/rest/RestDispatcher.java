@@ -427,6 +427,7 @@ public final class RestDispatcher {
                 wireContent = XoE2EE.getInstance(account).encryptText(peer.userId, req.message);
             } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
                 // the tree's typed error path renders this as a failed message
+                XoE2EE.notifySendBlocked(account, peer.userId, e.reasonCode); // T74: never silent
                 throw new XoApiException(400, e.reasonCode, e.getMessage());
             }
         }
@@ -945,6 +946,7 @@ public final class RestDispatcher {
                     wireCaption = e2eeMgr.encryptForPeer(peer.userId, inner);
                     sentInnerForEcho = inner; // T73: own-echo rendering source
                 } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                    XoE2EE.notifySendBlocked(account, peer.userId, e.reasonCode); // T74: never silent
                     throw new XoApiException(400, e.reasonCode, e.getMessage());
                 } catch (Exception e) {
                     FileLog.e("RestDispatcher: e2ee media envelope failed", e);
@@ -1202,6 +1204,7 @@ public final class RestDispatcher {
                     org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteMediaKeys(mediaFileId, meta);
                     e2eeStore.dropUploadIntent(treeUploadId);
                 } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                    XoE2EE.notifySendBlocked(account, peer.userId, e.reasonCode); // T74: never silent
                     throw new XoApiException(400, e.reasonCode, e.getMessage());
                 } catch (Exception e) {
                     FileLog.e("RestDispatcher: e2ee album envelope failed", e);
@@ -1403,6 +1406,7 @@ public final class RestDispatcher {
                     wireContent = e2ee.encryptForPeer(target.userId, inner);
                     echoInner = inner; // T73
                 } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                    XoE2EE.notifySendBlocked(account, target.userId, e.reasonCode); // T74: never silent
                     throw new XoApiException(400, e.reasonCode, e.getMessage());
                 }
                 sent = RestGateway.getInstance(account).sendMedia(toChatId, mediaFileId, wireContent, 0, 0);
@@ -1425,6 +1429,7 @@ public final class RestDispatcher {
                             org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerText(text));
                     echoInner = org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerText(text); // T73
                 } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                    XoE2EE.notifySendBlocked(account, target.userId, e.reasonCode); // T74: never silent
                     throw new XoApiException(400, e.reasonCode, e.getMessage());
                 } catch (Exception e) {
                     FileLog.e("RestDispatcher: forward innerText failed", e);
@@ -2661,6 +2666,7 @@ public final class RestDispatcher {
                 wireContent = XoE2EE.getInstance(account).encryptForPeer(peer.userId,
                         org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerEdit(req.message));
             } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                XoE2EE.notifySendBlocked(account, peer.userId, e.reasonCode); // T74: never silent
                 throw new XoApiException(400, e.reasonCode, e.getMessage());
             } catch (Exception e) {
                 FileLog.e("RestDispatcher: e2ee edit failed", e);

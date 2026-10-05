@@ -141,7 +141,11 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
     // also consult isTrustedIdentity with OUR key under the peer's address
     // and FLAG the peer (the T73 send-killer). LRU-capped; lives inside the
     // Keystore-encrypted blob like every other secret.
-    private static final int SENT_INNER_CACHE_MAX = 250;
+    // T74: sent-inner cache widened from 250 — an own-row cache miss renders
+    // as the neutral 🔒 placeholder, which is exactly the "only lock emoji"
+    // symptom class the user reported. 2000 entries (each small, Keystore-
+    // encrypted blob) keeps a realistic day's 1:1 traffic renderable.
+    private static final int SENT_INNER_CACHE_MAX = 2000;
     private final Map<Long, String> sentInners = new java.util.LinkedHashMap<>();
 
     // T73: consumed one-time prekeys are ARCHIVED (Signal-standard) instead
@@ -237,8 +241,20 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
         synchronized (lock) {
             loadLocked();
             String name = address.getName();
-            byte[] stored = trustedIdentities.get(name);
             byte[] incoming = identityKey.serialize();
+            if (isOwnPublicKey(incoming)) {
+                // T74 — CRYPTOGRAPHIC IMPOSSIBILITY GUARD. Our OWN public key
+                // can never legitimately be a PEER's identity (that would mean
+                // the peer holds our private key). Seeing it here means an
+                // own-echo/own-envelope reached the protocol layer (the T71
+                // defect class). Pinning it under the peer's address is what
+                // bricked real-world chats: every later message from the REAL
+                // peer then failed the trust check forever. Refuse silently,
+                // never pin, never flag.
+                XoE2eeLog.event(account, "trust.ownKeyRefused", safePeerId(name), "saveIdentity");
+                return false;
+            }
+            byte[] stored = trustedIdentities.get(name);
             if (stored != null && java.util.Arrays.equals(stored, incoming)) {
                 return false; // unchanged
             }
@@ -255,6 +271,15 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
             String name = address.getName();
             byte[] stored = trustedIdentities.get(name);
             byte[] incoming = identityKey.serialize();
+            if (isOwnPublicKey(incoming)) {
+                // T74 — same impossibility as saveIdentity(): an own envelope
+                // reached the trust check (own-echo decrypt path). Return
+                // "not trusted" so the attempt fails cleanly, but DO NOT pin
+                // (the T71 self-pin poison) and DO NOT flag the peer (the
+                // T71 false-positive flag that killed all further sends).
+                XoE2eeLog.event(account, "trust.ownKeyRefused", safePeerId(name), "isTrustedIdentity");
+                return false;
+            }
             if (stored == null) {
                 return true; // TOFU: first sighting, saveIdentity() pins it during session build
             }
@@ -266,6 +291,7 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
                 flaggedPeers.add(name);
                 verifiedPeers.remove(name);
                 markDirtyLocked();
+                XoE2eeLog.event(account, "trust.flagged", safePeerId(name), "identity differs from pin");
                 FileLog.e("XoE2EEStore: IDENTITY KEY CHANGED for peer " + name + " — flagged, session refused");
             }
             return false;
@@ -619,9 +645,124 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
         }
     }
 
+    // ------------------------------------------------------------------ T74 self-pin detection & healing
+
+    /** @return true when the given serialized key IS this account's own identity public key. */
+    private boolean isOwnPublicKey(byte[] serialized) {
+        return identityPublicKey != null
+                && serialized != null
+                && java.util.Arrays.equals(identityPublicKey, serialized);
+    }
+
+    /** Numeric peer id from an address name (0 when not numeric) — logging helper. */
+    private static long safePeerId(String name) {
+        try {
+            return Long.parseLong(name);
+        } catch (Exception e) {
+            return 0L;
+        }
+    }
+
+    /**
+     * T74 — DETERMINISTIC SELF-PIN HEAL. True when the key PINNED under this
+     * peer's address is our OWN identity public key. That state is provably
+     * bogus (build-108's own-echo TOFU artifact): no legitimate peer can ever
+     * present our public key as theirs, so unpinning cannot weaken any real
+     * MITM defense. Callers also clear the flag and drop the session.
+     */
+    public boolean isSelfPin(long userId) {
+        synchronized (lock) {
+            loadLocked();
+            byte[] pinned = trustedIdentities.get(String.valueOf(userId));
+            return isOwnPublicKey(pinned);
+        }
+    }
+
+    /**
+     * T74 — removes a PROVEN-bogus self-pin (and its flag + session) in one
+     * atomic step. @return true when a self-pin was found and removed.
+     */
+    public boolean healSelfPin(long userId) {
+        synchronized (lock) {
+            loadLocked();
+            String name = String.valueOf(userId);
+            byte[] pinned = trustedIdentities.get(name);
+            if (!isOwnPublicKey(pinned)) {
+                return false;
+            }
+            trustedIdentities.remove(name);
+            flaggedPeers.remove(name);
+            verifiedPeers.remove(name);
+            sessions.remove(name + ":" + XoE2EEStore.DEVICE_ID);
+            markDirtyLocked();
+            XoE2eeLog.event(account, "trust.selfPinHealed", userId, "own-key pin removed, session dropped");
+            return true;
+        }
+    }
+
+    /**
+     * T74 — one-shot recovery sweep over ALL pinned addresses (called once
+     * per process after registration): every build-108-poisoned chat that
+     * carries the self-pin artifact is un-bricked before the first send.
+     * @return the number of healed peers.
+     */
+    public int sweepSelfPins() {
+        int healed = 0;
+        synchronized (lock) {
+            loadLocked();
+            if (trustedIdentities.isEmpty()) {
+                return 0;
+            }
+        }
+        // healSelfPin re-locks; collect names first to avoid holding the lock
+        java.util.List<Long> names = new java.util.ArrayList<>();
+        synchronized (lock) {
+            for (String name : new java.util.HashSet<>(trustedIdentities.keySet())) {
+                long id = safePeerId(name);
+                if (id > 0 && isOwnPublicKey(trustedIdentities.get(name))) {
+                    names.add(id);
+                }
+            }
+        }
+        for (long id : names) {
+            if (healSelfPin(id)) {
+                healed++;
+            }
+        }
+        if (healed > 0) {
+            XoE2eeLog.event(account, "trust.selfPinSweep", 0, "healed=" + healed);
+        }
+        return healed;
+    }
+
     /** Identity key of a peer (for safety-number display), or null. */
     public IdentityKey peerIdentity(long userId) {
         return getIdentity(new SignalProtocolAddress(String.valueOf(userId), DEVICE_ID));
+    }
+
+    // ------------------------------------------------------- test seams (JVM suite only)
+
+    /** Test seam: reproduce the EXACT build-108 poisoned state — our own
+     * identity key pinned under a peer's address (the T71 own-echo TOFU
+     * artifact). The T74 saveIdentity guard now refuses this, so the suite
+     * injects it directly to prove the heal. */
+    void selfPinForTests(long userId) {
+        synchronized (lock) {
+            loadLocked();
+            if (identityPublicKey != null) {
+                trustedIdentities.put(String.valueOf(userId), identityPublicKey.clone());
+                markDirtyLocked();
+            }
+        }
+    }
+
+    /** Test seam: plant a legacy flag without a real substitution. */
+    void flagForTests(long userId) {
+        synchronized (lock) {
+            loadLocked();
+            flaggedPeers.add(String.valueOf(userId));
+            markDirtyLocked();
+        }
     }
 
     // ------------------------------------------------------------------ media keys (SECRET — lives in the encrypted blob)

@@ -342,6 +342,12 @@ public class ApplicationLoader extends Application {
                 diag.start();
             } catch (Throwable ignore) {
             }
+            // T74: E2EE structured diagnostics uploader (batched, throttled,
+            // never carries message content) — user-requested visibility.
+            try {
+                org.telegram.tgnet.rest.e2ee.XoE2eeLog.startUploader();
+            } catch (Throwable ignore) {
+            }
         }
 
         // T66: the native fail-fast below killed the :crash report process

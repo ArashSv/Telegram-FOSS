@@ -101,7 +101,12 @@ public class XoE2EEStoreTest {
         // trust in one account does not leak to the other
         org.whispersystems.libsignal.SignalProtocolAddress addr =
                 new org.whispersystems.libsignal.SignalProtocolAddress("555", 1);
-        a.saveIdentity(addr, a.getIdentityKeyPairObj().getPublicKey());
+        // T74: an account's OWN key can no longer be pinned as a peer identity
+        // (impossibility guard) — use a genuine third-party key for the check.
+        org.whispersystems.libsignal.IdentityKey peerKey =
+                new org.whispersystems.libsignal.IdentityKey(
+                        org.whispersystems.libsignal.ecc.Curve.generateKeyPair().getPublicKey().serialize(), 0);
+        a.saveIdentity(addr, peerKey);
         assertNotNull(a.getIdentity(addr));
         assertNull(b.getIdentity(addr));
     }

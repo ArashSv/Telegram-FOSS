@@ -5,6 +5,7 @@ import org.junit.Before;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -67,7 +68,7 @@ public class XoE2EET73RegressionTest {
     }
 
     @Test
-    public void selfDecryptPoisonsWhichIsWhyMapperUsesTheCacheAndHealRecovers() throws Exception {
+    public void selfDecryptIsRefusedWithoutPoisoning() throws Exception {
         XoE2EE alice = XoE2EE.getInstance(0);
         XoE2EE bob = XoE2EE.getInstance(1);
         alice.ensureRegistered();
@@ -77,30 +78,32 @@ public class XoE2EET73RegressionTest {
 
         // libsignal reality (the T71 root cause): a direct self-decrypt of the
         // own prekey echo consults isTrustedIdentity with OUR key under the
-        // peer's address — returning null AND flagging the peer. The T73
-        // mapper never does this (own rows render from the cache); the assert
-        // below pins the poison so the heal path is exercised too.
+        // peer's address — it can never open. T74's store-level impossibility
+        // guard now refuses the own-key sighting WITHOUT flagging the peer
+        // and WITHOUT pinning it (the two poison effects of build-108).
         assertNull("own ciphertext must not decrypt on the sender",
                 alice.decryptFromPeer(BOB_ID, envelope));
-        assertTrue("the direct self-decrypt flags the peer (documented poison)",
+        assertFalse("an own-key sighting must NOT flag the peer (T74)",
                 alice.isFlagged(BOB_ID));
 
-        // T73 heal: the server still serves the PINNED identity, so the next
-        // send clears the false-positive flag and resumes traffic
-        String next = alice.encryptText(BOB_ID, "after heal");
-        assertNotNull("the heal unblocks sending", next);
-        assertTrue("flag cleared by the heal", !alice.isFlagged(BOB_ID));
+        // The conversation continues with no heal needed at all.
+        String next = alice.encryptText(BOB_ID, "no heal needed");
+        assertNotNull("traffic unaffected by the own-echo attempt", next);
+        assertTrue("flag still clear", !alice.isFlagged(BOB_ID));
     }
 
     @Test
     public void sentInnerCacheEvictsOldestBeyondCap() throws Exception {
         XoE2EE alice = XoE2EE.getInstance(0);
-        for (int i = 0; i < 300; i++) {
+        for (int i = 0; i < 2100; i++) {
             alice.noteSentInner(10_000L + i, "{\"t\":\"t\",\"x\":\"m" + i + "\"}");
         }
+        // T74: the cache holds 2000 entries (was 250) — the oldest 100 are evicted.
         assertEquals("oldest entries evicted", null, alice.getSentInnerForRender(10_000L));
-        assertEquals("newest entries retained", "m299",
-                new JSONObject(alice.getSentInnerForRender(10_299L)).optString("x"));
+        assertEquals("cap boundary retained", "m100",
+                new JSONObject(alice.getSentInnerForRender(10_100L)).optString("x"));
+        assertEquals("newest entries retained", "m2099",
+                new JSONObject(alice.getSentInnerForRender(12_099L)).optString("x"));
     }
 
     // ------------------------------------------------------------ flag healing

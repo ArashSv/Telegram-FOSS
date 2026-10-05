@@ -89,6 +89,7 @@ public final class XoE2EE {
     private final int account;
     private final Object lock = new Object();
     private final AtomicBoolean registeredThisProcess = new AtomicBoolean(false);
+    private final AtomicBoolean sweptThisProcess = new AtomicBoolean(false);
     private final java.util.Set<Long> bundlesFetchedThisProcess = new java.util.HashSet<>();
 
     private XoE2EE(int account) {
@@ -114,8 +115,10 @@ public final class XoE2EE {
     public boolean ensureRegistered() throws Exception {
         synchronized (lock) {
             if (registeredThisProcess.get() && store().hasIdentity()) {
+                maybeSweepSelfPinsOnce();
                 return true;
             }
+            long t0 = android.os.SystemClock.elapsedRealtime();
             IdentityKeyPair identity = store().generateIdentityIfAbsent();
             if (store().localPreKeyCount() == 0) {
                 uploadNewSignedPreKeyLocked();
@@ -123,8 +126,27 @@ public final class XoE2EE {
             }
             int remaining = api().register(identity, store().getRegistrationIdObj(), signedPreKeyJsonLocked(), oneTimeKeysJsonLocked());
             registeredThisProcess.set(true);
+            XoE2eeLog.event(account, "register.ok", 0, "otk_remaining=" + remaining
+                    + " tookMs=" + (android.os.SystemClock.elapsedRealtime() - t0));
             FileLog.d("XoE2EE: registered account " + account + " (server otk pool " + remaining + ")");
+            maybeSweepSelfPinsOnce();
             return true;
+        }
+    }
+
+    /**
+     * T74 — one-shot recovery sweep per process: removes any PROVEN-bogus
+     * self-pin left by build-108 (own key pinned under a peer address) so an
+     * upgraded, previously-bricked client un-bricks itself before the first
+     * send. Impossible-key logic cannot weaken a legitimate pin.
+     */
+    private void maybeSweepSelfPinsOnce() {
+        if (sweptThisProcess.compareAndSet(false, true)) {
+            try {
+                store().sweepSelfPins();
+            } catch (Throwable t) {
+                FileLog.e("XoE2EE: self-pin sweep failed", t);
+            }
         }
     }
 
@@ -188,10 +210,12 @@ public final class XoE2EE {
         try {
             synchronized (lock) {
                 List<PreKeyRecord> batch = uploadPreKeyBatchLocked();
-                api().refill(oneTimeKeysJson(batch));
+                int remaining = api().refill(oneTimeKeysJson(batch));
+                XoE2eeLog.event(account, "otk.refill", 0, "uploaded=" + batch.size() + " remaining=" + remaining);
                 FileLog.d("XoE2EE: refilled " + batch.size() + " otk for account " + account);
             }
         } catch (Throwable t) {
+            XoE2eeLog.event(account, "otk.refill.fail", 0, String.valueOf(t.getClass().getSimpleName()));
             FileLog.e("XoE2EE: otk refill failed", t);
         }
     }
@@ -210,18 +234,26 @@ public final class XoE2EE {
      * rather than ever returning plaintext.
      */
     public String encryptForPeer(long peerUserId, String innerJson) throws E2eeUnavailableException {
+        return encryptForPeerInner(peerUserId, innerJson, false);
+    }
+
+    private String encryptForPeerInner(long peerUserId, String innerJson, boolean retried) throws E2eeUnavailableException {
         try {
             // a FLAGGED peer (identity key changed under us) stops all 1:1
             // traffic until the user re-verifies + resets — even an existing
-            // session is not trusted after the pin mismatch. T73: before
-            // failing, VERIFY the flag against the live server identity —
-            // build 108 could leave FALSE-POSITIVE flags behind (its own-echo
-            // decrypt consult isTrustedIdentity with OUR key under the
-            // peer's address). A flag whose peer identity is unchanged on
-            // the server is healed; a genuine substitution stays blocked.
+            // session is not trusted after the pin mismatch. T73/T74: before
+            // failing, run the DETERMINISTIC recovery ladder —
+            //   1) self-pin (our own key pinned under the peer's address by
+            //      build-108) — provably bogus, healed unconditionally;
+            //   2) false-positive flag — server still serves the pinned key,
+            //      so the flag came from the T71 own-echo defect; it is
+            //      cleared AND the (possibly confused) session is dropped for
+            //      a clean re-ratchet;
+            //   3) genuine substitution — stays blocked for the user.
             if (store().isFlagged(peerUserId)) {
                 healFalsePositiveFlag(peerUserId);
                 if (store().isFlagged(peerUserId)) {
+                    XoE2eeLog.event(account, "encrypt.blocked", peerUserId, "E2EE_IDENTITY_CHANGED (genuine)");
                     throw new E2eeUnavailableException("E2EE_IDENTITY_CHANGED",
                             "recipient identity key changed; verify the safety number before continuing");
                 }
@@ -235,16 +267,27 @@ public final class XoE2EE {
             CiphertextMessage cm = cipher.encrypt(innerJson.getBytes("UTF-8"));
             String envelope = XoE2EEEnvelope.wrap(cm.getType(), cm.serialize());
             if (envelope.length() > MAX_ENVELOPE_CHARS) {
+                XoE2eeLog.event(account, "encrypt.fail", peerUserId, "E2EE_PAYLOAD_TOO_LARGE len=" + envelope.length());
                 throw new E2eeUnavailableException("E2EE_PAYLOAD_TOO_LARGE", "encrypted payload exceeds transport cap");
             }
+            XoE2eeLog.event(account, "encrypt.ok", peerUserId, "wire=" + cm.getType() + " retried=" + retried);
             maybeRefillOtk();
             return envelope;
         } catch (E2eeUnavailableException e) {
             throw e;
         } catch (UntrustedIdentityException e) {
+            // T74: the only auto-recoverable UntrustedIdentity is the proven-
+            // bogus self-pin; heal once and retry ONCE (bounded).
+            if (!retried && store().isSelfPin(peerUserId) && store().healSelfPin(peerUserId)) {
+                XoE2eeLog.event(account, "trust.selfPinHealed", peerUserId, "during encrypt, one retry");
+                bundlesFetchedThisProcess.remove(peerUserId);
+                return encryptForPeerInner(peerUserId, innerJson, true);
+            }
+            XoE2eeLog.event(account, "encrypt.fail", peerUserId, "UntrustedIdentity");
             throw new E2eeUnavailableException("E2EE_IDENTITY_CHANGED",
                     "recipient identity key changed; verify the safety number before continuing");
         } catch (Exception e) {
+            XoE2eeLog.event(account, "encrypt.fail", peerUserId, String.valueOf(e.getClass().getSimpleName()));
             FileLog.e("XoE2EE: encrypt failed for peer " + peerUserId, e);
             throw new E2eeUnavailableException("E2EE_ENCRYPT_FAILED", "could not encrypt the message");
         }
@@ -277,6 +320,13 @@ public final class XoE2EE {
      * vouch for anyone).
      */
     private void healFalsePositiveFlag(long peerUserId) {
+        // 1) PROVEN-bogus self-pin (build-108 artifact): our own key pinned
+        //    under the peer's address. No server round-trip needed — the
+        //    impossibility argument is local and absolute.
+        if (store().isSelfPin(peerUserId) && store().healSelfPin(peerUserId)) {
+            bundlesFetchedThisProcess.remove(peerUserId);
+            return;
+        }
         try {
             JSONObject bundle = api().bundle(peerUserId);
             if (bundle == null || !bundle.optBoolean("ok", false)) {
@@ -285,11 +335,23 @@ public final class XoE2EE {
             byte[] served = XoE2EEEnvelope.b64Decode(bundle.getString("identity_key"));
             IdentityKey pinned = store().getIdentity(addressFor(peerUserId));
             if (pinned != null && java.util.Arrays.equals(pinned.serialize(), served)) {
+                // 2) false-positive flag: the served identity is EXACTLY the
+                //    pinned one, so nothing changed — the flag came from the
+                //    T71 own-echo defect. Clear it AND drop the session: the
+                //    own-echo processing may have confused the ratchet state,
+                //    and a fresh X3DH is always safe (one OTK, refilled).
                 FileLog.w("XoE2EE: false-positive identity flag healed for peer " + peerUserId
-                        + " (server identity still matches the pinned key)");
+                        + " (server identity still matches the pinned key; session rebuilt fresh)");
+                store().deleteSession(addressFor(peerUserId));
                 store().clearFlag(peerUserId);
+                bundlesFetchedThisProcess.remove(peerUserId);
+                XoE2eeLog.event(account, "trust.flagHealed", peerUserId, "served==pinned, session dropped");
+            } else {
+                XoE2eeLog.event(account, "trust.flagStays", peerUserId,
+                        pinned == null ? "no pin" : "served!=pinned (genuine substitution)");
             }
         } catch (Throwable t) {
+            XoE2eeLog.event(account, "trust.healCheckFailed", peerUserId, String.valueOf(t.getClass().getSimpleName()));
             FileLog.e("XoE2EE: flag heal check failed (staying flagged)", t);
         }
     }
@@ -304,11 +366,14 @@ public final class XoE2EE {
      */
     public void noteSentInner(long messageId, String innerJson) {
         store().noteSentInner(messageId, innerJson);
+        XoE2eeLog.event(account, "sentInner.note", 0, "id=" + messageId);
     }
 
     /** Plaintext inner JSON for an OWN outgoing message id, or null. */
     public String getSentInnerForRender(long messageId) {
-        return store().getSentInner(messageId);
+        String inner = store().getSentInner(messageId);
+        XoE2eeLog.event(account, inner != null ? "sentInner.hit" : "sentInner.miss", 0, "id=" + messageId);
+        return inner;
     }
 
     private void maybeRefillOtk() {
@@ -329,6 +394,7 @@ public final class XoE2EE {
         try {
             XoE2EEEnvelope.Unwrapped unwrapped = XoE2EEEnvelope.unwrap(envelope);
             if (unwrapped == null) {
+                XoE2eeLog.event(account, "decrypt.fail", peerUserId, "unwrappable");
                 return null;
             }
             SessionCipher cipher = cipherFor(peerUserId);
@@ -338,17 +404,31 @@ public final class XoE2EE {
             } else if (unwrapped.wireType == CiphertextMessage.WHISPER_TYPE) {
                 plain = cipher.decrypt(new SignalMessage(unwrapped.body));
             } else {
+                XoE2eeLog.event(account, "decrypt.fail", peerUserId, "wireType=" + unwrapped.wireType);
                 return null;
             }
+            XoE2eeLog.event(account, "decrypt.ok", peerUserId, "wire=" + unwrapped.wireType);
             return new String(plain, "UTF-8");
         } catch (org.whispersystems.libsignal.DuplicateMessageException e) {
             // protocol-level replay protection did its job; the duplicate is dropped
+            XoE2eeLog.event(account, "decrypt.reject", peerUserId, "DuplicateMessage (replay)");
             FileLog.w("XoE2EE: duplicate/replayed message rejected from peer " + peerUserId);
             return null;
         } catch (UntrustedIdentityException e) {
+            // T74: the ONLY auto-recoverable UntrustedIdentity is the proven-
+            // bogus self-pin (our own key pinned under this peer's address —
+            // a build-108 artifact). Heal it and retry ONCE so the receive
+            // path un-bricks without any user action. A REAL substitution
+            // (pinned key != served key, neither is ours) never heals here.
+            if (store().isSelfPin(peerUserId) && store().healSelfPin(peerUserId)) {
+                XoE2eeLog.event(account, "trust.selfPinHealed", peerUserId, "during decrypt, one retry");
+                return decryptFromPeer(peerUserId, envelope);
+            }
+            XoE2eeLog.event(account, "decrypt.fail", peerUserId, "UntrustedIdentity (stays blocked)");
             FileLog.e("XoE2EE: untrusted identity on decrypt from " + peerUserId);
             return null;
         } catch (Throwable t) {
+            XoE2eeLog.event(account, "decrypt.fail", peerUserId, String.valueOf(t.getClass().getSimpleName()));
             FileLog.e("XoE2EE: decrypt failed from peer " + peerUserId, t);
             return null;
         }
@@ -371,6 +451,11 @@ public final class XoE2EE {
      */
     private void fetchAndBuildSession(long peerUserId) throws Exception {
         JSONObject bundle = api().bundle(peerUserId);
+        XoE2eeLog.event(account, "bundle.fetch", peerUserId,
+                bundle == null ? "null"
+                        : bundle.optBoolean("ok", false)
+                                ? "otk_remaining=" + bundle.optInt("otk_remaining", -1)
+                                : "ok=false" + (bundle.optString("transport", null) != null ? " (" + bundle.optString("transport") + ")" : ""));
         if (bundle == null || bundle.optJSONArray("error") != null) {
             throw new E2eeUnavailableException("E2EE_NO_PEER_KEYS",
                     "recipient has no end-to-end encryption keys (needs a newer app version)");
@@ -401,6 +486,7 @@ public final class XoE2EE {
         SessionBuilder builder = new SessionBuilder(store(), store(), store(), store(), addressFor(peerUserId));
         builder.process(pb);
         bundlesFetchedThisProcess.add(peerUserId);
+        XoE2eeLog.event(account, "session.built", peerUserId, "x3dh ok otk=" + (preKeyId == null ? "none" : String.valueOf(preKeyId)));
     }
 
     /**
@@ -432,6 +518,20 @@ public final class XoE2EE {
 
     public boolean isFlagged(long peerUserId) {
         return store().isFlagged(peerUserId);
+    }
+
+    /**
+     * T74 — central "send blocked" surface: one diagnostic event + one UI
+     * event (ChatActivity shows the bulletin). Called from the dispatcher's
+     * E2EE catch seams so a blocked send is NEVER silent again.
+     */
+    public static void notifySendBlocked(int account, long peerUserId, String reasonCode) {
+        XoE2eeLog.event(account, "send.blocked", peerUserId, String.valueOf(reasonCode));
+        try {
+            org.telegram.messenger.NotificationCenter.getInstance(account)
+                    .postNotificationName(org.telegram.messenger.NotificationCenter.xoE2eeSendBlocked, peerUserId, reasonCode);
+        } catch (Throwable ignore) {
+        }
     }
 
     public boolean isVerified(long peerUserId) {

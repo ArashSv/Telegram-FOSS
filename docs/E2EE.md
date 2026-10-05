@@ -1,6 +1,6 @@
 # End-to-End Encryption (E2EE) for 1:1 Chats — Architecture & Threat Model
 
-**Version:** 1.1 (backend v2.11.1, client build T73)
+**Version:** 1.2 (backend v2.11.1, client build T74)
 **Scope:** private 1:1 chats (text, media, files). Groups stay plaintext in this
 milestone (Sender Keys is the next milestone, per the roadmap below).
 Self-chats ("Saved Messages") stay plaintext: they are the server-inserted
@@ -93,17 +93,22 @@ Alice types "سلام"
   endpoint is never used for that direction, because it would either leak
   plaintext rows or copy unreadable ciphertext. Trade-off: converted
   forwards lose the "Forwarded from" header.
-- **Own-echo rendering (T73):** libsignal can never re-open the sender's
+- **Own-echo rendering (T73/T74):** libsignal can never re-open the sender's
   own ciphertext (the owning chains live on the peer), and a PreKey-type
   self-decrypt consults `isTrustedIdentity` with OUR key under the peer's
   address — flagging the peer and killing all further sends (the T73
   "no messages can be sent" defect, proven against the real backend).
   The mapper therefore NEVER self-decrypts: own rows render from the
-  sent-inner cache the dispatcher records at send time. A cache miss
-  (message sent from another device, or beyond the 250-entry LRU)
-  degrades to the neutral 🔒 placeholder. Consumed OTKs are also
-  ARCHIVED client-side (last 20) so a re-served prekey message still
-  bootstraps instead of dying unreadable.
+  sent-inner cache the dispatcher records at send time (LRU 2000 since
+  T74; a cache miss degrades to the neutral 🔒 placeholder). Consumed
+  OTKs are also ARCHIVED client-side (last 20) so a re-served prekey
+  message still bootstraps instead of dying unreadable.
+- **Store-level impossibility guard (T74):** our own public key can never
+  legitimately be a PEER's identity key (that would require the peer to
+  hold our private key). `saveIdentity`/`isTrustedIdentity` therefore
+  refuse an own-key sighting WITHOUT pinning and WITHOUT flagging — the
+  two poison effects of build-108 (self-pin + false-positive flag) are
+  structurally impossible to re-create, from any call site, forever.
 
 ### No-plaintext-fallback policy (hard requirement)
 
@@ -170,6 +175,20 @@ bundle for attacker keys. Defenses, in order:
 4. **User-approved reset** — after a flagged identity change the user
    re-verifies the NEW safety number, then "reset session" unpins the old
    key (TOFU re-pin). There is no implicit path that re-pins.
+5. **Deterministic recovery ladder (T74)** — a flagged peer no longer
+   dead-ends silently. On the next send (and, for the self-pin case, on
+   decrypt too) the facade runs, in order:
+   (a) **self-pin heal** — the pinned key equals OUR own identity key:
+   provably bogus, removed locally without any server round-trip;
+   (b) **false-positive flag heal** — the server still serves exactly the
+   pinned key: the flag came from the T71 own-echo defect; it is cleared
+   AND the session is dropped for a clean re-ratchet;
+   (c) **genuine substitution** — server serves a different key: the flag
+   persists and traffic stays stopped until the user verifies.
+   Transport failures never clear anything (an unreachable server cannot
+   vouch for anyone). A once-per-process `sweepSelfPins()` un-bricks every
+   poisoned chat at registration time, so an upgraded build-108 client
+   self-recovers before the first send.
 
 ---
 
@@ -188,6 +207,18 @@ design, never a crash.
 Never logged: plaintext, private keys, chain keys, message keys, file keys.
 Never crash-reported: message content (the T66 pipeline only reports stack
 traces).
+
+**T74 diagnostics channel (`XoE2eeLog`):** every protocol decision is
+recorded as a structured, content-free event (register/re-register +
+otk_remaining, bundle fetches, session builds, encrypt/decrypt ok/fail
+with reason codes, trust pin/flag/heal/sweep transitions, sent-inner
+note/hit/miss, refills). Events live in an in-memory ring, a local
+mirrored file (files/e2ee_logs, 256 KB cap + rotation), and are batched
+(bounded, throttled ≤~7/hour) to the unauthenticated T66 `client_log`
+endpoint (kind=e2ee with kind=ping fallback; the breaker skips kinds the
+host stalls on) so the server-side android_log files + the operator's
+Saved-Messages relay show exactly what the client did — without adb and
+without ever carrying message content.
 
 ---
 
@@ -240,6 +271,12 @@ only ever move PUBLIC bytes; messages/files only ever move OPAQUE bytes.
 | Modified ciphertext rejected | `modifiedCiphertextIsRejected` |
 | Replay rejected | `replayedMessageIsRejected` |
 | Identity substitution detected + pinned + flagged | `identityKeySubstitutionIsDetectedAndPinned` |
+| Self-pin poison (build-108) heals on encrypt — one call | `selfPinPoisonHealsOnEncryptInOneCall` |
+| Self-pin poison heals on decrypt — real message opens | `selfPinPoisonHealsOnDecryptAndRealMessageOpens` |
+| Own-echo through the protocol layer poisons NOTHING (guard) | `ownEchoThroughDecryptNeverPoisonsAndConversationSurvives`, `guardRefusesOwnKeyInSaveIdentityAndTrustCheck` |
+| False-positive flag heals AND fresh session interops | `falsePositiveFlagHealsAndFreshSessionStillInterops` |
+| Genuine substitution still blocked after the heal ladder | `genuineSubstitutionStillBlockedAfterHealLogic` |
+| LIVE production round-trip incl. register-preserve + self-pin heal | `XoE2EELiveHarnessTest` (XO_LIVE_T74=1, offline in CI) |
 | User-approved reset recovers | `userApprovedResetRecoversTheSession` |
 | Forged signed-prekey signature never bootstraps | `forgedSignedPrekeySignatureIsRejected` |
 | Media chunk tamper/reorder/truncate fail; round-trip exact | `XoE2EEMediaCryptoTest` (+ RFC 5869 HKDF vectors) |

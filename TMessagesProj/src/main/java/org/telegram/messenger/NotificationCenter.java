@@ -46,6 +46,8 @@ public class NotificationCenter {
     public static final int messageReceivedByServer = totalEvents++;
     public static final int messageReceivedByServer2 = totalEvents++;
     public static final int messageSendError = totalEvents++;
+    /** T74: args = {peerUserId(Long), reasonCode(String)} — a 1:1 E2EE send was blocked; ChatActivity surfaces a bulletin (never silent). */
+    public static final int xoE2eeSendBlocked = totalEvents++;
     public static final int forceImportContactsStart = totalEvents++;
     public static final int contactsDidLoad = totalEvents++;
     public static final int contactsImported = totalEvents++;
