@@ -51,6 +51,10 @@ public final class RestFileBridge {
 
     private static final String PREFS_NAME = "xofilebridge";
     private static final String KEY_PREFIX = "tree2backend_";
+    /** T75: persisted reverse index (backend file id -> tree upload id) so the
+     *  album path's E2EE key lookup survives process restarts between the
+     *  uploadMedia finalize and the send-multi dispatch. */
+    private static final String KEY_PREFIX_REV = "backend2tree_";
 
     private static final RestFileBridge[] instances = new RestFileBridge[UserConfig.MAX_ACCOUNT_COUNT];
 
@@ -308,7 +312,8 @@ public final class RestFileBridge {
             synchronized (cache) {
                 cache.put(treeUploadId, backendId);
             }
-            prefs.edit().putLong(KEY_PREFIX + treeUploadId, backendId).apply();
+            prefs.edit().putLong(KEY_PREFIX + treeUploadId, backendId)
+                    .putLong(KEY_PREFIX_REV + backendId, treeUploadId).apply();
             if (BuildVars.LOGS_ENABLED) {
                 FileLog.d("RestFileBridge: tree upload " + treeUploadId + " -> backend file " + backendId);
             }
@@ -369,7 +374,15 @@ public final class RestFileBridge {
                 }
             }
         }
-        return 0;
+        // T75: persisted reverse index — the mapping survives process
+        // restarts (an album can dispatch long after its uploads finalized).
+        long persisted = prefs.getLong(KEY_PREFIX_REV + backendFileId, 0);
+        if (persisted != 0) {
+            synchronized (cache) {
+                cache.put(persisted, backendFileId);
+            }
+        }
+        return persisted;
     }
 
     /**

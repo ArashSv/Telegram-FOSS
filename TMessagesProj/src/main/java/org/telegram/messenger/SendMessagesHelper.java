@@ -6238,6 +6238,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     }
                     Utilities.stageQueue.postRunnable(() -> getMessagesController().processUpdates(updates, false));
                 } else {
+                    // T75: defer whole albums whose destination has no keys yet —
+                    // every row stays pending (clock) and auto-flushes together
+                    if (org.telegram.tgnet.rest.e2ee.XoPendingKeys.getInstance(currentAccount)
+                            .maybeDefer(error.text, msgObjs, scheduled)) {
+                        for (int i = 0; i < msgObjs.size(); i++) {
+                            removeFromSendingMessages(msgObjs.get(i).getId(), scheduled);
+                        }
+                        return;
+                    }
                     AlertsCreator.processError(currentAccount, error, null, request);
                     isSentError = true;
                 }
@@ -6588,6 +6597,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             }
                         }
                     } else {
+                        // T75: "peer has no keys yet" is a WAIT, not a failure —
+                        // the row keeps its clock icon and auto-retries when the
+                        // peer's keys appear (XoPendingKeys). Never silent plaintext,
+                        // never a dead error row, no error bulletin.
+                        if (org.telegram.tgnet.rest.e2ee.XoPendingKeys.getInstance(currentAccount)
+                                .maybeDefer(error.text, newMsgObj, scheduled)) {
+                            removeFromSendingMessages(newMsgObj.id, scheduled);
+                            return;
+                        }
                         AlertsCreator.processError(currentAccount, error, null, req);
                         isSentError = true;
                     }

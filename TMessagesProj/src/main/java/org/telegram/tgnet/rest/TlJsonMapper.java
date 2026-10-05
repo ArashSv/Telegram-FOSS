@@ -405,13 +405,32 @@ public final class TlJsonMapper {
         // Own rows render from the sent-inner cache recorded at send time.
         org.json.JSONObject e2eeInner = null;
         if (!isGroup && org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.isEnvelope(message.message)) {
+            final long rowId = msg.optLong("id", 0L);
             final String inner;
             if (senderId == selfId) {
                 inner = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
                         .getSentInnerForRender(msg.optLong("id", 0L));
             } else {
-                inner = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
-                        .decryptFromPeer(senderId, message.message);
+                // T75: IDEMPOTENT RECEIVE — the same server row is parsed
+                // multiple times by design (update_queue message_new racing
+                // the history load, retries, scroll-back). libsignal's replay
+                // protection turns every 2nd+ open of the same ciphertext into
+                // DuplicateMessageException; without the memo the losing
+                // parse's "🔒" row replaced the winning parse's good row (the
+                // reported "first message not decrypted" defect). The memo is
+                // consulted BEFORE libsignal and written exactly on success,
+                // so re-parses are deterministic and cheap.
+                final org.telegram.tgnet.rest.e2ee.XoE2EEStore e2eeStore =
+                        org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account);
+                inner = e2eeStore.getDecryptedInner(rowId);
+                if (inner == null) {
+                    final String decrypted = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
+                            .decryptFromPeer(senderId, message.message);
+                    if (decrypted != null) {
+                        e2eeStore.noteDecryptedInner(rowId, decrypted);
+                    }
+                    inner = decrypted;
+                }
             }
             if (inner != null) {
                 try {
@@ -769,6 +788,35 @@ public final class TlJsonMapper {
                 kind, width, height, duration, thumbFileId, messageDate);
     }
 
+    /**
+     * T75 — the uploadMedia answer for an ENCRYPTED (opaque) file row. The
+     * server row carries kind='e2ee' + octet-stream with no dimensions (the
+     * real metadata never leaves the device), which plain parseMedia maps to
+     * a document — but the ALBUM contract requires the response media shape
+     * to equal the request item's family (a photo item must come back as
+     * TL_messageMediaPhoto, or SendMessagesHelper.uploadMultiMedia marks the
+     * whole group as error). The dispatcher passes the REQUEST family here.
+     * Only the ids are consumed by the caller; dimensions are irrelevant in
+     * this step (the message rows are built from the send-multi response).
+     */
+    public static TLRPC.MessageMedia parseMediaE2ee(JSONObject fileJson, int messageDate, boolean requestWasPhoto) {
+        if (fileJson == null) {
+            return new TLRPC.TL_messageMediaEmpty();
+        }
+        long fileId = fileJson.optLong("file_id", 0);
+        if (fileId <= 0) {
+            return new TLRPC.TL_messageMediaEmpty();
+        }
+        long size = Math.max(0, fileJson.optLong("size", 0));
+        RestFileBridge.noteFileMeta(fileId, size,
+                fileJson.isNull("sha256") ? null : fileJson.optString("sha256", null));
+        if (requestWasPhoto) {
+            return photoMedia(fileId, size, 1, 1, 0, messageDate);
+        }
+        return documentMedia(fileId, "application/octet-stream", size, null, "e2ee",
+                0, 0, 0, 0, messageDate);
+    }
+
     /** Photo with one thumb + one full size, both located on the photo id (factory-consistent). */
     private static TLRPC.MessageMedia photoMedia(long fileId, long size, int width, int height,
                                                  long thumbFileId, int messageDate) {
@@ -1003,13 +1051,17 @@ public final class TlJsonMapper {
         }
         TLRPC.MessageMedia media = documentMedia(fileId, mime, size, meta.name, "e2ee",
                 meta.width, meta.height, meta.duration, thumbFileId, messageDate);
-        // animated mime (Telegram-style gif sent inside an encrypted chat)
-        if (mime.startsWith("video/") && meta.name != null && meta.name.endsWith(".mp4")) {
-            TLRPC.TL_document document = media.document instanceof TLRPC.TL_document
-                    ? (TLRPC.TL_document) media.document : null;
-            if (document != null) {
-                TLRPC.TL_documentAttributeAnimated animated = new TLRPC.TL_documentAttributeAnimated();
-                document.attributes.add(animated);
+        // T75: the animated attribute rides the envelope's EXPLICIT flag.
+        // The pre-T75 ".mp4 name" heuristic misclassified real videos as
+        // GIFs, so it only applies to legacy envelopes that predate the
+        // "an" field (backward compatibility for already-stored rows).
+        TLRPC.TL_document document = media.document instanceof TLRPC.TL_document
+                ? (TLRPC.TL_document) media.document : null;
+        if (document != null) {
+            boolean legacyAnimated = !meta.animated && mime.startsWith("video/")
+                    && meta.name != null && meta.name.endsWith(".mp4");
+            if (meta.animated || legacyAnimated) {
+                document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
             }
         }
         return media;

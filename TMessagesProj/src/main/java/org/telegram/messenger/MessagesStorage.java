@@ -8177,6 +8177,83 @@ public class MessagesStorage extends BaseController {
         });
     }
 
+    /** Callback for {@link #getUnsentMessagesForDialog(long, int, UnsentMessagesForDialogCallback)}. */
+    public interface UnsentMessagesForDialogCallback {
+        void run(ArrayList<TLRPC.Message> messages, ArrayList<TLRPC.Message> scheduledMessages);
+    }
+
+    /**
+     * T75: dialog-scoped unsent-message load — the pending-keys flush
+     * (XoPendingKeys) re-dispatches ONLY one dialog's pending rows, so a
+     * keyless OTHER dialog can never block (or re-upload for) unrelated
+     * sends. Mirrors the mid&lt;0/send_state=1 selection of
+     * {@link #getUnsentMessages(int)} restricted to {@code dialogId}.
+     * (mid&gt;0/send_state=3 rows are a retry-service artifact this path
+     * deliberately ignores: deferred rows are never-sent rows by definition.)
+     */
+    public void getUnsentMessagesForDialog(long dialogId, int count, UnsentMessagesForDialogCallback callback) {
+        storageQueue.postRunnable(() -> {
+            ArrayList<TLRPC.Message> messages = new ArrayList<>();
+            ArrayList<TLRPC.Message> scheduledMessages = new ArrayList<>();
+            SQLiteCursor cursor = null;
+            try {
+                cursor = database.queryFinalized("SELECT m.read_state, m.data, m.send_state, m.mid, m.date, r.random_id, s.seq_in, s.seq_out, m.ttl FROM messages_v2 as m LEFT JOIN randoms_v2 as r ON r.mid = m.mid AND r.uid = m.uid LEFT JOIN messages_seq as s ON m.mid = s.mid WHERE m.uid = ? AND m.mid < 0 AND m.send_state = 1 ORDER BY m.mid DESC LIMIT " + count, dialogId);
+                while (cursor.next()) {
+                    NativeByteBuffer data = cursor.byteBufferValue(1);
+                    if (data != null) {
+                        TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                        message.send_state = cursor.intValue(2);
+                        message.readAttachPath(data, getUserConfig().clientUserId);
+                        data.reuse();
+                        MessageObject.setUnreadFlags(message, cursor.intValue(0));
+                        message.id = cursor.intValue(3);
+                        message.date = cursor.intValue(4);
+                        if (!cursor.isNull(5)) {
+                            message.random_id = cursor.longValue(5);
+                        }
+                        message.dialog_id = dialogId;
+                        message.seq_in = cursor.intValue(6);
+                        message.seq_out = cursor.intValue(7);
+                        message.ttl = cursor.intValue(8);
+                        if (!(message.media instanceof TLRPC.TL_messageMediaPaidMedia)) {
+                            messages.add(message);
+                        }
+                    }
+                }
+                cursor.dispose();
+                cursor = null;
+
+                cursor = database.queryFinalized("SELECT m.data, m.send_state, m.mid, m.date, r.random_id, m.ttl FROM scheduled_messages_v2 as m LEFT JOIN randoms_v2 as r ON r.mid = m.mid AND r.uid = m.uid WHERE m.uid = ? AND m.mid < 0 AND m.send_state = 1 ORDER BY date ASC", dialogId);
+                while (cursor.next()) {
+                    NativeByteBuffer data = cursor.byteBufferValue(0);
+                    if (data != null) {
+                        TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                        message.send_state = cursor.intValue(1);
+                        message.readAttachPath(data, getUserConfig().clientUserId);
+                        data.reuse();
+                        message.id = cursor.intValue(2);
+                        message.date = cursor.intValue(3);
+                        if (!cursor.isNull(4)) {
+                            message.random_id = cursor.longValue(4);
+                        }
+                        message.dialog_id = dialogId;
+                        message.ttl = cursor.intValue(5);
+                        scheduledMessages.add(message);
+                    }
+                }
+                cursor.dispose();
+                cursor = null;
+            } catch (Exception e) {
+                checkSQLException(e);
+            } finally {
+                if (cursor != null) {
+                    cursor.dispose();
+                }
+            }
+            AndroidUtilities.runOnUIThread(() -> callback.run(messages, scheduledMessages));
+        });
+    }
+
     public boolean checkMessageByRandomId(long random_id) {
         boolean[] result = new boolean[1];
         CountDownLatch countDownLatch = new CountDownLatch(1);

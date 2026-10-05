@@ -148,6 +148,25 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
     private static final int SENT_INNER_CACHE_MAX = 2000;
     private final Map<Long, String> sentInners = new java.util.LinkedHashMap<>();
 
+    // T75: server message id -> PLAINTEXT inner JSON of a RECEIVED 1:1 message.
+    // The receive path parses the SAME server row multiple times by design
+    // (update_queue message_new racing the history load, retries, scroll-back).
+    // libsignal's replay protection makes every 2nd+ parse of the same
+    // ciphertext throw DuplicateMessageException — without this memo the
+    // loser's "🔒" row replaced the winner's good row (the reported
+    // "first message not decrypted" defect). Decryption of a given
+    // ciphertext must be IDEMPOTENT; the memo makes it so.
+    private static final int DECRYPTED_INNER_CACHE_MAX = 2000;
+    private final Map<Long, String> decryptedInners = new java.util.LinkedHashMap<>();
+
+    // T75: body file id -> {"tf": thumbBackendId, "tk": b64 thumb key} for
+    // encrypted album items whose thumbs were finalized by the uploadMedia
+    // step. send-multi reads this to embed the thumb key + id in the item's
+    // media envelope (the receiver cannot download an opaque thumb without
+    // the key). Keyed by the BODY's backend file id — that is what send-multi
+    // iterates over.
+    private final Map<Long, String> albumThumbKeys = new HashMap<>();
+
     // T73: consumed one-time prekeys are ARCHIVED (Signal-standard) instead
     // of hard-deleted. If a prekey message arrives whose OTK was already
     // consumed (a bundle re-served after a client re-register resurrected
@@ -782,6 +801,99 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
         }
     }
 
+    // ---------------------------------------------------- decrypted-inner memo (T75 idempotent receive)
+
+    /**
+     * Records the PLAINTEXT inner JSON of a RECEIVED envelope under its
+     * server message id. Written exactly when decryptFromPeer succeeds; read
+     * by the mapper BEFORE any libsignal call, so a re-parse of the same row
+     * (update vs history, retry, scroll-back) returns the identical inner
+     * instead of dying on replay protection.
+     */
+    public void noteDecryptedInner(long messageId, String innerJson) {
+        if (messageId <= 0 || innerJson == null || innerJson.isEmpty()) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            decryptedInners.remove(messageId); // LinkedHashMap: re-insert moves to newest
+            decryptedInners.put(messageId, innerJson);
+            while (decryptedInners.size() > DECRYPTED_INNER_CACHE_MAX) {
+                decryptedInners.remove(decryptedInners.keySet().iterator().next());
+            }
+            markDirtyLocked();
+        }
+    }
+
+    /** Plaintext inner JSON for a RECEIVED message id previously decrypted here, or null. */
+    public String getDecryptedInner(long messageId) {
+        if (messageId <= 0) {
+            return null;
+        }
+        synchronized (lock) {
+            loadLocked();
+            return decryptedInners.get(messageId);
+        }
+    }
+
+    // ---------------------------------------------------- album thumb keys (T75)
+
+    /**
+     * Records the encrypted thumb linkage of an album item: the body's
+     * backend file id -> {thumb backend id, thumb key}. Written by the
+     * uploadMedia step (which finalizes BOTH files); consumed by send-multi
+     * when the per-item envelope is built.
+     */
+    public void noteAlbumThumb(long bodyBackendFileId, long thumbBackendFileId, byte[] thumbKey) {
+        if (bodyBackendFileId <= 0 || thumbBackendFileId <= 0 || thumbKey == null) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            try {
+                JSONObject json = new JSONObject();
+                json.put("tf", thumbBackendFileId);
+                json.put("tk", XoE2EEEnvelope.b64Encode(thumbKey));
+                albumThumbKeys.put(bodyBackendFileId, json.toString());
+                markDirtyLocked();
+            } catch (Exception e) {
+                FileLog.e("XoE2EEStore: album thumb note failed", e);
+            }
+        }
+    }
+
+    /** @return {"tf": long, "tk": b64} for the item body, or null. */
+    public JSONObject albumThumbFor(long bodyBackendFileId) {
+        if (bodyBackendFileId <= 0) {
+            return null;
+        }
+        synchronized (lock) {
+            loadLocked();
+            String json = albumThumbKeys.get(bodyBackendFileId);
+            if (json == null) {
+                return null;
+            }
+            try {
+                return new JSONObject(json);
+            } catch (Exception e) {
+                return null;
+            }
+        }
+    }
+
+    /** The linkage has served its purpose once the envelope carries the thumb. */
+    public void dropAlbumThumb(long bodyBackendFileId) {
+        if (bodyBackendFileId <= 0) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            if (albumThumbKeys.remove(bodyBackendFileId) != null) {
+                markDirtyLocked();
+            }
+        }
+    }
+
     // ------------------------------------------------------- sent-inner cache (T73 own-echo rendering)
 
     /**
@@ -881,6 +993,10 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
                     }
                 } else if (attr instanceof TLRPC.TL_documentAttributeAudio) {
                     entry.put("du", (int) Math.round(((TLRPC.TL_documentAttributeAudio) attr).duration));
+                } else if (attr instanceof TLRPC.TL_documentAttributeAnimated) {
+                    // T75: Telegram-GIF flag — the receiver rebuilds the animated
+                    // attribute from this bit (no more .mp4-name guessing)
+                    entry.put("an", 1);
                 }
             }
         } else if (photoSize != null && photoSize.w > 0) {
@@ -1075,6 +1191,8 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
         verifiedPeers.clear();
         mediaKeys.clear();
         sentInners.clear();
+        decryptedInners.clear();
+        albumThumbKeys.clear();
         archivedPreKeys.clear();
         uploadIntents.clear();
         uploadTreeLocations.clear();
@@ -1159,6 +1277,18 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
                 ap.put(String.valueOf(e.getKey()), XoE2EEEnvelope.b64Encode(e.getValue()));
             }
             json.put("archivedprekeys", ap);
+
+            JSONObject di = new JSONObject();
+            for (Map.Entry<Long, String> e : decryptedInners.entrySet()) {
+                di.put(String.valueOf(e.getKey()), e.getValue());
+            }
+            json.put("decryptedinners", di);
+
+            JSONObject at = new JSONObject();
+            for (Map.Entry<Long, String> e : albumThumbKeys.entrySet()) {
+                at.put(String.valueOf(e.getKey()), e.getValue());
+            }
+            json.put("albumthumbs", at);
 
             byte[] plain = json.toString().getBytes("UTF-8");
             byte[] blob = protect(plain);
@@ -1274,6 +1404,22 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
                 while (it.hasNext()) {
                     String k = it.next();
                     archivedPreKeys.put(Integer.parseInt(k), XoE2EEEnvelope.b64Decode(ap.optString(k)));
+                }
+            }
+            JSONObject di = json.optJSONObject("decryptedinners");
+            if (di != null) {
+                java.util.Iterator<String> it = di.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    decryptedInners.put(Long.parseLong(k), di.optString(k));
+                }
+            }
+            JSONObject at = json.optJSONObject("albumthumbs");
+            if (at != null) {
+                java.util.Iterator<String> it = at.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    albumThumbKeys.put(Long.parseLong(k), at.optString(k));
                 }
             }
         } catch (Throwable t) {

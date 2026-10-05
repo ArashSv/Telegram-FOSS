@@ -161,6 +161,14 @@ public final class XoE2EE {
             } catch (Throwable t) {
                 FileLog.e("XoE2EE: async registration failed (retried before first send)", t);
             }
+            // T75: resume the pending-keys probe loop — deferred sends for
+            // peers that had no keys at defer time may now be flushable, and
+            // the watch set persists across process death (restored lazily).
+            try {
+                XoPendingKeys.getInstance(account).startProbing();
+            } catch (Throwable t) {
+                FileLog.e("XoE2EE: pending-keys probe resume failed", t);
+            }
         });
     }
 
@@ -578,6 +586,8 @@ public final class XoE2EE {
         public boolean thumbEncrypted;
         public byte[] thumbKey;
         public long thumbFileId;
+        /** T75 — explicit Telegram-GIF flag carried in the envelope ("an":1). */
+        public boolean animated;
     }
 
     public static MediaMeta parseMediaMeta(JSONObject inner) {
@@ -593,6 +603,7 @@ public final class XoE2EE {
             meta.duration = inner.optInt("du", 0);
             meta.caption = inner.isNull("cap") ? null : inner.optString("cap", null);
             meta.thumbEncrypted = inner.optInt("th", 0) == 1;
+            meta.animated = inner.optInt("an", 0) == 1;
             String tk = inner.optString("tk", null);
             meta.thumbKey = tk == null || tk.length() == 0 ? null : XoE2EEEnvelope.b64Decode(tk);
             meta.thumbFileId = inner.optLong("tf", 0);

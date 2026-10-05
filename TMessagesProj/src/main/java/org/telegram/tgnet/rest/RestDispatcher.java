@@ -854,9 +854,12 @@ public final class RestDispatcher {
         byte[] thumbFileKey = e2eeStore != null && thumbTreeId != 0 ? e2eeStore.uploadKeyForTree(thumbTreeId) : null;
         // An encrypted chat NEVER references plaintext media: either the
         // upload carries an E2EE key, or the item is a re-encrypted forward
-        // envelope (alreadyBackend + envelope content). Otherwise — fail loudly.
+        // envelope (alreadyBackend + envelope content). Referenced plaintext
+        // media (GIF-tab tap, re-sent photo/file) is RE-ENCRYPTED into a
+        // fresh e2ee copy below (T75) — the refusal is the last resort.
         boolean e2ee = false;
         String sentInnerForEcho = null;
+        org.telegram.tgnet.rest.e2ee.XoE2EEReencrypt.Result reencrypted = null;
         if (e2eeChat) {
             if (!alreadyBackend && bodyFileKey == null) {
                 throw new XoApiException(400, "E2EE_MEDIA_KEY_MISSING",
@@ -864,8 +867,19 @@ public final class RestDispatcher {
             }
             e2ee = !alreadyBackend || org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.isEnvelope(req.message);
             if (!e2ee) {
-                throw new XoApiException(400, "E2EE_PLAINTEXT_MEDIA_REFUSED",
-                        "plaintext media cannot be referenced in an encrypted chat");
+                // T75: the source file is server-resident PLAINTEXT. Re-read
+                // it through the authorized download route (the same audience
+                // that could already render it), re-encrypt under a fresh
+                // single-use key and reference the NEW opaque copy instead.
+                long sourceSize = bridge.attestedSize(account, treeUploadId);
+                try {
+                    reencrypted = org.telegram.tgnet.rest.e2ee.XoE2EEReencrypt.reencrypt(account, treeUploadId, sourceSize);
+                } catch (Exception e) {
+                    FileLog.e("RestDispatcher: e2ee re-encryption of referenced media failed", e);
+                    throw new XoApiException(400, "E2EE_REENCRYPT_FAILED",
+                            "could not encrypt the referenced media into this chat");
+                }
+                e2ee = true;
             }
         }
 
@@ -906,7 +920,8 @@ public final class RestDispatcher {
                 }
             }
         }
-        long mediaFileId = alreadyBackend ? treeUploadId : bridge.backendFileIdFor(treeUploadId);
+        long mediaFileId = reencrypted != null ? reencrypted.backendFileId
+                : (alreadyBackend ? treeUploadId : bridge.backendFileIdFor(treeUploadId));
         if (mediaFileId == 0) {
             throw new XoApiException(400, "FILE_ID_INVALID", "upload was never routed through this client");
         }
@@ -937,12 +952,13 @@ public final class RestDispatcher {
                 int realH = manifest != null ? manifest.optInt("h", 0) : 0;
                 int realDur = manifest != null ? manifest.optInt("du", 0) : 0;
                 byte[] thumbKey = thumbFileKey;
+                boolean animated = asGif || (manifest != null && manifest.optInt("an", 0) == 1);
                 String inner;
                 try {
                     inner = org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerMedia(
                             bodyFileKey, plainLen, chunkSize, realMime, realName, realW, realH, realDur,
                             caption, thumbKey != null,
-                            thumbKey, thumbBackendId);
+                            thumbKey, thumbBackendId, animated);
                     wireCaption = e2eeMgr.encryptForPeer(peer.userId, inner);
                     sentInnerForEcho = inner; // T73: own-echo rendering source
                 } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
@@ -973,6 +989,35 @@ public final class RestDispatcher {
                 e2eeStore.dropUploadIntent(treeUploadId);
                 if (thumbTreeId != 0) {
                     e2eeStore.dropUploadIntent(thumbTreeId);
+                }
+            } else if (reencrypted != null) {
+                // T75: re-encrypted referenced media (GIF tab, re-sent photo/
+                // file). The real metadata comes from the source's plaintext
+                // file row (captured during re-encryption — a TL reference
+                // carries no attributes); the media key is the fresh
+                // single-use key minted by the re-encryption.
+                String inner;
+                try {
+                    inner = org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerMedia(
+                            reencrypted.fileKey, reencrypted.plaintextLen, reencrypted.chunkSize,
+                            reencrypted.mime, reencrypted.name,
+                            reencrypted.width, reencrypted.height, reencrypted.duration,
+                            caption, false, null, 0, reencrypted.animated);
+                    wireCaption = e2eeMgr.encryptForPeer(peer.userId, inner);
+                    sentInnerForEcho = inner;
+                } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
+                    XoE2EE.notifySendBlocked(account, peer.userId, e.reasonCode);
+                    throw new XoApiException(400, e.reasonCode, e.getMessage());
+                } catch (Exception e) {
+                    FileLog.e("RestDispatcher: e2ee re-encrypt envelope failed", e);
+                    throw new XoApiException(400, "E2EE_ENCRYPT_FAILED", "could not encrypt the media message");
+                }
+                try {
+                    org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta =
+                            org.telegram.tgnet.rest.e2ee.XoE2EE.parseMediaMeta(new org.json.JSONObject(inner));
+                    e2eeMgr.noteMediaKeys(mediaFileId, meta);
+                } catch (Exception e) {
+                    FileLog.e("RestDispatcher: media key registration failed", e);
                 }
             }
             // alreadyBackend (re-encrypted forward): the inner is noted by
@@ -1103,20 +1148,43 @@ public final class RestDispatcher {
             throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "finalize response lacks the file object");
         }
         JSONObject fileJson = finalizeEnvelope.optJSONObject("file");
+        long bodyBackendId = fileJson.optLong("file_id", 0);
+        byte[] thumbKeyForAlbum = null;
+        long thumbBackendIdForAlbum = 0;
         if (thumbTreeId != 0) {
             try {
-                boolean e2eeThumb = org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account)
-                        .uploadKeyForTree(thumbTreeId) != null;
+                byte[] thumbKey = org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account)
+                        .uploadKeyForTree(thumbTreeId);
+                boolean e2eeThumb = thumbKey != null;
                 JSONObject thumbEnvelope = e2eeThumb
                         ? bridge.finalizeUploadE2ee(thumbTreeId, 1, bridge.uploadedBytesFor(thumbTreeId))
                         : bridge.finalizeUpload(thumbTreeId, 1, "image/jpeg", null, null, null, null, bridge.uploadedBytesFor(thumbTreeId));
                 RestFileBridge.noteFileMetaFromJson(thumbEnvelope == null ? null : thumbEnvelope.optJSONObject("file"));
+                // T75: encrypted album thumbs — remember (body -> thumb id + key)
+                // so send-multi can carry the thumb INSIDE the item's envelope.
+                if (e2eeItem && e2eeThumb && bodyBackendId > 0 && thumbEnvelope != null
+                        && thumbEnvelope.optJSONObject("file") != null) {
+                    thumbBackendIdForAlbum = thumbEnvelope.optJSONObject("file").optLong("file_id", 0);
+                    thumbKeyForAlbum = thumbKey;
+                    if (thumbBackendIdForAlbum > 0) {
+                        org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account)
+                                .noteAlbumThumb(bodyBackendId, thumbBackendIdForAlbum, thumbKey);
+                    }
+                }
             } catch (Exception e) {
                 // a thumb must never fail the item; the server-side link falls
                 // back to whatever the file row already carries
                 // T56-fix: this FileLog has w(String) only — e(String,Throwable) is the 2-arg logger
                 FileLog.e("RestDispatcher: uploadMedia thumb finalize failed, continuing", e);
             }
+        }
+        // T75: the response media shape MUST equal the request item's family
+        // (SendMessagesHelper.uploadMultiMedia pairs them; a mismatch marks
+        // the whole album as error). An opaque e2ee row parses as a document,
+        // which killed every photo item — force the family for e2ee rows.
+        if (e2eeItem) {
+            boolean requestWasPhoto = req.media instanceof TLRPC.TL_inputMediaUploadedPhoto;
+            return TlJsonMapper.parseMediaE2ee(fileJson, (int) (System.currentTimeMillis() / 1000L), requestWasPhoto);
         }
         // parseMedia maps the finalize file json onto the exact MessageMedia
         // shapes the tree expects (photo/document objects with VIRTUAL_DC
@@ -1175,6 +1243,7 @@ public final class RestDispatcher {
             }
             String wireContent = single.message == null ? "" : single.message;
             String sentInnerForEcho = null;
+            long itemThumbFileId = 0;
             if (e2eeChat) {
                 long treeUploadId = RestFileBridge.getInstance(account).treeUploadIdForBackend(mediaFileId);
                 byte[] fileKey = e2eeStore.uploadKeyForTree(treeUploadId);
@@ -1185,6 +1254,14 @@ public final class RestDispatcher {
                 long[] totals = e2eeStore.uploadPlaintextTotals(treeUploadId);
                 int chunkSize = totals != null && totals[1] > 0 ? (int) totals[1] : 131072;
                 org.json.JSONObject manifest = e2eeStore.uploadManifest(treeUploadId);
+                // T75: the item's encrypted thumb (finalized by uploadMedia)
+                // rides INSIDE the envelope — the receiver cannot download an
+                // opaque thumb without its key, and the server-side link
+                // (thumb_file_id) stays metadata-free.
+                JSONObject thumbInfo = e2eeStore.albumThumbFor(mediaFileId);
+                if (thumbInfo != null) {
+                    itemThumbFileId = thumbInfo.optLong("tf", 0);
+                }
                 try {
                     String inner = org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerMedia(
                             fileKey,
@@ -1195,14 +1272,30 @@ public final class RestDispatcher {
                             manifest != null ? manifest.optInt("w", 0) : 0,
                             manifest != null ? manifest.optInt("h", 0) : 0,
                             manifest != null ? manifest.optInt("du", 0) : 0,
-                            wireContent, false, null, 0);
+                            wireContent,
+                            thumbInfo != null,
+                            thumbInfo != null ? org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.b64Decode(thumbInfo.optString("tk", "")) : null,
+                            itemThumbFileId,
+                            manifest != null && manifest.optInt("an", 0) == 1);
                     wireContent = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
                             .encryptForPeer(peer.userId, inner);
                     sentInnerForEcho = inner; // T73: own-echo rendering source
                     org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta =
                             org.telegram.tgnet.rest.e2ee.XoE2EE.parseMediaMeta(new org.json.JSONObject(inner));
                     org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteMediaKeys(mediaFileId, meta);
+                    if (meta != null && itemThumbFileId > 0 && meta.thumbKey != null) {
+                        org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta thumbMeta =
+                                new org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta();
+                        thumbMeta.fileKey = meta.thumbKey;
+                        thumbMeta.chunkSize = chunkSize;
+                        thumbMeta.plaintextLen = 0;
+                        thumbMeta.thumbEncrypted = true;
+                        thumbMeta.thumbFileId = itemThumbFileId;
+                        org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
+                                .noteMediaKeys(itemThumbFileId, thumbMeta);
+                    }
                     e2eeStore.dropUploadIntent(treeUploadId);
+                    e2eeStore.dropAlbumThumb(mediaFileId);
                 } catch (org.telegram.tgnet.rest.e2ee.XoE2EE.E2eeUnavailableException e) {
                     XoE2EE.notifySendBlocked(account, peer.userId, e.reasonCode); // T74: never silent
                     throw new XoApiException(400, e.reasonCode, e.getMessage());
@@ -1215,6 +1308,9 @@ public final class RestDispatcher {
             try {
                 item.put("media_file_id", mediaFileId);
                 item.put("content", wireContent);
+                if (e2eeChat && itemThumbFileId > 0) {
+                    item.put("thumb_file_id", itemThumbFileId); // server-side link, metadata-free
+                }
             } catch (org.json.JSONException e) {
                 throw new XoApiException(200, XoApiException.MALFORMED_RESPONSE, "item json build failed: " + e.getMessage());
             }

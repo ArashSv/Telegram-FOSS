@@ -117,11 +117,16 @@ public final class XoE2EEEnvelope {
      * Media payload; all parameters may be null except kind, fk and cs.
      * The thumb (when encrypted) carries its OWN single-use key (tk) —
      * thumb ciphertext is chunk-0 format under that key.
+     *
+     * @param animated T75 — explicit Telegram-GIF flag (muted looping mp4).
+     *                 The receiver rebuilds the animated attribute from THIS
+     *                 bit; the previous ".mp4 name" heuristic misclassified
+     *                 real videos as GIFs.
      */
     public static String innerMedia(byte[] fileKey, long plaintextLen, int chunkSize, String mime,
                                     String name, int width, int height, int duration,
                                     String caption, boolean thumbEncrypted,
-                                    byte[] thumbKey, long thumbFileId) throws Exception {
+                                    byte[] thumbKey, long thumbFileId, boolean animated) throws Exception {
         JSONObject json = new JSONObject();
         json.put("t", "m");
         json.put("fk", b64Encode(fileKey));
@@ -143,6 +148,9 @@ public final class XoE2EEEnvelope {
         if (caption != null && caption.length() > 0) {
             json.put("cap", caption);
         }
+        if (animated) {
+            json.put("an", 1);
+        }
         if (thumbEncrypted) {
             json.put("th", 1);
             if (thumbKey != null) {
@@ -153,6 +161,15 @@ public final class XoE2EEEnvelope {
             }
         }
         return json.toString();
+    }
+
+    /** Pre-T75 shape (no animated flag) — kept for the test suite's existing callers. */
+    public static String innerMedia(byte[] fileKey, long plaintextLen, int chunkSize, String mime,
+                                    String name, int width, int height, int duration,
+                                    String caption, boolean thumbEncrypted,
+                                    byte[] thumbKey, long thumbFileId) throws Exception {
+        return innerMedia(fileKey, plaintextLen, chunkSize, mime, name, width, height, duration,
+                caption, thumbEncrypted, thumbKey, thumbFileId, false);
     }
 
     public static JSONObject parseInner(byte[] plaintext) throws Exception {

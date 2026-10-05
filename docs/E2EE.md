@@ -283,3 +283,73 @@ only ever move PUBLIC bytes; messages/files only ever move OPAQUE bytes.
 | Store persistence / corruption wipe / isolation | `XoE2EEStoreTest` |
 | Server is a dumb key store: OTK single-use, 404 without keys, verbatim ciphertext relay, e2ee file kind + inspection bypass gating | `tools/t67_local_e2e.py` (44/44 local; rerun vs production after deploy) |
 | No regression on existing flows | `tools/smoke_test.py` (58/58) |
+
+---
+
+## 9. T75 addendum — idempotent receive, media completeness, pending chats
+
+**Version 1.3 (backend v2.11.2, client build T75).**
+
+### 9.1 Receive path is IDEMPOTENT (first-message 🔒 fix)
+
+The same server row is parsed multiple times BY DESIGN (update_queue
+`message_new` racing the chat-open history load, transport retries,
+scroll-back). libsignal's replay protection makes every 2nd+ open of the
+same ciphertext throw `DuplicateMessageException`. Pre-T75 the losing
+parse's "🔒" row could replace the winning parse's good row in storage/UI —
+field evidence: the FIRST message of a fresh chat (the one present in BOTH
+the initial history load and the first update tick) rendered 🔒 forever
+while every later message decrypted.
+
+Fix: `XoE2EEStore.decryptedInners` — a persisted LRU (2000) of
+`message id → plaintext inner JSON` for RECEIVED rows, written exactly when
+`decryptFromPeer` succeeds and consulted BEFORE any libsignal call in the
+mapper's decrypt hook. Parsing a row is now deterministic and cheap; 🔒 only
+appears for genuinely undecryptable rows. Per-account by construction (the
+memo lives inside the Keystore-encrypted per-account blob).
+
+### 9.2 Media completeness inside encrypted chats
+
+Field evidence (production DB): videos/thumbs/photos uploaded + finalized as
+`kind='e2ee'` but ZERO message rows referenced them; no album row ever
+existed. Three independent defects:
+
+| Defect | Mechanism | Fix |
+|---|---|---|
+| **Album shape mismatch** | `uploadMedia`'s response for an opaque e2ee row parsed as a DOCUMENT even for a PHOTO item; the album callback requires the response family to equal the request item → `markAsError()` on the whole group | `TlJsonMapper.parseMediaE2ee(fileJson, date, requestWasPhoto)` forces the family by the REQUEST type |
+| **Video thumb rejected server-side** | `messages/send.php` required `kind='image'` for `thumb_file_id`; an encrypted thumb IS `kind='e2ee'` (the server cannot inspect it) → silent 400 AFTER the full upload | backend accepts `kind IN ('image','e2ee')` (owner + readiness still enforced) |
+| **Referenced plaintext media refused** | GIF-tab taps / re-sent media reference a plaintext file row — correct policy, missing mechanism | `XoE2EEReencrypt.reencrypt()`: authorized download → fresh key → chunk AEAD → attested multi-part upload → NEW opaque e2ee file; the encrypted chat references only the new row |
+
+Album items also carry their thumb INSIDE the envelope now (tk/tf fields,
+keyed per item by the uploadMedia step), with the backend linking
+`files.thumb_file_id` per send-multi item (metadata-free, zero-trust
+preserved). The manifest carries an explicit `an` (animated) bit — the old
+".mp4 name" heuristic misclassified real videos as GIFs and only survives
+as a legacy fallback for pre-T75 envelopes.
+
+### 9.3 Pending chats (the "chat creation request")
+
+A private chat is creatable — and messageable — even when the peer has no
+keys yet (not logged in, fresh install, old build). The chat row is created
+server-side before the encryption gate (pre-existing `requireChatId`
+behavior), so the peer sees it on their next sync. The SEND defers instead
+of failing:
+
+- `XoPendingKeys.maybeDefer` (send error branches): ONLY the exact
+  `E2EE_NO_PEER_KEYS` code, ONLY private non-self dialogs. Rows keep the
+  clock icon (`send_state=SENDING`, persisted as unsent messages by the
+  tree) — never an error row, never a bulletin, never plaintext.
+- Probe loop: `GET e2ee/keys/exists.php?user_id=` (NEW; a pure SELECT —
+  NEVER bundle.php, which consumes one-time prekeys). Foreground 45 s /
+  background 3 min; single-flight per dialog; watch set persisted.
+- Flush: dialog-scoped unsent rows (`MessagesStorage.getUnsentMessagesForDialog`)
+  re-dispatch through `SendMessagesHelper.retrySendMessage` — the canonical
+  pipeline (same upload locations → same minted file keys → consistent
+  ciphertext). Identity-rotation failures are NEVER deferred.
+
+### 9.4 Diagnostics
+
+`XoE2eeLog` events now actually reach the backend: `logs/client_log.php`
+accepts `kind=e2ee` (v2.11.2 whitelist fix; unknown kinds previously
+coerced to crash-kind and relayed noisily). New events:
+`pending.defer`, `pending.flush`, `reencrypt.start/ok/fail`.
