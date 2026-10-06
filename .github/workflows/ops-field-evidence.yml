@@ -27,14 +27,9 @@ jobs:
           set +e
           for p in "/public_html/" "/public_html/tele/" "/tele/"; do
             echo "== PROPFIND $p"
-            curl -sS -k -m 60 -u "$AUTH" -X PROPFIND -H "Depth: 1" -o /tmp/pf2.xml -w "status=%{http_code}\n" "$WEB$p"
-            python3 - <<'PY'
-            import re
-            src = open('/tmp/pf2.xml', errors='replace').read()
-            hrefs = re.findall(r'<(?:[a-zA-Z0-9]+:)?href>([^<]+)<', src)
-            for h in hrefs[:30]:
-                print('   ', h)
-            PY
+            code=$(curl -sS -k -m 60 -u "$AUTH" -X PROPFIND -H "Depth: 1" -o /tmp/pf2.xml -w "%{http_code}" "$WEB$p")
+            echo "status=$code"
+            grep -oE "<[a-zA-Z0-9]*:?href>[^<]+<" /tmp/pf2.xml | sed -E "s/<[^>]*>//g" | head -30
           done
 
       - name: Deploy + run field-evidence probe
