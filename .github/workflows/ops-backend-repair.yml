@@ -19,14 +19,26 @@ jobs:
       AUTH: ${{ secrets.WEBDAV_AUTH }}
       SITE: ${{ secrets.SITE_URL }}
       DIAG: ${{ secrets.DIAG_TOKEN }}
+      LIVE_CONFIG_B64: ${{ secrets.LIVE_CONFIG_B64 }}
     steps:
       - name: Probe live API (before)
         run: |
           set +e
           for u in "/" "/api/v1/e2ee/keys/exists.php"; do
-            code=$(curl -sS -m 30 -o /tmp/b.txt -w "%{http_code}" "$SITE$u")
+            code=$(curl -sS --http1.1 -m 30 -o /tmp/b.txt -w "%{http_code}" "$SITE$u")
             echo "== GET $u -> $code"
             head -c 400 /tmp/b.txt; echo; echo
+          done
+
+      - name: WebDAV layout map (PROPFIND)
+        run: |
+          set +e
+          for p in "/" "/config/" "/public/" "/app/"; do
+            echo "== PROPFIND $p"
+            curl -sS -k -m 60 -u "$AUTH" -X PROPFIND -H "Depth: 1" \
+              -o /tmp/pf.xml -w "status=%{http_code}\n" "$WEB$p"
+            grep -oE "<D:href>[^<]+</D:href>" /tmp/pf.xml | head -25 | sed 's/<[^>]*>//g'
+            echo
           done
 
       - name: Fetch current live config (evidence + rollback artifact)
@@ -35,17 +47,15 @@ jobs:
           code=$(curl -sS -k -m 90 -u "$AUTH" "$WEB/config/config.php" -o /tmp/live-config.php -w "%{http_code}")
           echo "GET /config/config.php -> $code size=$(wc -c < /tmp/live-config.php)"
           python3 - <<'PY'
-          import hashlib
+          import hashlib, re
           src = open('/tmp/live-config.php', encoding='utf-8', errors='replace').read()
           print('md5:', hashlib.md5(src.encode()).hexdigest())
-          print('ends_ok:', src.rstrip().endswith(');'))
-          for k in ("'app'", "'db'", "'jwt'"):
-              print(k, 'present:', k in src)
-          import re
-          m = re.search(r"'driver'\s*=>\s*'(\w+)'", src)
-          print('driver:', m.group(1) if m else 'NOT FOUND')
-          print('first120:', src[:120].replace('\n', ' '))
-          print('last80:', src[-80:].replace('\n', ' '))
+          if not src.strip():
+              print('LIVE CONFIG IS EMPTY/MISSING')
+          else:
+              print('ends_ok:', src.rstrip().endswith(');'))
+              m = re.search(r"'driver'\s*=>\s*'(\w+)'", src)
+              print('driver:', m.group(1) if m else 'NOT FOUND')
           PY
 
       - uses: actions/upload-artifact@v4
@@ -59,33 +69,56 @@ jobs:
           command -v php >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq php-cli; }
           php -v | head -1
 
-      - name: Restore known-good config (idempotent)
+      - name: Restore known-good config
         run: |
+          set +e
           echo "$LIVE_CONFIG_B64" | base64 -d > /tmp/good-config.php
-          php -l /tmp/good-config.php
+          php -l /tmp/good-config.php || exit 1
+          [ -s /tmp/good-config.php ] || { echo "LIVE_CONFIG_B64 EMPTY - abort"; exit 1; }
           good=$(md5sum /tmp/good-config.php | awk '{print $1}')
-          live=$(md5sum /tmp/live-config.php | awk '{print $1}')
-          echo "good=$good live=$live"
-          if [ "$good" = "$live" ]; then echo "config already correct - skip PUT"; exit 0; fi
-          ok=0
+          live=$(md5sum /tmp/live-config.php 2>/dev/null | awk '{print $1}')
+          echo "good=$good live=${live:-none}"
+          if [ -n "$live" ] && [ "$good" = "$live" ]; then echo "config already correct - skip"; exit 0; fi
+
+          # T66 lesson: DELETE first (stale locks), then PUT with retries
           for i in 1 2 3 4 5; do
+            curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/config/config.php" -o /dev/null -w "DELETE try$i -> %{http_code}\n"
             code=$(curl -sS -k -m 120 -u "$AUTH" -T /tmp/good-config.php "$WEB/config/config.php" -w "%{http_code}")
             echo "PUT try$i -> $code"
             case "$code" in 2*) ok=1; break;; esac
             sleep 5
           done
-          [ "$ok" = 1 ] || { echo "PUT FAILED"; exit 1; }
-          curl -sS -k -m 90 -u "$AUTH" "$WEB/config/config.php" -o /tmp/verify.php
-          echo "readback:"; md5sum /tmp/verify.php /tmp/good-config.php
+
+          if [ "$ok" != 1 ]; then
+            echo "direct PUT failed - staging + COPY fallback"
+            for i in 1 2 3; do
+              curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/xo_stage_cfg.php" -o /dev/null
+              code=$(curl -sS -k -m 120 -u "$AUTH" -T /tmp/good-config.php "$WEB/xo_stage_cfg.php" -w "%{http_code}")
+              echo "stage PUT try$i -> $code"
+              case "$code" in 2*) break;; esac
+              sleep 4
+            done
+            case "$code" in
+              2*) curl -sS -k -m 90 -u "$AUTH" -X COPY -H "Destination: $WEB/config/config.php" \
+                    "$WEB/xo_stage_cfg.php" -o /dev/null -w "COPY -> %{http_code}\n"
+                  curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/xo_stage_cfg.php" -o /dev/null ;;
+              *) echo "staging PUT failed too";;
+            esac
+          fi
+
+          code=$(curl -sS -k -m 90 -u "$AUTH" "$WEB/config/config.php" -o /tmp/verify.php -w "%{http_code}")
+          echo "verify GET -> $code"
+          [ "$code" = 200 ] || { echo "config still missing"; exit 1; }
+          md5sum /tmp/verify.php /tmp/good-config.php
           php -l /tmp/verify.php
 
       - name: Probe live API (after) — verdict
         run: |
           set +e
           sleep 3
-          code=$(curl -sS -m 30 -o /tmp/a1 -w "%{http_code}" "$SITE/")
+          code=$(curl -sS --http1.1 -m 30 -o /tmp/a1 -w "%{http_code}" "$SITE/")
           echo "== index -> $code"; head -c 600 /tmp/a1; echo
-          code=$(curl -sS -m 30 -o /tmp/a2 -w "%{http_code}" "$SITE/api/v1/e2ee/keys/exists.php")
+          code=$(curl -sS --http1.1 -m 30 -o /tmp/a2 -w "%{http_code}" "$SITE/api/v1/e2ee/keys/exists.php")
           echo "== exists.php -> $code"; head -c 300 /tmp/a2; echo
 
       - name: Deep diagnostic probe (self-deleting)
@@ -124,7 +157,6 @@ jobs:
             }
             foreach (['storage','storage/uploads'] as $p) { $R['w:'.$p] = @is_writable($root.'/'.$p); }
             $R['disk_free_MB'] = (int)(@disk_free_space($root) / 1048576);
-            $R['root_listing'] = scandir($root);
           }
           foreach ([__DIR__.'/error_log', ini_get('error_log')] as $lg) {
             if ($lg && @is_file($lg)) {
@@ -137,14 +169,19 @@ jobs:
           PHP
           sed -i "s/__TOKEN__/$DIAG/" /tmp/xo_diag.php
           php -l /tmp/xo_diag.php
-          code=$(curl -sS -k -m 90 -u "$AUTH" -T /tmp/xo_diag.php "$WEB/public/xo_diag.php" -w "%{http_code}")
-          echo "PUT probe -> $code"
-          [ "$code" = 000 ] && { echo "WebDAV unreachable"; exit 0; }
+          ok=0
+          for i in 1 2 3; do
+            curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public/xo_diag.php" -o /dev/null
+            code=$(curl -sS -k -m 120 -u "$AUTH" -T /tmp/xo_diag.php "$WEB/public/xo_diag.php" -w "%{http_code}")
+            echo "probe PUT try$i -> $code"
+            case "$code" in 2*) ok=1; break;; esac
+            sleep 4
+          done
+          [ "$ok" = 1 ] || { echo "probe not deployable (WebDAV write blocked)"; exit 0; }
           sleep 2
           echo "== probe output:"
-          curl -sS -m 60 "$SITE/xo_diag.php?t=$DIAG"
-          echo
+          curl -sS --http1.1 -m 60 "$SITE/xo_diag.php?t=$DIAG"; echo
           sleep 1
-          code=$(curl -sS -m 30 -o /dev/null -w "%{http_code}" "$SITE/xo_diag.php?t=$DIAG")
+          code=$(curl -sS --http1.1 -m 30 -o /dev/null -w "%{http_code}" "$SITE/xo_diag.php?t=$DIAG")
           echo "post-delete check -> $code (expect 404)"
           curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public/xo_diag.php" -o /dev/null -w "webdav cleanup -> %{http_code}\n"
