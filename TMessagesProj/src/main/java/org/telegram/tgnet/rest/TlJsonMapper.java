@@ -422,8 +422,14 @@ public final class TlJsonMapper {
                 // so re-parses are deterministic and cheap.
                 final org.telegram.tgnet.rest.e2ee.XoE2EEStore e2eeStore =
                         org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account);
-                inner = e2eeStore.getDecryptedInner(rowId);
-                if (inner == null) {
+                // T76 fix: single-assignment shape (run-112 compile gate) —
+                // memo hit wins, otherwise one decrypt attempt feeds both the
+                // store and the render.
+                final String memo = e2eeStore.getDecryptedInner(rowId);
+                final String inner;
+                if (memo != null) {
+                    inner = memo;
+                } else {
                     final String decrypted = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
                             .decryptFromPeer(senderId, message.message);
                     if (decrypted != null) {
