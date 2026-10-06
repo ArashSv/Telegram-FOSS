@@ -1,0 +1,50 @@
+name: Ops Restore Docroot (T77)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/ops-restore-docroot.yml'
+
+concurrency:
+  group: ops-restore-docroot
+  cancel-in-progress: false
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      WEB: ${{ secrets.WEBDAV_URL }}
+      AUTH: ${{ secrets.WEBDAV_AUTH }}
+      SITE: ${{ secrets.SITE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Restore every docroot file (PUT with retries, verified)
+        run: |
+          set +e
+          fail=0; total=0
+          while IFS= read -r f; do
+            rel="${f#scripts/backend-public/}"
+            total=$((total+1))
+            ok=0
+            for i in 1 2 3 4 5; do
+              code=$(curl -sS -k -m 120 -u "$AUTH" -T "$f" "$WEB/public_html/tele/$rel" -o /dev/null -w "%{http_code}")
+              case "$code" in 2*) ok=1; break;; esac
+              sleep 3
+            done
+            if [ "$ok" = 1 ]; then echo "OK  $rel ($code)"; else echo "FAIL $rel ($code)"; fail=$((fail+1)); fi
+          done < <(find scripts/backend-public -type f | sort)
+          echo "restored $((total-fail))/$total"
+          [ "$fail" = 0 ] || exit 1
+
+      - name: Verify live
+        run: |
+          set +e
+          sleep 3
+          code=$(curl -4 -sS --http1.1 -m 30 -o /tmp/v1.txt -w "%{http_code}" "$SITE/")
+          echo "index -> $code"; head -c 300 /tmp/v1.txt; echo
+          code=$(curl -4 -sS --http1.1 -m 30 -o /tmp/v2.txt -w "%{http_code}" "$SITE/api/v1/e2ee/keys/exists.php")
+          echo "exists -> $code"; head -c 200 /tmp/v2.txt; echo
+          grep -q '"ok":true' /tmp/v1.txt || { echo "INDEX NOT OK"; exit 1; }
