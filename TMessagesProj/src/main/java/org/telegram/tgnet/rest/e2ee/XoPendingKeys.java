@@ -140,8 +140,13 @@ public final class XoPendingKeys {
         return maybeDefer(errorText, list, scheduled_);
     }
 
-    /** Overload for the group callbacks (albums carry MessageObject lists). */
-    public boolean maybeDefer(String errorText, List<MessageObject> rows, boolean scheduled_) {
+    /**
+     * Overload for the group callbacks (albums carry MessageObject lists).
+     * T76: NOT a generic erasure-compatible overload of the Message variant
+     * (same erasure = compile error); a distinct name keeps both lists
+     * first-class without boxing through a Map.
+     */
+    public boolean maybeDeferObjects(String errorText, List<MessageObject> rows, boolean scheduled_) {
         if (errorText == null || !DEFERRABLE_CODE.equals(errorText) || rows == null || rows.isEmpty()) {
             return false;
         }
@@ -274,7 +279,7 @@ public final class XoPendingKeys {
             return;
         }
         org.telegram.tgnet.rest.RestGateway gateway = org.telegram.tgnet.rest.RestGateway.getInstance(account);
-        org.telegram.Utilities.globalQueue.postRunnable(() -> {
+        org.telegram.messenger.Utilities.globalQueue.postRunnable(() -> {
             boolean registered;
             try {
                 JSONObject resp = gateway.e2eeGet("e2ee/keys/exists.php?user_id=" + dialogId);
@@ -304,7 +309,7 @@ public final class XoPendingKeys {
                 return; // bounded retry pressure (rescheduled below via watch)
             }
             flushTimestamps.put(dialogId, now);
-            MessagesStorage storage = org.telegram.messenger.MessagesController.getInstance(account).getMessagesStorage();
+            MessagesStorage storage = org.telegram.messenger.MessagesStorage.getInstance(account);
             storage.getUnsentMessagesForDialog(dialogId, 100, (messages, scheduledMessages) -> {
                 ArrayList<TLRPC.Message> pending = new ArrayList<>();
                 pending.addAll(messages);
@@ -345,7 +350,7 @@ public final class XoPendingKeys {
      *  (the normal send-success cleanup already removed the row; if the
      *  dialog has no pending rows left, the watch entry is dropped). */
     public void onSendSettled(long dialogId) {
-        org.telegram.messenger.MessagesStorage storage = org.telegram.messenger.MessagesController.getInstance(account).getMessagesStorage();
+        org.telegram.messenger.MessagesStorage storage = org.telegram.messenger.MessagesStorage.getInstance(account);
         storage.getUnsentMessagesForDialog(dialogId, 1, (messages, scheduledMessages) -> {
             if (messages.isEmpty() && scheduledMessages.isEmpty()) {
                 synchronized (lock) {

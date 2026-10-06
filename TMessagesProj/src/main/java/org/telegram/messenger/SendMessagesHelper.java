@@ -6241,7 +6241,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     // T75: defer whole albums whose destination has no keys yet —
                     // every row stays pending (clock) and auto-flushes together
                     if (org.telegram.tgnet.rest.e2ee.XoPendingKeys.getInstance(currentAccount)
-                            .maybeDefer(error.text, msgObjs, scheduled)) {
+                            .maybeDeferObjects(error.text, msgObjs, scheduled)) {
                         for (int i = 0; i < msgObjs.size(); i++) {
                             removeFromSendingMessages(msgObjs.get(i).getId(), scheduled);
                         }
