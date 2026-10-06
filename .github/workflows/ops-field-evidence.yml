@@ -31,7 +31,7 @@ jobs:
           ok=0
           for i in 1 2 3 4; do
             curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/xo_t77ev.php" -o /dev/null
-            code=$(curl -sS -k -m 120 -u "$AUTH" -T /tmp/xo_t77ev.php "$WEB/xo_t77ev.php" -w "%{http_code}")
+            code=$(curl -sS -k -m 120 -u "$AUTH" -T /tmp/xo_t77ev.php "$WEB/xo_t77ev.php" -o /dev/null -w "%{http_code}")
             echo "PUT try$i -> $code"
             case "$code" in 2*) ok=1; break;; esac
             sleep 5
