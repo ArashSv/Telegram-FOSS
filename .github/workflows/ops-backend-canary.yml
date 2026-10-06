@@ -1,0 +1,20 @@
+name: Backend Canary
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SITE: ${{ secrets.SITE_URL }}
+    steps:
+      - run: |
+          code=$(curl -sS --http1.1 -m 30 -o /tmp/c.txt -w "%{http_code}" "$SITE/" || echo 000)
+          echo "index -> $code"
+          head -c 200 /tmp/c.txt; echo
+          [ "$code" = 200 ] || { echo "::error::backend canary FAILED (index=$code)"; exit 1; }
+          grep -q '"ok":true' /tmp/c.txt || { echo "::error::backend canary: bad body"; exit 1; }
