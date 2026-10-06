@@ -1105,6 +1105,7 @@
     <string name="FakeMessage">가짜</string>
     <string name="ViaBot">"다음을 통해 보냄: "</string>
     <string name="MessageNotFound">메시지가 존재하지 않습니다</string>
+    <string name="DownloadFailed">다운로드 실패</string>
     <string name="SlowModeHint">저속 모드가 켜져 있습니다. %1$s 뒤에 다음 메시지를 보내실 수 있습니다.</string>
     <string name="TapForVideo">사진은 짧게, 동영상은 길게 누르세요</string>
     <string name="TapToViewAsList">목록으로 보려면 누르세요.</string>

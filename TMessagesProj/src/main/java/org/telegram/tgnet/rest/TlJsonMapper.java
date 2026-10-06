@@ -1055,6 +1055,11 @@ public final class TlJsonMapper {
         // The pre-T75 ".mp4 name" heuristic misclassified real videos as
         // GIFs, so it only applies to legacy envelopes that predate the
         // "an" field (backward compatibility for already-stored rows).
+        // T76: an animated e2ee document also carries the GIF access-hash
+        // sentinel — the same resend contract plaintext gifs get (tap →
+        // by-reference input path), which the dispatcher re-encrypts into
+        // the chat. Without it the resend rides the upload branch and dies
+        // on the missing local file.
         TLRPC.TL_document document = media.document instanceof TLRPC.TL_document
                 ? (TLRPC.TL_document) media.document : null;
         if (document != null) {
@@ -1062,6 +1067,7 @@ public final class TlJsonMapper {
                     && meta.name != null && meta.name.endsWith(".mp4");
             if (meta.animated || legacyAnimated) {
                 document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
+                document.access_hash = GIF_ACCESS_HASH_SENTINEL;
             }
         }
         return media;

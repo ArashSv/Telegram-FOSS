@@ -1105,6 +1105,7 @@
     <string name="FakeMessage">NEP</string>
     <string name="ViaBot">via</string>
     <string name="MessageNotFound">Bericht bestaat niet</string>
+    <string name="DownloadFailed">Download mislukt</string>
     <string name="SlowModeHint">Tempolimiet is ingeschakeld. Je kunt het\nvolgende bericht sturen over %1$s.</string>
     <string name="TapForVideo">Tik voor foto, hou vast voor video</string>
     <string name="TapToViewAsList">Tik om als lijst weer te geven.</string>

@@ -17,6 +17,7 @@ import org.telegram.messenger.Utilities;
 
 import android.os.SystemClock;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -63,7 +64,10 @@ public final class UpdatePoller {
 
     private static final long POLL_INTERVAL_MS = 1500;
     private static final long BACKGROUND_POLL_INTERVAL_MS = 10_000;
-    private static final long MAX_BACKOFF_MS = 60_000;
+    // T76: 60s of backoff blacked the chat out for a full minute after a
+    // burst of host hiccups (field report: "the chat cuts mid-conversation,
+    // messages show up late in batches"). 20s keeps the recovery visible.
+    private static final long MAX_BACKOFF_MS = 20_000;
     private static final int POLL_LIMIT = 200;
     /**
      * T49: minimum gap between explicit presence transition POSTs. Screen
@@ -72,6 +76,26 @@ public final class UpdatePoller {
      * simply retried on the next tick.
      */
     private static final long PRESENCE_MIN_GAP_MS = 4_000;
+
+    /**
+     * T76: NO-DROP SYNC. The cursor advances server-side the moment rows are
+     * delivered, so a row this device cannot resolve YET (chat index stale,
+     * chats/list rebuild failed, group not cached) used to be DROPPED — and
+     * only a full history reload ever brought it back (field report:
+     * "messages go missing and show up later"). Unresolvable rows now wait
+     * in a bounded, in-memory buffer and are REPLAYED on every tick after a
+     * fresh index rebuild, until they apply or age out.
+     */
+    private static final int PENDING_MAX = 200;
+    private static final int PENDING_MAX_TICKS = 8;
+
+    private static final class PendingMessage {
+        final JSONObject msg;
+        int ticks;
+        PendingMessage(JSONObject msg) {
+            this.msg = msg;
+        }
+    }
 
     private static final UpdatePoller[] instances = new UpdatePoller[4];
 
@@ -101,6 +125,8 @@ public final class UpdatePoller {
     private volatile boolean started;
     private long startedForUser;   // client user id the loop was armed for
     private int consecutiveFailures;
+    /** T76: rows awaiting an index rebuild — poller-thread confined. */
+    private final ArrayDeque<PendingMessage> pendingNewMessages = new ArrayDeque<>();
 
     private UpdatePoller(int account) {
         this.account = account;
@@ -168,6 +194,10 @@ public final class UpdatePoller {
         }
         long cursor = store.getSyncCursor();
         try {
+            // T76: replay unresolvable rows first — one fresh chats/list per
+            // tick when anything is waiting, so the retry never blocks live
+            // traffic longer than a single rebuild.
+            replayPendingNewMessages();
             // T49: the poll doubles as the presence heartbeat. Foreground
             // polls carry presence=1 so the backend piggybacks its throttled
             // last_seen touch on THIS request (zero extra traffic);
@@ -211,7 +241,7 @@ public final class UpdatePoller {
         }
         long idleInterval = isBackground() ? BACKGROUND_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
         long delay = consecutiveFailures == 0 ? idleInterval
-                : Math.min(idleInterval << Math.min(consecutiveFailures, 6), MAX_BACKOFF_MS);
+                : Math.min(idleInterval << Math.min(consecutiveFailures, 3), MAX_BACKOFF_MS);
         processPresenceTransition();
         scheduler.schedule(this::tick, delay, TimeUnit.MILLISECONDS);
     }
@@ -449,40 +479,112 @@ public final class UpdatePoller {
         long selfId = UserConfig.getInstance(account).clientUserId;
         RestChatIndex index = RestChatIndex.getInstance(account);
         if (msgJson.optLong("sender_id", 0) == selfId) {
-            // T38/15: Saved-Messages self-chat — the owner's OTHER devices
-            // learn saved messages only through this push. The device that
-            // SENT it already holds it (the index remembered it at send
-            // time), so a session-local lookup dedups the double-apply.
+            // T38/15 + T76: the device that SENT the message already holds it;
+            // every OTHER device of the SAME account must still learn it. The
+            // in-memory index answers exactly that — skip only when THIS
+            // session already applied this message id (own send or its own
+            // echo). The old blind "own send on a normal chat" drop silently
+            // ate every own-send echo on a second device.
             long chatId = msgJson.optLong("chat_id", 0);
-            boolean selfChat = index.isKnownChat(chatId) && index.userForPrivateChat(chatId) == selfId;
-            if (!selfChat) {
-                return; // own send on a normal chat — the send path already applied it
-            }
             ArrayList<Integer> probe = new ArrayList<>();
             probe.add((int) msgJson.optLong("id", 0));
             if (index.chatIdForAnyMessage(probe) == chatId) {
                 return; // this device already applied its own send
             }
         }
+        if (applyNewMessage(msgJson, tlUpdates, parsedMessages, chatsArr)) {
+            return;
+        }
+        // T76: unresolvable RIGHT NOW → park for replay instead of dropping.
+        // The cursor has already advanced past this row, so the buffer is the
+        // row's only chance to apply live; a history reload stays the fallback
+        // of last resort.
+        PendingMessage pending = new PendingMessage(msgJson);
+        pendingNewMessages.addLast(pending);
+        while (pendingNewMessages.size() > PENDING_MAX) {
+            pendingNewMessages.pollFirst();
+        }
+        FileLog.w("UpdatePoller: message_new parked for replay (chat " + msgJson.optLong("chat_id", 0)
+                + ", msg " + msgJson.optLong("id", 0) + ", parked=" + pendingNewMessages.size() + ")");
+    }
+
+    /**
+     * T76: replays parked message_new rows after one fresh chats/list index
+     * rebuild. Rows that resolve leave the buffer; rows still unresolvable
+     * age out after PENDING_MAX_TICKS attempts (bounded staleness — by then
+     * a chat that was never openable is dead, not delayed).
+     */
+    private void replayPendingNewMessages() {
+        if (pendingNewMessages.isEmpty()) {
+            return;
+        }
+        if (!rebuildChatIndex()) {
+            return; // transport hiccup — keep everything parked, retry next tick
+        }
+        int n = pendingNewMessages.size();
+        for (int i = 0; i < n; i++) {
+            PendingMessage pending = pendingNewMessages.pollFirst();
+            if (pending == null) {
+                break;
+            }
+            pending.ticks++;
+            ArrayList<TLRPC.Update> tlUpdates = new ArrayList<>();
+            ArrayList<TLRPC.TL_message> parsedMessages = new ArrayList<>();
+            ArrayList<TLRPC.Chat> chatsArr = new ArrayList<>();
+            boolean applied = false;
+            try {
+                applied = applyNewMessage(pending.msg, tlUpdates, parsedMessages, chatsArr);
+            } catch (Exception e) {
+                FileLog.e("UpdatePoller: parked message replay failed", e);
+            }
+            if (!applied && pending.ticks < PENDING_MAX_TICKS) {
+                pendingNewMessages.addLast(pending);
+            } else if (!applied) {
+                FileLog.w("UpdatePoller: parked message expired after " + pending.ticks
+                        + " ticks (chat " + pending.msg.optLong("chat_id", 0) + ")");
+            }
+            if (applied && !tlUpdates.isEmpty()) {
+                long selfId = UserConfig.getInstance(account).clientUserId;
+                ArrayList<TLRPC.User> usersArr = resolveUsers(parsedMessages, selfId);
+                Utilities.stageQueue.postRunnable(() -> {
+                    try {
+                        MessagesController.getInstance(account).processUpdateArray(tlUpdates, usersArr, chatsArr, false, nowSeconds());
+                    } catch (Exception e) {
+                        FileLog.e("UpdatePoller: parked replay processUpdateArray failed", e);
+                    }
+                });
+            }
+        }
+    }
+
+    /**
+     * T76: the single application path for a message_new row — resolves the
+     * chat (rebuilding the index once when needed), parses and remembers the
+     * message, and appends the TL update to the caller's batch.
+     *
+     * @return true when applied (or deliberately skipped as malformed);
+     *         false when the chat/peer is not resolvable yet (caller parks)
+     */
+    private boolean applyNewMessage(JSONObject msgJson, ArrayList<TLRPC.Update> tlUpdates,
+                                    ArrayList<TLRPC.TL_message> parsedMessages, ArrayList<TLRPC.Chat> chatsArr) {
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        RestChatIndex index = RestChatIndex.getInstance(account);
         long chatId = msgJson.optLong("chat_id", 0);
         if (!index.isKnownChat(chatId) && !rebuildChatIndex()) {
-            FileLog.e("UpdatePoller: message for unknown chat " + chatId + " dropped (no chat list answer)");
-            return;
+            return false; // parked — was: dropped forever
         }
         boolean isGroup = index.isGroup(chatId);
         long peerUserId = 0;
         if (isGroup) {
             TLRPC.TL_chat chat = index.groupChat(chatId);
             if (chat == null) {
-                FileLog.e("UpdatePoller: group message for uncached chat " + chatId + " dropped");
-                return; // processUpdateArray would drop it anyway (chat not found)
+                return false; // parked — was: dropped forever
             }
             chatsArr.add(chat);
         } else {
             peerUserId = index.userForPrivateChat(chatId);
             if (peerUserId == 0) {
-                FileLog.e("UpdatePoller: private message for unknown peer (chat " + chatId + ") dropped");
-                return;
+                return false; // parked — was: dropped forever
             }
         }
         try {
@@ -495,8 +597,10 @@ public final class UpdatePoller {
             update.pts_count = 0;
             tlUpdates.add(update);
             parsedMessages.add(message);
+            return true;
         } catch (Exception e) {
             FileLog.e("UpdatePoller: malformed message_new", e);
+            return true; // malformed rows can never resolve — do not park forever
         }
     }
 

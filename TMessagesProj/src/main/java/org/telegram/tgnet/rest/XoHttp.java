@@ -60,15 +60,23 @@ final class XoHttp {
         /** T31: the backend's sha256 of EXACTLY the served window
          *  (X-Range-Sha256), or null when the server predates the header. */
         final String rangeSha256;
+        /** T76: the server-declared WHOLE-file size (X-File-Size) — every
+         *  download.php answer is self-attesting; 0 = absent/old server. */
+        final long fileSize;
 
         BinaryResponse(int code, byte[] data) {
-            this(code, data, null);
+            this(code, data, null, 0);
         }
 
         BinaryResponse(int code, byte[] data, String sha) {
+            this(code, data, sha, 0);
+        }
+
+        BinaryResponse(int code, byte[] data, String sha, long wholeFileSize) {
             this.code = code;
             this.data = data;
             this.rangeSha256 = sha;
+            this.fileSize = wholeFileSize;
         }
     }
 
@@ -172,12 +180,27 @@ final class XoHttp {
             throw new IOException("range request answered with full-file 200 (header stripped), offset " + rangeStart);
         }
         String rangeSha = code < 400 ? conn.getHeaderField("X-Range-Sha256") : null;
+        long fileSize = 0;
+        if (code < 400) {
+            // T76: every download.php answer carries the whole-file size —
+            // adopt it when the client's own attestation is missing, so a
+            // failed/skipped files/get.php cold-fetch can never blind the
+            // transport (the size is served on the SAME response as the
+            // bytes, no extra round-trip, no dependency on how the message
+            // reached this device).
+            try {
+                fileSize = Long.parseLong(conn.getHeaderField("X-File-Size"));
+            } catch (Exception ignore) {
+                fileSize = 0;
+            }
+        }
         long promised = code < 400 ? conn.getContentLengthLong() : -1;
         String encoding = conn.getHeaderField("Content-Encoding");
         boolean verifyLength = promised > 0 && (encoding == null || encoding.length() == 0);
         InputStream in = code >= 400 ? conn.getErrorStream() : conn.getInputStream();
         return new BinaryResponse(code, readBytes(in, verifyLength ? promised : -1),
-                rangeSha == null || rangeSha.length() == 0 ? null : rangeSha);
+                rangeSha == null || rangeSha.length() == 0 ? null : rangeSha,
+                fileSize > 0 ? fileSize : 0);
     }
 
     /**

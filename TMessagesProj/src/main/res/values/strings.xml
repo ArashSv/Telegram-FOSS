@@ -1478,6 +1478,7 @@
     <string name="FakeMessage">FAKE</string>
     <string name="ViaBot">via</string>
     <string name="MessageNotFound">Message doesn\'t exist</string>
+    <string name="DownloadFailed">Download failed</string>
     <string name="SlowModeHint">Slow Mode is enabled. You can send\nyour next message in %1$s</string>
     <string name="TapForVideo">Tap for photo, hold for video</string>
     <string name="TapToViewAsList">Tap to view as a list.</string>

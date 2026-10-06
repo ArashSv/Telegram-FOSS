@@ -1105,6 +1105,7 @@
     <string name="FakeMessage">FALSO</string>
     <string name="ViaBot">via</string>
     <string name="MessageNotFound">A mensagem não existe.</string>
+    <string name="DownloadFailed">Falha no download.</string>
     <string name="SlowModeHint">Modo Lento ativado. Poderá enviar\nsua próxima mensagem em %1$s.</string>
     <string name="TapForVideo">Toque para foto, segure para vídeo</string>
     <string name="TapToViewAsList">Toque para ver em lista.</string>

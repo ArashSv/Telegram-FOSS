@@ -75,6 +75,19 @@ public final class XoFileTransport {
         // blocking metadata fetch. Declared-length enforcement then holds for
         // EVERY download, not only for messages parsed this process.
         long declaredSize = RestFileBridge.attestedSize(account, backendFileId);
+        if (declaredSize <= 0) {
+            // T76: SELF-ATTESTING size discovery. Every download.php answer
+            // carries the whole-file size (X-File-Size) next to the bytes, so
+            // a one-byte probe is enough to resolve the size when our own
+            // attestation is unknown (files/get.php cold-fetch failed, prefs
+            // evicted, old process). No extra metadata round-trip, no
+            // dependency on how the message reached this device — and the
+            // entire "attestation unknown → blind download" class dies here.
+            long served = servedSizeFor(backendFileId, Math.min(offsetInclusive, endInclusive));
+            if (served > 0) {
+                declaredSize = served;
+            }
+        }
         if (declaredSize > 0) {
             if (offsetInclusive >= declaredSize) {
                 // upstream's own error name for past-EOF getFile asks — the tree's
@@ -98,12 +111,62 @@ public final class XoFileTransport {
         while (windowStart <= endInclusive) {
             long windowEnd = Math.min(windowStart + SUB_WINDOW - 1L, endInclusive);
             int windowLen = (int) (windowEnd - windowStart + 1);
-            byte[] window = fetchWindow(backendFileId, windowStart, windowEnd, windowLen);
+            byte[] window;
+            try {
+                window = fetchWindow(backendFileId, windowStart, windowEnd, windowLen);
+            } catch (XoApiException e) {
+                // T76: every transport-down failure of the WINDOWS is exactly
+                // the class that surfaced downstream as a misleading
+                // "Message doesn't exist". Ship a structured event so the
+                // field evidence reaches the operator without adb.
+                org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(account, "dl.window", 0,
+                        "file=" + backendFileId + " " + e.errorCode + " win=" + windowStart + ".." + windowEnd);
+                throw e;
+            } catch (XoTransportException e) {
+                org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(account, "dl.window", 0,
+                        "file=" + backendFileId + " transport win=" + windowStart + ".." + windowEnd + " " + e.getMessage());
+                throw e;
+            }
             System.arraycopy(window, 0, out, (int) (windowStart - offsetInclusive), windowLen);
             windowStart = windowEnd + 1;
         }
         return out;
     }
+
+    /**
+     * T76: the server-declared whole-file size, learned from the response of
+     * a ONE-BYTE ranged probe (self-attesting download contract — the size
+     * rides the SAME response as the bytes). Result is cached in-process and
+     * fed to the attestation index (memory-only when no sha is available).
+     * Returns 0 when the server predates the header (callers then keep the
+     * un-clamped behavior: stream what was asked, verified per-window).
+     */
+    private long servedSizeFor(long backendFileId, long probeOffset) {
+        synchronized (learnedSizes) {
+            long known = learnedSizes.get(backendFileId, 0L);
+            if (known > 0) {
+                return known;
+            }
+        }
+        try {
+            XoHttp.BinaryResponse probe = RestGateway.getInstance(account)
+                    .binaryWindow(backendFileId, probeOffset, probeOffset);
+            long served = probe.fileSize;
+            if (served > 0) {
+                synchronized (learnedSizes) {
+                    learnedSizes.put(backendFileId, served);
+                }
+                RestFileBridge.noteFileMeta(backendFileId, served, null);
+                return served;
+            }
+        } catch (Exception e) {
+            FileLog.w("XoFileTransport: size probe failed for file " + backendFileId + " (" + e.getMessage() + ")");
+        }
+        return 0;
+    }
+
+    /** T76: backend file id → whole-file size served via X-File-Size (in-flight learning). */
+    private static final android.util.LongSparseArray<Long> learnedSizes = new android.util.LongSparseArray<>();
 
     private byte[] fetchWindow(long backendFileId, long start, long end, int len) {
         java.security.MessageDigest digest = null;
@@ -112,6 +175,14 @@ public final class XoFileTransport {
             try {
                 XoHttp.BinaryResponse response = RestGateway.getInstance(account)
                         .binaryWindow(backendFileId, start, end);
+                // T76: learn the server-declared whole-file size from ANY
+                // served window (self-attesting download contract).
+                if (response.fileSize > 0) {
+                    synchronized (learnedSizes) {
+                        learnedSizes.put(backendFileId, response.fileSize);
+                    }
+                    RestFileBridge.noteFileMeta(backendFileId, response.fileSize, null);
+                }
                 if (response.code == 200 || response.code == 206) {
                     if (response.data.length != len) {
                         throw new XoTransportException("window " + start + "-" + end

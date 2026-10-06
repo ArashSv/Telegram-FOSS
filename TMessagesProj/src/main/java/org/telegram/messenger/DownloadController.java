@@ -1378,8 +1378,21 @@ public class DownloadController extends BaseController implements NotificationCe
             }
             if (removed) {
                 getNotificationCenter().postNotificationName(NotificationCenter.onDownloadingFilesChanged);
+                // T76: reason 0 is the GENERIC transport failure code on this
+                // backend (window exhaust, integrity mismatch, decrypt refusal
+                // — see FileLoadOperation's REST finish gate). Upstream mapped
+                // it to "Message doesn't exist" because on MTProto a generic
+                // failure almost always meant a deleted message; here that
+                // claim is almost always FALSE and turned every transport
+                // hiccup into a confusing, wrong bulletin (field report:
+                // "Message doesn't exist" on every failing video download).
+                // The bulletin now tells the truth; MessageNotFound stays
+                // reserved for its real callers (scroll-to / reply targets).
                 if (reason == 0) {
-                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_ERROR, LocaleController.formatString("MessageNotFound", R.string.MessageNotFound));
+                    // This path is the AUTO-DOWNLOAD queue: parentObject is a
+                    // MessageObject this device already holds, so the message
+                    // cannot be "missing" — the failure is transport-shaped.
+                    NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.showBulletin, Bulletin.TYPE_ERROR, LocaleController.getString("DownloadFailed", R.string.DownloadFailed));
                 } else if (reason == -1) {
                     LaunchActivity.checkFreeDiscSpaceStatic(2);
                 }

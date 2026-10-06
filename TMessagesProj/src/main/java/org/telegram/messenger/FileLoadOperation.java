@@ -1718,11 +1718,15 @@ public class FileLoadOperation {
             if (declaredSize > 0 && actualSize != declaredSize) {
                 FileLog.e("REST integrity: size mismatch for file " + backendId
                         + " — have " + actualSize + "B, server declared " + declaredSize + "B; refusing to finish");
+                org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.integrity", 0,
+                        "file=" + backendId + " size have=" + actualSize + " decl=" + declaredSize + " total=" + totalBytesCount);
                 return false;
             }
             if (totalBytesCount > 0 && actualSize != totalBytesCount) {
                 FileLog.e("REST integrity: size mismatch for file " + backendId
                         + " — have " + actualSize + "B, message declared " + totalBytesCount + "B; refusing to finish");
+                org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.integrity", 0,
+                        "file=" + backendId + " msg-size have=" + actualSize + " decl=" + totalBytesCount + " row=" + declaredSize);
                 return false;
             }
             String declaredSha = org.telegram.tgnet.rest.RestFileBridge.declaredShaFor(backendId);
@@ -1741,6 +1745,8 @@ public class FileLoadOperation {
             if (!declaredSha.equalsIgnoreCase(actualSha)) {
                 FileLog.e("REST integrity: sha256 mismatch for file " + backendId
                         + " — assembled download is corrupt; refusing to finish");
+                org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.integrity", 0,
+                        "file=" + backendId + " sha have=" + actualSha.substring(0, 8) + " decl=" + declaredSha.substring(0, 8));
                 return false;
             }
             return true;
@@ -1793,6 +1799,8 @@ public class FileLoadOperation {
             int chunkSize = meta.chunkSize > 0 ? meta.chunkSize : 131072;
             if (plainLen <= 0) {
                 FileLog.e("E2EE decrypt: envelope lacks the plaintext length for file " + backendId);
+                org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.decrypt", 0,
+                        "file=" + backendId + " no-plainlen cs=" + meta.chunkSize + " thumb=" + thumbRequest);
                 return false;
             }
             long chunks = (plainLen + chunkSize - 1) / chunkSize;
@@ -1806,15 +1814,28 @@ public class FileLoadOperation {
                     int read = readFully(in, buffer, expect);
                     if (read != expect) {
                         FileLog.e("E2EE decrypt: truncated ciphertext at chunk " + i + " of file " + backendId);
+                        org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.decrypt", 0,
+                                "file=" + backendId + " trunc@" + i + "/" + chunks + " want=" + expect + " got=" + read
+                                        + " cipher=" + tempFile.length() + " pl=" + plainLen + " cs=" + chunkSize);
                         //noinspection ResultOfMethodCallIgnored
                         out.delete();
                         return false;
                     }
                     byte[] chunk = new byte[expect];
                     System.arraycopy(buffer, 0, chunk, 0, expect);
-                    byte[] plain = org.telegram.tgnet.rest.e2ee.XoE2EEMedia.decryptChunk(meta.fileKey, (int) i, chunk);
-                    outStream.write(plain);
-                    totalPlain += plain.length;
+                    try {
+                        byte[] plain = org.telegram.tgnet.rest.e2ee.XoE2EEMedia.decryptChunk(meta.fileKey, (int) i, chunk);
+                        outStream.write(plain);
+                        totalPlain += plain.length;
+                    } catch (Throwable chunkFail) {
+                        FileLog.e("E2EE decrypt: chunk " + i + " failed for file " + backendId, chunkFail);
+                        org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.decrypt", 0,
+                                "file=" + backendId + " aead@" + i + "/" + chunks + " " + chunkFail.getClass().getSimpleName()
+                                        + " cs=" + chunkSize + " pl=" + plainLen + " cipher=" + tempFile.length());
+                        //noinspection ResultOfMethodCallIgnored
+                        out.delete();
+                        return false;
+                    }
                 }
                 outStream.flush();
                 outStream.getFD().sync();
@@ -1822,6 +1843,8 @@ public class FileLoadOperation {
             if (totalPlain != plainLen) {
                 FileLog.e("E2EE decrypt: plaintext length mismatch for file " + backendId
                         + " (" + totalPlain + " of " + plainLen + ")");
+                org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.decrypt", 0,
+                        "file=" + backendId + " plain-len have=" + totalPlain + " want=" + plainLen);
                 //noinspection ResultOfMethodCallIgnored
                 out.delete();
                 return false;
@@ -1833,6 +1856,8 @@ public class FileLoadOperation {
                     //noinspection ResultOfMethodCallIgnored
                     out.delete();
                     FileLog.e("E2EE decrypt: swap failed for file " + backendId);
+                    org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.decrypt", 0,
+                            "file=" + backendId + " swap-fail");
                     return false;
                 }
             }
@@ -1841,6 +1866,11 @@ public class FileLoadOperation {
             // ANY decrypt failure (tamper, reorder, wrong key) must not hand
             // ciphertext or a corrupt file to the UI
             FileLog.e("E2EE decrypt failed", t);
+            try {
+                org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.decrypt", 0,
+                        "throw " + t.getClass().getSimpleName());
+            } catch (Throwable ignore) {
+            }
             return false;
         }
     }

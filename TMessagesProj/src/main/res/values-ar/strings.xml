@@ -1105,6 +1105,7 @@
     <string name="FakeMessage">مزوَّر</string>
     <string name="ViaBot">عبر</string>
     <string name="MessageNotFound">الرسالة غير موجودة</string>
+    <string name="DownloadFailed">فشل التنزيل</string>
     <string name="SlowModeHint">الوضع البطيء نشط. يمكنك إرسال\nرسالتك التالية بعد %1$s</string>
     <string name="TapForVideo">انقر لأخذ صورة، اضغط باستمرار لتصوير مقطع مرئي</string>
     <string name="TapToViewAsList">انقر للعرض في قائمة.</string>
