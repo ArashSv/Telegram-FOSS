@@ -17,66 +17,82 @@ jobs:
     env:
       SITE: ${{ secrets.SITE_URL }}
     steps:
-      - name: E2E round-trip against the live API
+      - name: Preflight connectivity (curl, IPv4)
         run: |
           set +e
-          PYCMD=$(command -v python3)
-          $PYCMD - <<'PY'
-          import json, urllib.request, urllib.error
+          for i in 1 2 3; do
+            code=$(curl -4 -sS --http1.1 -m 30 -o /tmp/pf.txt -w "%{http_code}" "$SITE/")
+            echo "preflight try$i -> $code"; head -c 120 /tmp/pf.txt; echo
+            [ "$code" = 200 ] && exit 0
+            sleep 6
+          done
+          echo "preflight failed 3x"; exit 1
 
-          SITE = None
-          import os
-          SITE = os.environ["SITE"].rstrip("/")
+      - name: E2E round-trip against the live API (curl-based)
+        run: |
+          set +e
+          B64=$(mktemp); cat > "$B64" <<'PY'
+          import base64, json, subprocess, sys, urllib.parse
+
+          SITE = subprocess.check_output(
+              ["bash", "-lc", "echo -n $SITE"]).decode().rstrip("/")
 
           def call(method, path, token=None, body=None):
               url = SITE + path
-              data = json.dumps(body).encode() if body is not None else None
-              req = urllib.request.Request(url, data=data, method=method)
-              req.add_header("Content-Type", "application/json")
+              cmd = ["curl", "-4", "-sS", "--http1.1", "-m", "40",
+                     "-X", method, "-w", "\n%{http_code}", url]
+              if body is not None:
+                  cmd += ["-H", "Content-Type: application/json",
+                          "-d", json.dumps(body)]
               if token:
-                  req.add_header("Authorization", "Bearer " + token)
-              try:
-                  with urllib.request.urlopen(req, timeout=30) as r:
-                      return r.status, json.loads(r.read().decode())
-              except urllib.error.HTTPError as e:
+                  cmd += ["-H", "Authorization: Bearer " + token]
+              for attempt in range(3):
                   try:
-                      return e.code, json.loads(e.read().decode())
+                      p = subprocess.run(cmd, capture_output=True, timeout=60)
+                      out = p.stdout.decode(errors="replace")
+                      body_txt, _, code = out.rpartition("\n")
+                      if code.strip().isdigit() and code.strip() != "000":
+                          try:
+                              return int(code), json.loads(body_txt or "{}")
+                          except Exception:
+                              return int(code), {"raw": body_txt[:300]}
                   except Exception:
-                      return e.code, {}
-              except Exception as e:
-                  return 0, {"transport_error": str(e)}
+                      pass
+                  import time; time.sleep(4)
+              return 0, {"transport_error": "3 attempts failed"}
 
           results = []
           def check(name, cond, detail=""):
-              results.append((name, bool(cond), detail))
+              results.append((name, bool(cond)))
               print(("PASS " if cond else "FAIL ") + name + ("  " + str(detail)[:220] if detail else ""))
 
           st, r = call("GET", "/")
-          check("service index 200 + ok", st == 200 and r.get("ok") is True, (st, r.get("version")))
+          check("service index 200 + ok", st == 200 and r.get("ok") is True, (st, r.get("version"), r.get("error")))
 
-          tok = {}
-          ids = {}
+          tok, ids = {}, {}
           for phone, pw, tag in (("+40411127", "1127", "A"), ("+40411130", "1130", "B")):
               st, r = call("POST", "/api/v1/auth/login.php", body={"phone": phone, "password": pw})
               check(f"login {phone}", st == 200 and r.get("access_token"), (st, r.get("error")))
-              tok[tag] = r.get("access_token")
+              tok[tag] = r.get("access_token") or ""
               ids[tag] = (r.get("user") or {}).get("id")
 
           for tag in ("A", "B"):
               st, r = call("GET", "/api/v1/auth/me.php", token=tok[tag])
-              check(f"me {tag}", st == 200 and r.get("user", {}).get("id") == ids[tag], (st, ids[tag]))
+              check(f"me {tag}", st == 200 and (r.get("user") or {}).get("id") == ids[tag], (st, ids[tag], r.get("error")))
 
           st, r = call("GET", "/api/v1/sync/index.php", token=tok["A"])
           check("sync index reachable", st == 200, (st, r.get("error")))
 
-          st, r = call("GET", f"/api/v1/e2ee/keys/exists.php?user_id={ids['B']}", token=tok["A"])
+          st, r = call("GET", "/api/v1/e2ee/keys/exists.php?user_id=%s" % ids["B"], token=tok["A"])
           check("e2ee exists (DB read)", st == 200 and "otk_remaining" in json.dumps(r), (st, r))
 
           st, r = call("GET", "/api/v1/chats/list.php", token=tok["A"])
           check("chats list (DB read)", st == 200, (st, r.get("error")))
 
-          fails = [n for n, ok, _ in results if not ok]
+          fails = [n for n, ok in results if not ok]
           print()
           print(f"TOTAL {len(results)} | PASS {len(results)-len(fails)} | FAIL {len(fails)} {fails}")
-          raise SystemExit(1 if fails else 0)
+          sys.exit(1 if fails else 0)
           PY
+          base64 -w0 "$B64" > "$B64.b64"
+          python3 - <(echo "import base64,sys;exec(base64.b64decode(open('$B64.b64').read()).decode())")
