@@ -2,6 +2,9 @@ name: Ops Field Evidence (T77)
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/ops-field-evidence.yml'
 
 concurrency:
   group: ops-field-evidence
