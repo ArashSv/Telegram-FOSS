@@ -3,14 +3,23 @@
 // Uses the SAME deployment shape as the proven T76 probe: lives in the
 // backend docroot and requires the backend bootstrap (no manual PDO/eval).
 $__expected = '__TOKEN__';
+$__prog = __DIR__ . '/_xo_t77_progress.txt';
+$__step = function ($s) use ($__prog) { @file_put_contents($__prog, gmdate('H:i:s') . ' ' . $s . "\n", FILE_APPEND); };
+@unlink($__prog);
 if (!isset($_GET['t']) || !is_string($_GET['t']) || !hash_equals($__expected, hash('sha256', (string) $_GET['t']))) {
-    @unlink(__FILE__);
-    http_response_code(404);
-    exit('not found');
+    $__step('GATE FAIL len_exp=' . strlen($__expected) . ' len_got=' . strlen((string) ($_GET['t'] ?? '')));
+    $__step('echo done');
+@unlink(__FILE__);
+    http_response_code(406);
+    header('Content-Type: application/json');
+    exit(json_encode(['gate' => 'fail', 'exp_len' => strlen($__expected), 'got_len' => strlen((string) ($_GET['t'] ?? ''))]));
 }
+$__step('gate ok');
 
 define('XO_MAINT', 1);
+$__step('before bootstrap');
 require __DIR__ . '/api/v1/_bootstrap.php';
+$__step('bootstrap ok');
 
 use App\Core\Db;
 
@@ -29,6 +38,7 @@ if (@is_file($lg)) {
     $report['docroot_error_log_tail'] = 'missing';
 }
 
+$__step('before queries');
 function q($sql, $args = []) {
     try { return Db::fetchAll($sql, $args); } catch (Throwable $e) { return [['__err' => $e->getMessage()]]; }
 }
@@ -87,6 +97,8 @@ if (is_dir($logDir)) {
 }
 $report['client_logs'] = $files;
 $report['now'] = gmdate('Y-m-d H:i:s');
+$__step('queries done, before echo');
 
 echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+$__step('echo done');
 @unlink(__FILE__);
