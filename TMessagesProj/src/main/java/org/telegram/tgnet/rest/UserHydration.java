@@ -19,13 +19,14 @@ import java.util.List;
  * (raw-id rendering / placeholder users), a hydration miss never fails a
  * message.
  */
-final class UserHydration {
+/** T77: made public — the E2EE repair sweep hydrates senders cross-package. */
+public final class UserHydration {
 
     private UserHydration() {
     }
 
     /** Distinct from_id user ids of the messages, in first-seen order. */
-    static ArrayList<Long> senderIds(List<? extends TLRPC.Message> messages) {
+    public static ArrayList<Long> senderIds(List<? extends TLRPC.Message> messages) {
         ArrayList<Long> ids = new ArrayList<>();
         if (messages == null) {
             return ids;
@@ -47,7 +48,7 @@ final class UserHydration {
      * from the MessagesController cache. Empty list when everything is
      * cached, the batch is empty, or the fetch failed (logged, not thrown).
      */
-    static ArrayList<TLRPC.TL_user> fetchUncached(int account, List<Long> senderIds) {
+    public static ArrayList<TLRPC.TL_user> fetchUncached(int account, List<Long> senderIds) {
         ArrayList<TLRPC.TL_user> fetched = new ArrayList<>();
         ArrayList<Long> missing = null;
         MessagesController controller = MessagesController.getInstance(account);
