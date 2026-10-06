@@ -22,6 +22,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Filesystem truth map (PROPFIND)
+        run: |
+          set +e
+          for p in "/public_html/" "/public_html/tele/" "/tele/"; do
+            echo "== PROPFIND $p"
+            curl -sS -k -m 60 -u "$AUTH" -X PROPFIND -H "Depth: 1" -o /tmp/pf2.xml -w "status=%{http_code}\n" "$WEB$p"
+            python3 - <<'PY'
+            import re
+            src = open('/tmp/pf2.xml', errors='replace').read()
+            hrefs = re.findall(r'<(?:[a-zA-Z0-9]+:)?href>([^<]+)<', src)
+            for h in hrefs[:30]:
+                print('   ', h)
+            PY
+          done
+
       - name: Deploy + run field-evidence probe
         run: |
           set +e
