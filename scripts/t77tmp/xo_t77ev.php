@@ -3,7 +3,7 @@
 // Uses the SAME deployment shape as the proven T76 probe: lives in the
 // backend docroot and requires the backend bootstrap (no manual PDO/eval).
 $__expected = '__TOKEN__';
-$__prog = __DIR__ . '/_xo_t77_progress.txt';
+$__prog = __DIR__ . '/_prog_' . basename(__FILE__, '.php') . '.txt';
 $__step = function ($s) use ($__prog) { @file_put_contents($__prog, gmdate('H:i:s') . ' ' . $s . "\n", FILE_APPEND); };
 @unlink($__prog);
 if (!isset($_GET['t']) || !is_string($_GET['t']) || !hash_equals($__expected, hash('sha256', (string) $_GET['t']))) {

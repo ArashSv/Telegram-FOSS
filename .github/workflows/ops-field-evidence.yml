@@ -47,7 +47,7 @@ jobs:
           php -l /tmp/_xo_t77ev.php 2>/dev/null || true
           ok=0
           for i in 1 2 3 4; do
-            curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/_xo_t77ev.php" -o /dev/null
+            curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/$RUNAME" -o /dev/null
             code=$(curl -sS -k -m 120 -u "$AUTH" -T /tmp/_xo_t77ev.php "$WEB/public_html/tele/_xo_t77ev.php" -o /dev/null -w "%{http_code}")
             echo "PUT try$i -> $code"
             case "$code" in 2*) ok=1; break;; esac
@@ -55,7 +55,7 @@ jobs:
           done
           [ "$ok" = 1 ] || { echo "deploy failed"; exit 1; }
           for i in 1 2 3 4 5; do
-            code=$(curl -4 -sS --http1.1 -m 90 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" -o /tmp/ev.json -w "%{http_code}" "$SITE/_xo_t77ev.php?t=$DIAG")
+            code=$(curl -4 -sS --http1.1 -m 90 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" -o /tmp/ev.json -w "%{http_code}" "$SITE/$RUNAME?t=$DIAG&r=$(date +%s%N)")
             echo "RUN try$i -> $code bytes=$(wc -c < /tmp/ev.json)"
             if [ "$code" = 200 ] && grep -q '"users"' /tmp/ev.json 2>/dev/null; then break; fi
             sleep 8
@@ -63,6 +63,6 @@ jobs:
           echo "================ EVIDENCE ================"
           cat /tmp/ev.json
           echo "================ progress trace ================"
-          curl -sS -k -m 60 -u "$AUTH" "$WEB/public_html/tele/_xo_t77_progress.txt" -w "\nprog -> %{http_code}\n" || true
+          curl -sS -k -m 60 -u "$AUTH" "$WEB/public_html/tele/_prog_${RUNAME}.txt" -w "\nprog -> %{http_code}\n" || true
           echo "================ cleanup ================"
-          curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/_xo_t77ev.php" -o /dev/null -w "cleanup -> %{http_code}\n"
+          curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/$RUNAME" -o /dev/null -w "cleanup -> %{http_code}\n"
