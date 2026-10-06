@@ -95,15 +95,15 @@ public class XoE2EET73RegressionTest {
     @Test
     public void sentInnerCacheEvictsOldestBeyondCap() throws Exception {
         XoE2EE alice = XoE2EE.getInstance(0);
-        for (int i = 0; i < 2100; i++) {
+        for (int i = 0; i < 8100; i++) {
             alice.noteSentInner(10_000L + i, "{\"t\":\"t\",\"x\":\"m" + i + "\"}");
         }
-        // T74: the cache holds 2000 entries (was 250) — the oldest 100 are evicted.
+        // T74/T77: the cache holds 8000 entries (was 250/2000) — the oldest 100 are evicted.
         assertEquals("oldest entries evicted", null, alice.getSentInnerForRender(10_000L));
         assertEquals("cap boundary retained", "m100",
                 new JSONObject(alice.getSentInnerForRender(10_100L)).optString("x"));
-        assertEquals("newest entries retained", "m2099",
-                new JSONObject(alice.getSentInnerForRender(12_099L)).optString("x"));
+        assertEquals("newest entries retained", "m8099",
+                new JSONObject(alice.getSentInnerForRender(18_099L)).optString("x"));
     }
 
     // ------------------------------------------------------------ flag healing

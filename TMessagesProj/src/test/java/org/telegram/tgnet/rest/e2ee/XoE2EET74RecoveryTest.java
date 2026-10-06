@@ -197,15 +197,15 @@ public class XoE2EET74RecoveryTest {
     // ------------------------------------------------------- sent-inner cache cap
 
     @Test
-    public void sentInnerCacheHolds2000Entries() throws Exception {
+    public void sentInnerCacheHolds8000Entries() throws Exception {
         XoE2EE a = XoE2EE.getInstance(0);
-        for (long id = 1; id <= 2100; id++) {
+        for (long id = 1; id <= 8100; id++) {
             a.noteSentInner(id, "{\"t\":\"t\",\"x\":\"m" + id + "\"}");
         }
         assertNull("oldest beyond the cap must be evicted", a.getSentInnerForRender(1));
         assertNull("oldest beyond the cap must be evicted (2)", a.getSentInnerForRender(100));
         assertNotNull("cap boundary must still be present", a.getSentInnerForRender(101));
-        assertNotNull("newest must be present", a.getSentInnerForRender(2100));
+        assertNotNull("newest must be present", a.getSentInnerForRender(8100));
     }
 
     // ------------------------------------------------------- diagnostics log hygiene
