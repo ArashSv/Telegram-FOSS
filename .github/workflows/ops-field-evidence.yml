@@ -55,7 +55,7 @@ jobs:
           done
           [ "$ok" = 1 ] || { echo "deploy failed"; exit 1; }
           for i in 1 2 3 4 5; do
-            code=$(curl -4 -sS --http1.1 -m 90 -o /tmp/ev.json -w "%{http_code}" "$SITE/_xo_t77ev.php?t=$DIAG")
+            code=$(curl -4 -sS --http1.1 -m 90 -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36" -o /tmp/ev.json -w "%{http_code}" "$SITE/_xo_t77ev.php?t=$DIAG")
             echo "RUN try$i -> $code bytes=$(wc -c < /tmp/ev.json)"
             if [ "$code" = 200 ] && grep -q '"users"' /tmp/ev.json 2>/dev/null; then break; fi
             sleep 8
