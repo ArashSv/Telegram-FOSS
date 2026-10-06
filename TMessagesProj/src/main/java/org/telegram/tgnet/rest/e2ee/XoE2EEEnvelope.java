@@ -148,9 +148,12 @@ public final class XoE2EEEnvelope {
         if (caption != null && caption.length() > 0) {
             json.put("cap", caption);
         }
-        if (animated) {
-            json.put("an", 1);
-        }
+        // T76: the animated bit is ALWAYS written (1 or 0). T75 tagged only
+        // GIFs, so every non-GIF envelope shipped UNtagged — and the receiver's
+        // legacy ".mp4 name" fallback then fired on nearly all real videos
+        // (the "GIF type is broken" field report). A present "an" field is
+        // authoritative on receive; its absence now genuinely means pre-T75.
+        json.put("an", animated ? 1 : 0);
         if (thumbEncrypted) {
             json.put("th", 1);
             if (thumbKey != null) {
