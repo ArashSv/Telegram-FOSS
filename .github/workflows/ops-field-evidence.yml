@@ -32,6 +32,10 @@ jobs:
             grep -oE "<[a-zA-Z0-9]*:?href>[^<]+<" /tmp/pf2.xml | sed -E "s/<[^>]*>//g" | head -30
           done
 
+      - name: Read live tele/.htaccess
+        run: |
+          curl -sS -k -m 60 -u "$AUTH" "$WEB/public_html/tele/.htaccess" -w "\nhtaccess -> %{http_code}\n" || true
+
       - name: Hygiene - remove stale T66/T76 probes
         run: |
           set +e
@@ -63,6 +67,6 @@ jobs:
           echo "================ EVIDENCE ================"
           cat /tmp/ev.json
           echo "================ progress trace ================"
-          curl -sS -k -m 60 -u "$AUTH" "$WEB/public_html/tele/_prog_${RUNAME}.txt" -w "\nprog -> %{http_code}\n" || true
+          curl -sS -k -m 60 -u "$AUTH" "$WEB/public_html/tele/t77prog_${RUNAME}.txt" -w "\nprog -> %{http_code}\n" || true
           echo "================ cleanup ================"
           curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/$RUNAME" -o /dev/null -w "cleanup -> %{http_code}\n"
