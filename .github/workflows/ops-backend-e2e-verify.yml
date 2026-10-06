@@ -31,7 +31,7 @@ jobs:
       - name: E2E round-trip against the live API (curl-based)
         run: |
           set +e
-          B64=$(mktemp); cat > "$B64" <<'PY'
+          cat > /tmp/e2e.py <<'PY'
           import base64, json, subprocess, sys, urllib.parse
 
           SITE = subprocess.check_output(
@@ -94,5 +94,4 @@ jobs:
           print(f"TOTAL {len(results)} | PASS {len(results)-len(fails)} | FAIL {len(fails)} {fails}")
           sys.exit(1 if fails else 0)
           PY
-          base64 -w0 "$B64" > "$B64.b64"
-          python3 - <(echo "import base64,sys;exec(base64.b64decode(open('$B64.b64').read()).decode())")
+          python3 /tmp/e2e.py
