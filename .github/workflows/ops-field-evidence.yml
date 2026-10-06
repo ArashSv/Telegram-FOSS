@@ -32,23 +32,30 @@ jobs:
             grep -oE "<[a-zA-Z0-9]*:?href>[^<]+<" /tmp/pf2.xml | sed -E "s/<[^>]*>//g" | head -30
           done
 
+      - name: Hygiene - remove stale T66/T76 probes
+        run: |
+          set +e
+          for f in _xo_t76a.php _xo_t76b.php _xo_t76v_out_723adb0f45.json _xo_t66_out.json; do
+            curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/$f" -o /dev/null -w "del $f -> %{http_code}\n"
+          done
+
       - name: Deploy + run field-evidence probe
         run: |
           set +e
-          sed "s/__TOKEN__/$DIAG/" scripts/t77tmp/xo_t77ev.php > /tmp/xo_t77ev.php || \
-          sed "s/__TOKEN__/$DIAG/" xo_t77ev.php > /tmp/xo_t77ev.php
-          php -l /tmp/xo_t77ev.php 2>/dev/null || true
+          sed "s/__TOKEN__/$DIAG/" scripts/t77tmp/_xo_t77ev.php > /tmp/_xo_t77ev.php || \
+          sed "s/__TOKEN__/$DIAG/" _xo_t77ev.php > /tmp/_xo_t77ev.php
+          php -l /tmp/_xo_t77ev.php 2>/dev/null || true
           ok=0
           for i in 1 2 3 4; do
-            curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/xo_t77ev.php" -o /dev/null
-            code=$(curl -sS -k -m 120 -u "$AUTH" -T /tmp/xo_t77ev.php "$WEB/public_html/tele/xo_t77ev.php" -o /dev/null -w "%{http_code}")
+            curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/_xo_t77ev.php" -o /dev/null
+            code=$(curl -sS -k -m 120 -u "$AUTH" -T /tmp/_xo_t77ev.php "$WEB/public_html/tele/_xo_t77ev.php" -o /dev/null -w "%{http_code}")
             echo "PUT try$i -> $code"
             case "$code" in 2*) ok=1; break;; esac
             sleep 5
           done
           [ "$ok" = 1 ] || { echo "deploy failed"; exit 1; }
           for i in 1 2 3 4 5; do
-            code=$(curl -4 -sS --http1.1 -m 90 -o /tmp/ev.json -w "%{http_code}" "$SITE/xo_t77ev.php?t=$DIAG")
+            code=$(curl -4 -sS --http1.1 -m 90 -o /tmp/ev.json -w "%{http_code}" "$SITE/_xo_t77ev.php?t=$DIAG")
             echo "RUN try$i -> $code bytes=$(wc -c < /tmp/ev.json)"
             if [ "$code" = 200 ] && grep -q '"users"' /tmp/ev.json 2>/dev/null; then break; fi
             sleep 8
@@ -56,4 +63,4 @@ jobs:
           echo "================ EVIDENCE ================"
           cat /tmp/ev.json
           echo "================ cleanup ================"
-          curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/xo_t77ev.php" -o /dev/null -w "cleanup -> %{http_code}\n"
+          curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/_xo_t77ev.php" -o /dev/null -w "cleanup -> %{http_code}\n"
