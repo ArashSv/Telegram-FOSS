@@ -110,7 +110,7 @@ public class XoT77PipelineTest {
         // bob replies — alice becomes acknowledged → her next message is a
         // genuine Whisper (no prekey info attached anymore)
         String reply = XoE2EE.getInstance(1).encryptForPeer(ALICE_ID, "rep");
-        assertEquals("{\"t\":\"t\",\"x\":\"rep\"}", XoE2EE.getInstance(0).decryptFromPeer(BOB_ID, reply));
+        assertEquals("rep", XoE2EE.getInstance(0).decryptFromPeer(BOB_ID, reply));
         String envelope2 = XoE2EE.getInstance(0).encryptForPeer(BOB_ID, inner2);
 
         assertEquals(inner2, bob.decryptFromPeer(ALICE_ID, envelope2));
