@@ -1,0 +1,150 @@
+name: Ops Backend Repair (T77)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/ops-backend-repair.yml'
+
+concurrency:
+  group: ops-backend-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WEB: ${{ secrets.WEBDAV_URL }}
+      AUTH: ${{ secrets.WEBDAV_AUTH }}
+      SITE: ${{ secrets.SITE_URL }}
+      DIAG: ${{ secrets.DIAG_TOKEN }}
+    steps:
+      - name: Probe live API (before)
+        run: |
+          set +e
+          for u in "/" "/api/v1/e2ee/keys/exists.php"; do
+            code=$(curl -sS -m 30 -o /tmp/b.txt -w "%{http_code}" "$SITE$u")
+            echo "== GET $u -> $code"
+            head -c 400 /tmp/b.txt; echo; echo
+          done
+
+      - name: Fetch current live config (evidence + rollback artifact)
+        run: |
+          set +e
+          code=$(curl -sS -k -m 90 -u "$AUTH" "$WEB/config/config.php" -o /tmp/live-config.php -w "%{http_code}")
+          echo "GET /config/config.php -> $code size=$(wc -c < /tmp/live-config.php)"
+          python3 - <<'PY'
+          import hashlib
+          src = open('/tmp/live-config.php', encoding='utf-8', errors='replace').read()
+          print('md5:', hashlib.md5(src.encode()).hexdigest())
+          print('ends_ok:', src.rstrip().endswith(');'))
+          for k in ("'app'", "'db'", "'jwt'"):
+              print(k, 'present:', k in src)
+          import re
+          m = re.search(r"'driver'\s*=>\s*'(\w+)'", src)
+          print('driver:', m.group(1) if m else 'NOT FOUND')
+          print('first120:', src[:120].replace('\n', ' '))
+          print('last80:', src[-80:].replace('\n', ' '))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: live-config-before
+          path: /tmp/live-config.php
+          if-no-files-found: ignore
+
+      - name: Ensure php-cli
+        run: |
+          command -v php >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq php-cli; }
+          php -v | head -1
+
+      - name: Restore known-good config (idempotent)
+        run: |
+          echo "$LIVE_CONFIG_B64" | base64 -d > /tmp/good-config.php
+          php -l /tmp/good-config.php
+          good=$(md5sum /tmp/good-config.php | awk '{print $1}')
+          live=$(md5sum /tmp/live-config.php | awk '{print $1}')
+          echo "good=$good live=$live"
+          if [ "$good" = "$live" ]; then echo "config already correct - skip PUT"; exit 0; fi
+          ok=0
+          for i in 1 2 3 4 5; do
+            code=$(curl -sS -k -m 120 -u "$AUTH" -T /tmp/good-config.php "$WEB/config/config.php" -w "%{http_code}")
+            echo "PUT try$i -> $code"
+            case "$code" in 2*) ok=1; break;; esac
+            sleep 5
+          done
+          [ "$ok" = 1 ] || { echo "PUT FAILED"; exit 1; }
+          curl -sS -k -m 90 -u "$AUTH" "$WEB/config/config.php" -o /tmp/verify.php
+          echo "readback:"; md5sum /tmp/verify.php /tmp/good-config.php
+          php -l /tmp/verify.php
+
+      - name: Probe live API (after) — verdict
+        run: |
+          set +e
+          sleep 3
+          code=$(curl -sS -m 30 -o /tmp/a1 -w "%{http_code}" "$SITE/")
+          echo "== index -> $code"; head -c 600 /tmp/a1; echo
+          code=$(curl -sS -m 30 -o /tmp/a2 -w "%{http_code}" "$SITE/api/v1/e2ee/keys/exists.php")
+          echo "== exists.php -> $code"; head -c 300 /tmp/a2; echo
+
+      - name: Deep diagnostic probe (self-deleting)
+        if: always()
+        run: |
+          set +e
+          cat > /tmp/xo_diag.php <<'PHP'
+          <?php
+          $__T = '__TOKEN__';
+          if (!isset($_GET['t']) || !hash_equals($__T, (string)$_GET['t'])) { http_response_code(403); echo "forbidden"; exit; }
+          header('Content-Type: application/json; charset=utf-8');
+          $R = [];
+          $R['php'] = PHP_VERSION; $R['sapi'] = php_sapi_name();
+          $dir = __DIR__; $root = null;
+          for ($i = 0; $i < 10; $i++) { if (is_file($dir.'/app/bootstrap.php')) { $root = $dir; break; } $p = dirname($dir); if ($p === $dir) break; $dir = $p; }
+          $R['root'] = $root;
+          if ($root) {
+            $src = (string)@file_get_contents($root.'/config/config.php');
+            $R['cfg_size'] = strlen($src); $R['cfg_md5'] = md5($src);
+            try { $cfg = eval('?>'.$src); $R['cfg_parse'] = 'ok'; }
+            catch (Throwable $e) { $R['cfg_parse'] = 'FATAL '.$e->getMessage(); $cfg = null; }
+            if (is_array($cfg)) {
+              $R['driver'] = $cfg['db']['driver'] ?? '?';
+              $R['db_name'] = $cfg['db']['name'] ?? '?';
+              $R['jwt_len'] = strlen((string)($cfg['jwt']['secret'] ?? ''));
+              $R['version'] = $cfg['app']['version'] ?? '?';
+              try {
+                $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4', $cfg['db']['host'], (int)($cfg['db']['port'] ?? 3306), $cfg['db']['name']);
+                $pdo = new PDO($dsn, $cfg['db']['user'], $cfg['db']['password'], [PDO::ATTR_TIMEOUT => 8, PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+                $R['db_connect'] = 'ok';
+                foreach (['users','device_keys','messages','files'] as $t) {
+                  try { $R['tbl:'.$t] = (int)$pdo->query("SELECT COUNT(*) FROM `{$t}`")->fetchColumn(); }
+                  catch (Throwable $e) { $R['tbl:'.$t] = 'ERR'; }
+                }
+              } catch (Throwable $e) { $R['db_connect'] = 'FATAL '.$e->getMessage(); }
+            }
+            foreach (['storage','storage/uploads'] as $p) { $R['w:'.$p] = @is_writable($root.'/'.$p); }
+            $R['disk_free_MB'] = (int)(@disk_free_space($root) / 1048576);
+            $R['root_listing'] = scandir($root);
+          }
+          foreach ([__DIR__.'/error_log', ini_get('error_log')] as $lg) {
+            if ($lg && @is_file($lg)) {
+              $lines = @file($lg, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
+              $R['errtail'] = array_slice($lines, -20);
+            }
+          }
+          echo json_encode($R, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+          @unlink(__FILE__);
+          PHP
+          sed -i "s/__TOKEN__/$DIAG/" /tmp/xo_diag.php
+          php -l /tmp/xo_diag.php
+          code=$(curl -sS -k -m 90 -u "$AUTH" -T /tmp/xo_diag.php "$WEB/public/xo_diag.php" -w "%{http_code}")
+          echo "PUT probe -> $code"
+          [ "$code" = 000 ] && { echo "WebDAV unreachable"; exit 0; }
+          sleep 2
+          echo "== probe output:"
+          curl -sS -m 60 "$SITE/xo_diag.php?t=$DIAG"
+          echo
+          sleep 1
+          code=$(curl -sS -m 30 -o /dev/null -w "%{http_code}" "$SITE/xo_diag.php?t=$DIAG")
+          echo "post-delete check -> $code (expect 404)"
+          curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public/xo_diag.php" -o /dev/null -w "webdav cleanup -> %{http_code}\n"
