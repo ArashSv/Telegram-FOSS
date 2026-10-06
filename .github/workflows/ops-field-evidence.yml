@@ -40,7 +40,7 @@ jobs:
         run: |
           set +e
           for f in _xo_t76a.php _xo_t76b.php _xo_t76v_out_723adb0f45.json _xo_t66_out.json; do
-            curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/$f" -o /dev/null -w "del $f -> %{http_code}\n"
+            case "$f" in *.php|*.json) curl -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/$f" -o /dev/null -w "del $f -> %{http_code}\n";; esac
           done
 
       - name: Deploy + run field-evidence probe

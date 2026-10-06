@@ -1,0 +1,15 @@
+# Static public/ directory hardening.
+
+# Never show directory listings.
+Options -Indexes
+
+# Some CGI/FastCGI setups strip the Authorization header before PHP sees it.
+# This restores it (needed for JWT bearer auth on shared hosting).
+<IfModule mod_setenvif.c>
+    SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+</IfModule>
+
+# Deny dotfiles (.htaccess, .git, ...).
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
