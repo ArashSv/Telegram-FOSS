@@ -424,9 +424,8 @@ public final class TlJsonMapper {
                         org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account);
                 // T76 fix: single-assignment shape (run-112 compile gate) —
                 // memo hit wins, otherwise one decrypt attempt feeds both the
-                // store and the render.
+                // store and the render. Assigns the OUTER `inner` exactly once.
                 final String memo = e2eeStore.getDecryptedInner(rowId);
-                final String inner;
                 if (memo != null) {
                     inner = memo;
                 } else {
