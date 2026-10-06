@@ -168,7 +168,7 @@ public class XoT77PipelineTest {
         // the ack dance must have made alice's next message a genuine WHISPER
         // (no self-sufficient prekey info attached) — otherwise the loss
         // scenario below cannot exist
-        assertEquals(org.whispersystems.libsignal.CiphertextMessage.WHISPER_TYPE,
+        assertEquals(org.whispersystems.libsignal.protocol.CiphertextMessage.WHISPER_TYPE,
                 XoE2EEEnvelope.unwrap(envelope2).wireType);
         bob.forceNewSessionForTests(ALICE_ID);
 
