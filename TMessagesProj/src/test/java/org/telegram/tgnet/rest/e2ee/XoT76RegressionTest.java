@@ -103,12 +103,14 @@ public class XoT76RegressionTest {
         byte[] fileKey = XoE2EEMedia.newFileKey();
         String inner = XoE2EEEnvelope.innerMedia(fileKey, 5_000_000, 131_072,
                 "video/mp4", "movie.mp4", 1920, 1080, 40, null, false, null, 0, false);
-        String envelope = XoE2EE.getInstance(0).encryptForPeer(BOB_ID, inner);
+        XoE2EE.MediaMeta meta = XoE2EE.parseMediaMeta(new org.json.JSONObject(inner));
+        assertTrue("a tagged envelope must be detected as known-an", meta.animatedKnown);
+        assertFalse(meta.animated);
 
         org.json.JSONObject row = new org.json.JSONObject();
         row.put("id", 6002);
         row.put("sender_id", ALICE_ID);
-        row.put("content", envelope);
+        row.put("content", XoE2EE.getInstance(0).encryptForPeer(BOB_ID, inner));
         row.put("date", (int) (System.currentTimeMillis() / 1000L));
         org.json.JSONObject media = new org.json.JSONObject();
         media.put("file_id", 778);
@@ -125,6 +127,24 @@ public class XoT76RegressionTest {
                     doc.attributes.get(i) instanceof TLRPC.TL_documentAttributeAnimated);
         }
         assertFalse("a real video must never carry the GIF sentinel", doc.access_hash == GIF_SENTINEL);
+    }
+
+    /** A PRE-T75 envelope (no "an" field at all) keeps the legacy .mp4-name fallback. */
+    @Test
+    public void legacyUntaggedEnvelope_keepsTheFallback() throws Exception {
+        byte[] fileKey = XoE2EEMedia.newFileKey();
+        org.json.JSONObject inner = new org.json.JSONObject();
+        inner.put("t", "m");
+        inner.put("fk", XoE2EEEnvelope.b64Encode(fileKey));
+        inner.put("pl", 100_000);
+        inner.put("cs", 131_072);
+        inner.put("mi", "video/mp4");
+        inner.put("na", "legacy.mp4");
+        // no "an" key — a pre-T75 row
+        XoE2EE.MediaMeta meta = XoE2EE.parseMediaMeta(inner);
+        assertNotNull(meta);
+        assertFalse("untagged envelope: animatedKnown must be false", meta.animatedKnown);
+        assertFalse(meta.animated);
     }
 
     /**

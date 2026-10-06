@@ -588,6 +588,14 @@ public final class XoE2EE {
         public long thumbFileId;
         /** T75 — explicit Telegram-GIF flag carried in the envelope ("an":1). */
         public boolean animated;
+        /**
+         * T76 — TRUE when the envelope CARRIES the "an" field at all. The
+         * legacy ".mp4 name" heuristic may only speak when the field is
+         * ABSENT (pre-T75 rows): with the field present it is authoritative,
+         * and applying the heuristic anyway promoted EVERY .mp4-named real
+         * video to a GIF (the field-confirmed "GIF type is broken" class).
+         */
+        public boolean animatedKnown;
     }
 
     public static MediaMeta parseMediaMeta(JSONObject inner) {
@@ -604,6 +612,7 @@ public final class XoE2EE {
             meta.caption = inner.isNull("cap") ? null : inner.optString("cap", null);
             meta.thumbEncrypted = inner.optInt("th", 0) == 1;
             meta.animated = inner.optInt("an", 0) == 1;
+            meta.animatedKnown = inner.has("an");
             String tk = inner.optString("tk", null);
             meta.thumbKey = tk == null || tk.length() == 0 ? null : XoE2EEEnvelope.b64Decode(tk);
             meta.thumbFileId = inner.optLong("tf", 0);

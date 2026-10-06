@@ -1057,18 +1057,15 @@ public final class TlJsonMapper {
         TLRPC.MessageMedia media = documentMedia(fileId, mime, size, meta.name, "e2ee",
                 meta.width, meta.height, meta.duration, thumbFileId, messageDate);
         // T75: the animated attribute rides the envelope's EXPLICIT flag.
-        // The pre-T75 ".mp4 name" heuristic misclassified real videos as
-        // GIFs, so it only applies to legacy envelopes that predate the
-        // "an" field (backward compatibility for already-stored rows).
-        // T76: an animated e2ee document also carries the GIF access-hash
-        // sentinel — the same resend contract plaintext gifs get (tap →
-        // by-reference input path), which the dispatcher re-encrypts into
-        // the chat. Without it the resend rides the upload branch and dies
-        // on the missing local file.
+        // T76: the legacy ".mp4 name" heuristic is restricted to envelopes
+        // that predate the "an" field entirely (animatedKnown == false) —
+        // with the field present it is authoritative. The old fallback fired
+        // on EVERY .mp4-named real video (nearly all of them), which is the
+        // "GIF type is broken" field report in its reverse form.
         TLRPC.TL_document document = media.document instanceof TLRPC.TL_document
                 ? (TLRPC.TL_document) media.document : null;
         if (document != null) {
-            boolean legacyAnimated = !meta.animated && mime.startsWith("video/")
+            boolean legacyAnimated = !meta.animatedKnown && !meta.animated && mime.startsWith("video/")
                     && meta.name != null && meta.name.endsWith(".mp4");
             if (meta.animated || legacyAnimated) {
                 document.attributes.add(new TLRPC.TL_documentAttributeAnimated());
