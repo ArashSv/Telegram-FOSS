@@ -3,7 +3,10 @@
 $__T = '__TOKEN__';
 if (!isset($_GET['t']) || !hash_equals($__T, (string)$_GET['t'])) { http_response_code(403); echo 'forbidden'; exit; }
 header('Content-Type: application/json; charset=utf-8');
+error_reporting(E_ALL);
+ini_set('display_errors', '0');
 $R = [];
+try {
 $dir = __DIR__; $root = null;
 for ($i = 0; $i < 10; $i++) { if (is_file($dir.'/app/bootstrap.php')) { $root = $dir; break; } $p = dirname($dir); if ($p === $dir) break; $dir = $p; }
 try { $cfg = eval('?>' . (string)@file_get_contents($root.'/config/config.php')); }
@@ -40,7 +43,9 @@ foreach ($chats as &$c) {
     }
     $c['inv_60'] = $inv;             // created_at inversions within id order (last 60)
     $c['wire_60'] = $wire;
-    $c['seq'] = implode('', array_map(function ($t) { return $t === 'pre' ? 'P' : ($t === 'wsp' ? 'w' : ($t === 'plain' ? '.' : '?')); }, $types));
+    $seq = '';
+    foreach ($types as $t) { $seq .= ($t === 'pre') ? 'P' : (($t === 'wsp') ? 'w' : (($t === 'plain') ? '.' : '?')); }
+    $c['seq'] = $seq;
     unset($c['mn']); unset($c['mx']);
 }
 $R['recent_chats'] = $chats;
@@ -60,7 +65,7 @@ $logDir = $root . '/storage/client_logs';
 $files = [];
 if (is_dir($logDir)) {
     $cand = glob($logDir . '/android_log-*.log');
-    usort($cand, fn($a, $b) => filemtime($b) <=> filemtime($a));
+    usort($cand, function ($a, $b) { return filemtime($b) <=> filemtime($a); });
     foreach (array_slice($cand, 0, 8) as $f) {
         $lines = @file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [];
         $files[] = ['f' => basename($f), 'mt' => gmdate('m-d H:i', (int)filemtime($f)), 'n' => count($lines),
@@ -70,4 +75,7 @@ if (is_dir($logDir)) {
 $R['client_logs'] = $files;
 $R['now'] = gmdate('Y-m-d H:i:s');
 echo json_encode($R, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+} catch (Throwable $e) {
+    echo json_encode(['probe_error' => $e->getMessage(), 'line' => $e->getLine(), 'php' => PHP_VERSION]);
+}
 @unlink(__FILE__);
