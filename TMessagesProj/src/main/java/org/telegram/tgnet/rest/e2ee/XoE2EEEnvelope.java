@@ -87,6 +87,29 @@ public final class XoE2EEEnvelope {
         }
     }
 
+    /**
+     * T77 — hex sha256 of an envelope string. The decrypt memo is keyed by
+     * the FULL ciphertext content (not the row id), so every parse path is
+     * idempotent; null only when hashing is unavailable (never in practice).
+     */
+    public static String sha256Hex(String envelope) {
+        if (envelope == null) {
+            return null;
+        }
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(envelope.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) {
+                sb.append("0123456789abcdef".charAt((b >> 4) & 0xF));
+                sb.append("0123456789abcdef".charAt(b & 0xF));
+            }
+            return sb.toString();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     public static final class Unwrapped {
         public final int wireType;
         public final byte[] body;

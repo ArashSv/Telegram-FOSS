@@ -14221,12 +14221,19 @@ public class MessagesController extends BaseController implements NotificationCe
         } catch (Exception e) {
             FileLog.e("performLogout: RestAuthStore clear failed", e);
         }
-        // T71: the E2EE protocol state (identity, ratchet sessions, media
-        // keys) is per-login and NEVER escrowed — destroy it with the session.
+        // T77 ROOT FIX: the E2EE protocol state (identity, ratchet sessions,
+        // trust pins, render caches, repair registry) is per-ACCOUNT and
+        // survives logout/login. The T71 behavior (wipeLocal on logout) was
+        // the root cause of the "chats corrupted after re-login" epidemic:
+        // the wiped identity broke every peer session AND every own row lost
+        // its sent-inner render cache, so a re-fetched history rendered as
+        // permanent 🔒 rows. Signal keeps on-device keys across re-logins
+        // too; an explicit destructive reset remains available via
+        // XoE2EE.wipeLocal() for future security flows only.
         try {
-            org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(currentAccount).wipeLocal();
+            org.telegram.tgnet.rest.e2ee.XoE2EERepair.getInstance(currentAccount).schedule();
         } catch (Exception e) {
-            FileLog.e("performLogout: e2ee wipe failed", e);
+            FileLog.e("performLogout: e2ee repair schedule failed", e);
         }
         if (type == 1) {
             unregistedPush();

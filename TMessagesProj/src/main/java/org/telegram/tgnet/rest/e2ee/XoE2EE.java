@@ -169,6 +169,13 @@ public final class XoE2EE {
             } catch (Throwable t) {
                 FileLog.e("XoE2EE: pending-keys probe resume failed", t);
             }
+            // T77: rows locked by a previous process (dead session mid-heal,
+            // first-message race) get their bounded repair sweep on startup.
+            try {
+                XoE2EERepair.getInstance(account).schedule();
+            } catch (Throwable t) {
+                FileLog.e("XoE2EE: repair schedule failed", t);
+            }
         });
     }
 
@@ -354,6 +361,7 @@ public final class XoE2EE {
                 store().clearFlag(peerUserId);
                 bundlesFetchedThisProcess.remove(peerUserId);
                 XoE2eeLog.event(account, "trust.flagHealed", peerUserId, "served==pinned, session dropped");
+                XoE2EERepair.getInstance(account).schedule();
             } else {
                 XoE2eeLog.event(account, "trust.flagStays", peerUserId,
                         pinned == null ? "no pin" : "served!=pinned (genuine substitution)");
@@ -400,6 +408,17 @@ public final class XoE2EE {
      */
     public String decryptFromPeer(long peerUserId, String envelope) {
         try {
+            // T77: idempotency is a property of the DECRYPT, not of a call
+            // path. The content-keyed memo makes ANY re-open of the same
+            // ciphertext (mapper re-parse, forward, repair sweep, history
+            // reload) return the identical plaintext instead of dying on
+            // libsignal replay protection — the last line of defense that
+            // T75's row-id memo left open.
+            String memo = store().getCipherMemo(envelope);
+            if (memo != null) {
+                XoE2eeLog.event(account, "decrypt.memoHit", peerUserId, null);
+                return memo;
+            }
             XoE2EEEnvelope.Unwrapped unwrapped = XoE2EEEnvelope.unwrap(envelope);
             if (unwrapped == null) {
                 XoE2eeLog.event(account, "decrypt.fail", peerUserId, "unwrappable");
@@ -415,8 +434,10 @@ public final class XoE2EE {
                 XoE2eeLog.event(account, "decrypt.fail", peerUserId, "wireType=" + unwrapped.wireType);
                 return null;
             }
+            String inner = new String(plain, "UTF-8");
+            store().noteCipherMemo(envelope, inner);
             XoE2eeLog.event(account, "decrypt.ok", peerUserId, "wire=" + unwrapped.wireType);
-            return new String(plain, "UTF-8");
+            return inner;
         } catch (org.whispersystems.libsignal.DuplicateMessageException e) {
             // protocol-level replay protection did its job; the duplicate is dropped
             XoE2eeLog.event(account, "decrypt.reject", peerUserId, "DuplicateMessage (replay)");
@@ -495,6 +516,10 @@ public final class XoE2EE {
         builder.process(pb);
         bundlesFetchedThisProcess.add(peerUserId);
         XoE2eeLog.event(account, "session.built", peerUserId, "x3dh ok otk=" + (preKeyId == null ? "none" : String.valueOf(preKeyId)));
+        // T77: a fresh session can re-open rows that were locked under the
+        // previous (missing/flagged/healed) protocol state — schedule the
+        // bounded repair sweep.
+        XoE2EERepair.getInstance(account).schedule();
     }
 
     /**

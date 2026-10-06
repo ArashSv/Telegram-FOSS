@@ -433,6 +433,15 @@ public final class TlJsonMapper {
                             .decryptFromPeer(senderId, message.message);
                     if (decrypted != null) {
                         e2eeStore.noteDecryptedInner(rowId, decrypted);
+                        // T77: a prior failure for this row is now healed
+                        e2eeStore.dropLockedEnvelope(rowId);
+                    } else {
+                        // T77 ROOT FIX: NEVER let a transient decrypt failure
+                        // destroy the ciphertext. The row still renders "🔒"
+                        // below (display-only), but the envelope is preserved
+                        // and the repair sweep re-opens it when the protocol
+                        // state improves — the chat no longer corrupts.
+                        e2eeStore.noteLockedEnvelope(rowId, dialogId, message.message);
                     }
                     inner = decrypted;
                 }

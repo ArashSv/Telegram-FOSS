@@ -143,9 +143,12 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
     // Keystore-encrypted blob like every other secret.
     // T74: sent-inner cache widened from 250 — an own-row cache miss renders
     // as the neutral 🔒 placeholder, which is exactly the "only lock emoji"
-    // symptom class the user reported. 2000 entries (each small, Keystore-
-    // encrypted blob) keeps a realistic day's 1:1 traffic renderable.
-    private static final int SENT_INNER_CACHE_MAX = 2000;
+    // symptom class the user reported. T77: 8000 — own rows can NEVER be
+    // re-decrypted from ciphertext (the sender cannot open their own
+    // ratchet), so the render cache is the only lifeline; with logout no
+    // longer wiping the store (T77), a wider cache makes an evicted own row
+    // practically unreachable.
+    private static final int SENT_INNER_CACHE_MAX = 8000;
     private final Map<Long, String> sentInners = new java.util.LinkedHashMap<>();
 
     // T75: server message id -> PLAINTEXT inner JSON of a RECEIVED 1:1 message.
@@ -156,8 +159,28 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
     // loser's "🔒" row replaced the winner's good row (the reported
     // "first message not decrypted" defect). Decryption of a given
     // ciphertext must be IDEMPOTENT; the memo makes it so.
-    private static final int DECRYPTED_INNER_CACHE_MAX = 2000;
+    private static final int DECRYPTED_INNER_CACHE_MAX = 8000;
     private final Map<Long, String> decryptedInners = new java.util.LinkedHashMap<>();
+
+    // T77: envelope-content-keyed decrypt memo — sha256(full envelope) ->
+    // PLAINTEXT inner JSON. Unlike decryptedInners this does not need the
+    // server row id, so EVERY call path becomes idempotent (mapper, forward,
+    // repair sweep, history re-fetch): a re-open of the same ciphertext can
+    // never reach libsignal's replay protection again. Written inside
+    // decryptFromPeer on success; consulted BEFORE any libsignal call.
+    private static final int CIPHER_MEMO_MAX = 4000;
+    private final Map<String, String> cipherMemo = new java.util.LinkedHashMap<>();
+
+    // T77: rows that failed to decrypt ONCE are registered here with the
+    // ORIGINAL ciphertext preserved. The old behavior overwrote the row with
+    // a literal "🔒" and DISCARDED the envelope — a transient failure
+    // (session not yet built, flagged peer mid-heal, cache miss) permanently
+    // corrupted the chat because nothing recoverable remained on disk.
+    // The repair sweep re-opens these rows when protocol state improves and
+    // updates the stored row through the normal edit pipeline.
+    private static final int LOCKED_ENVELOPES_MAX = 800;
+    private final Map<Long, String> lockedEnvelopes = new java.util.LinkedHashMap<>(); // messageId -> envelope
+    private final Map<Long, Long> lockedDialogIds = new java.util.LinkedHashMap<>();  // messageId -> dialogId
 
     // T75: body file id -> {"tf": thumbBackendId, "tk": b64 thumb key} for
     // encrypted album items whose thumbs were finalized by the uploadMedia
@@ -836,6 +859,98 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
         }
     }
 
+    // ---------------------------------------------------- T77 cipher-content memo
+
+    /** Memoizes a successful decrypt under the envelope's content hash. */
+    public void noteCipherMemo(String envelope, String innerJson) {
+        if (envelope == null || envelope.isEmpty() || innerJson == null || innerJson.isEmpty()) {
+            return;
+        }
+        String key = XoE2EEEnvelope.sha256Hex(envelope);
+        if (key == null) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            cipherMemo.remove(key); // re-insert moves to newest
+            cipherMemo.put(key, innerJson);
+            while (cipherMemo.size() > CIPHER_MEMO_MAX) {
+                cipherMemo.remove(cipherMemo.keySet().iterator().next());
+            }
+            markDirtyLocked();
+        }
+    }
+
+    /** Memo hit for this exact envelope (idempotent re-parse), or null. */
+    public String getCipherMemo(String envelope) {
+        if (envelope == null || envelope.isEmpty()) {
+            return null;
+        }
+        String key = XoE2EEEnvelope.sha256Hex(envelope);
+        if (key == null) {
+            return null;
+        }
+        synchronized (lock) {
+            loadLocked();
+            return cipherMemo.get(key);
+        }
+    }
+
+    // ---------------------------------------------------- T77 locked-envelope registry
+
+    /** Registers a row whose decrypt failed WITH its original ciphertext. */
+    public void noteLockedEnvelope(long messageId, long dialogId, String envelope) {
+        if (messageId <= 0 || dialogId == 0 || envelope == null || envelope.isEmpty()) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            lockedEnvelopes.remove(messageId);
+            lockedEnvelopes.put(messageId, envelope);
+            lockedDialogIds.remove(messageId);
+            lockedDialogIds.put(messageId, dialogId);
+            while (lockedEnvelopes.size() > LOCKED_ENVELOPES_MAX) {
+                Long oldest = lockedEnvelopes.keySet().iterator().next();
+                lockedEnvelopes.remove(oldest);
+                lockedDialogIds.remove(oldest);
+            }
+            markDirtyLocked();
+        }
+    }
+
+    /** The row decrypted (repair or retry) — no longer locked. */
+    public void dropLockedEnvelope(long messageId) {
+        if (messageId <= 0) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            if (lockedEnvelopes.remove(messageId) != null) {
+                lockedDialogIds.remove(messageId);
+                markDirtyLocked();
+            }
+        }
+    }
+
+    /** Snapshot {messageId -> dialogId} of rows still awaiting repair (bounded read). */
+    public java.util.HashMap<Long, Long> lockedEnvelopeDialogs() {
+        synchronized (lock) {
+            loadLocked();
+            return new java.util.HashMap<>(lockedDialogIds);
+        }
+    }
+
+    /** Envelope ciphertext for a locked row, or null. */
+    public String lockedEnvelopeFor(long messageId) {
+        if (messageId <= 0) {
+            return null;
+        }
+        synchronized (lock) {
+            loadLocked();
+            return lockedEnvelopes.get(messageId);
+        }
+    }
+
     // ---------------------------------------------------- album thumb keys (T75)
 
     /**
@@ -1192,6 +1307,9 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
         mediaKeys.clear();
         sentInners.clear();
         decryptedInners.clear();
+        cipherMemo.clear();
+        lockedEnvelopes.clear();
+        lockedDialogIds.clear();
         albumThumbKeys.clear();
         archivedPreKeys.clear();
         uploadIntents.clear();
@@ -1283,6 +1401,21 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
                 di.put(String.valueOf(e.getKey()), e.getValue());
             }
             json.put("decryptedinners", di);
+
+            JSONObject cm = new JSONObject();
+            for (Map.Entry<String, String> e : cipherMemo.entrySet()) {
+                cm.put(e.getKey(), e.getValue());
+            }
+            json.put("ciphermemo", cm);
+
+            JSONObject le = new JSONObject();
+            for (Map.Entry<Long, String> e : lockedEnvelopes.entrySet()) {
+                JSONObject row = new JSONObject();
+                row.put("d", lockedDialogIds.containsKey(e.getKey()) ? lockedDialogIds.get(e.getKey()) : 0L);
+                row.put("e", e.getValue());
+                le.put(String.valueOf(e.getKey()), row);
+            }
+            json.put("lockedenvelopes", le);
 
             JSONObject at = new JSONObject();
             for (Map.Entry<Long, String> e : albumThumbKeys.entrySet()) {
@@ -1412,6 +1545,27 @@ public final class XoE2EEStore implements IdentityKeyStore, SessionStore, PreKey
                 while (it.hasNext()) {
                     String k = it.next();
                     decryptedInners.put(Long.parseLong(k), di.optString(k));
+                }
+            }
+            JSONObject cmj = json.optJSONObject("ciphermemo");
+            if (cmj != null) {
+                java.util.Iterator<String> it = cmj.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    cipherMemo.put(k, cmj.optString(k));
+                }
+            }
+            JSONObject lej = json.optJSONObject("lockedenvelopes");
+            if (lej != null) {
+                java.util.Iterator<String> it = lej.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    JSONObject row = lej.optJSONObject(k);
+                    if (row != null) {
+                        long mid = Long.parseLong(k);
+                        lockedEnvelopes.put(mid, row.optString("e"));
+                        lockedDialogIds.put(mid, row.optLong("d"));
+                    }
                 }
             }
             JSONObject at = json.optJSONObject("albumthumbs");
