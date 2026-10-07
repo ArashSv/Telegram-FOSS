@@ -1,0 +1,66 @@
+name: Ops WebDAV Layout Diagnostic (T80)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/ops-dav-diag.yml'
+
+concurrency:
+  group: ops-dav-diag
+  cancel-in-progress: true
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WEB: ${{ secrets.WEBDAV_URL }}
+      AUTH: ${{ secrets.WEBDAV_AUTH }}
+      SITE: ${{ secrets.SITE_URL }}
+      DIAG: ${{ secrets.DIAG_TOKEN }}
+    steps:
+      - name: Map WebDAV roots to HTTP URLs empirically
+        run: |
+          set +e
+          echo "SITE=$SITE"
+          echo "WEB host: $(echo "$WEB" | sed -E 's|https://[^/]+|https://***|')"
+          PROBE='<?php header("Content-Type: text/plain"); echo "T80-PROBE-OK-v1";'
+          echo "$PROBE" > /tmp/probe.php
+          run_id="${GITHUB_RUN_ID}"
+          # candidate WebDAV roots that could be the served docroot of $SITE
+          candidates=(
+            "/public/xo_p${run_id}_a.php"
+            "/tele/xo_p${run_id}_b.php"
+            "/xo_p${run_id}_c.php"
+            "/public_html/tele/xo_p${run_id}_d.php"
+            "/public/tele/xo_p${run_id}_e.php"
+            "/tele/public/xo_p${run_id}_f.php"
+          )
+          for p in "${candidates[@]}"; do
+            code=$(curl -4 -sS -k --http1.1 -m 60 -u "$AUTH" -X PUT -T /tmp/probe.php -w "%{http_code}" -o /dev/null "$WEB$p")
+            echo "PUT  $p -> $code"
+          done
+          sleep 2
+          for p in "${candidates[@]}"; do
+            f=$(basename "$p")
+            code=$(curl -4 -sS --http1.1 -m 30 -o /tmp/pb.txt -w "%{http_code}" "$SITE/$f")
+            echo "GET  $SITE/$f -> $code  body: $(head -c 40 /tmp/pb.txt)"
+          done
+          # locate the LIVE config: its md5 is known from T77 (mysql driver build)
+          for p in "/public/config/config.php" "/tele/config/config.php" "/config/config.php" "/public_html/tele/config/config.php" "/public/tele/config/config.php"; do
+            code=$(curl -4 -sS -k --http1.1 -m 60 -u "$AUTH" -o /tmp/cfg.txt -w "%{http_code}" "$WEB$p")
+            md5=$(md5sum /tmp/cfg.txt 2>/dev/null | awk '{print $1}')
+            drv=$(grep -o "'driver'[^,]*" /tmp/cfg.txt 2>/dev/null | head -1)
+            echo "CFG  $p -> $code md5=$md5 $drv"
+          done
+          # and a PROPFIND of the WebDAV root (top-level names)
+          curl -4 -sS -k --http1.1 -m 60 -u "$AUTH" -X PROPFIND -H "Depth: 1" -o /tmp/pf.xml "$WEB/"
+          echo "=== WebDAV root entries:"
+          grep -oE "<D:href>[^<]+" /tmp/pf.xml | sed 's/<D:href>//' | head -30
+          grep -oE "href>[^<]+" /tmp/pf.xml | sed 's/href>//' | head -30
+          # cleanup probes
+          for p in "${candidates[@]}"; do
+            curl -4 -sS -k -m 30 -u "$AUTH" -X DELETE "$WEB$p" -o /dev/null
+          done
+          echo "cleanup done"
