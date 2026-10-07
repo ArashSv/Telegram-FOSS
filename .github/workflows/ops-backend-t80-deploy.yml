@@ -44,12 +44,14 @@ jobs:
           web = os.environ["WEB"].rstrip("/")
           auth = os.environ["AUTH"]
 
-          # PROVEN LIVE MAPPING (T77 diag-probe evidence):
-          #   $WEB/public/<path>  <->  $SITE/<path>   (the served docroot)
-          # backend-v2.12/app/...    -> $WEB/public/app/...
-          # backend-v2.12/api/v1/... -> $WEB/public/api/v1/...
-          MAPPING = {"backend-v2.12/app/": "/public/app/",
-                     "backend-v2.12/api/v1/": "/public/api/v1/"}
+          # PROVEN LIVE MAPPING (empirical probe run #1 + canonical docstring):
+          #   $WEB/public_html/tele/<path>  <->  $SITE/<path>      (the served docroot)
+          #   $WEB/app/<path>               = app classes (walked up by _bootstrap.php)
+          #   $WEB/config/config.php        = the live config (md5 b29d5144..., outside docroot)
+          # backend-v2.12/app/...    -> $WEB/app/...
+          # backend-v2.12/api/v1/... -> $WEB/public_html/tele/api/v1/...
+          MAPPING = {"backend-v2.12/app/": "/app/",
+                     "backend-v2.12/api/v1/": "/public_html/tele/api/v1/"}
 
           def dav(method, path, upload=None, timeout=120):
               cmd = ["curl", "-4", "-sS", "-k", "--http1.1", "-m", str(timeout),
@@ -140,10 +142,10 @@ jobs:
           PY
           put=000
           for i in 1 2 3; do
-            put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT -T /tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/public/$MIG")
+            put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT -T /tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/public_html/tele/$MIG")
             echo "migration PUT try$i -> $put"
             case "$put" in 200|201|204) break;; esac
-            curl -4 -sS -k -u "$AUTH" -X DELETE "$WEB/public/$MIG" -o /dev/null
+            curl -4 -sS -k -u "$AUTH" -X DELETE "$WEB/public_html/tele/$MIG" -o /dev/null
             sleep 4
           done
           case "$put" in 200|201|204) ;; *) echo "migration upload failed"; exit 1;; esac
@@ -155,8 +157,7 @@ jobs:
             sleep 5
           done
           # the script must be GONE regardless of the outcome (defense in depth)
-          curl -4 -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public/$MIG" -o /dev/null -w "cleanup DELETE(public) -> %{http_code}\n" || true
-          curl -4 -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/$MIG" -o /dev/null -w "cleanup DELETE(root) -> %{http_code}\n" || true
+          curl -4 -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public_html/tele/$MIG" -o /dev/null -w "cleanup DELETE(docroot) -> %{http_code}\n" || true
           [ "$ok" = "1" ] || { echo "migration did not run"; exit 1; }
           cat /tmp/mig.json; echo
           python3 - <<'PY'
@@ -167,6 +168,27 @@ jobs:
           print("already present:", r.get("skipped"))
           print("counts:", r.get("counts"))
           PY
+
+      - name: Clean up unserved copies from earlier T80 runs (junk, inert)
+        run: |
+          set +e
+          # runs 3-5 wrote endpoint/app copies into unserved trees at the home
+          # root; the canonical layout keeps public/* under public_html/tele.
+          # Delete ONLY the exact paths this branch created.
+          for p in \
+            /api/v1/messages/forward.php /api/v1/chats/set-mode.php /api/v1/chats/pin.php \
+            /api/v1/blocked/add.php /api/v1/blocked/list.php /api/v1/blocked/remove.php \
+            /api/v1/privacy/get.php /api/v1/privacy/set.php \
+            /public/app/Controllers/ChatsController.php /public/app/Controllers/MessagesController.php \
+            /public/app/Controllers/PrivacyController.php /public/app/Controllers/SyncController.php \
+            /public/app/Core/CloudCrypto.php /public/app/Core/UpdateQueue.php \
+            /public/app/Mappers/ChatMapper.php /public/app/Mappers/MessageMapper.php \
+            /public/api/v1/blocked/add.php /public/api/v1/blocked/list.php /public/api/v1/blocked/remove.php \
+            /public/api/v1/chats/pin.php /public/api/v1/chats/set-mode.php \
+            /public/api/v1/messages/forward.php /public/api/v1/privacy/get.php /public/api/v1/privacy/set.php ; do
+            code=$(curl -4 -sS -k -m 30 -u "$AUTH" -X DELETE "$WEB$p" -o /dev/null -w "%{http_code}")
+            echo "junk DELETE $p -> $code"
+          done
 
       - name: Post-deploy health probe + new-endpoint reachability
         run: |
