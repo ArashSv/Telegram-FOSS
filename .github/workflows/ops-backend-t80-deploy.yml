@@ -34,22 +34,70 @@ jobs:
           done
           echo "preflight failed 3x — host unreachable from the runner"; exit 1
 
-      - name: Deploy changed backend files (PUT + md5 read-back)
+      - name: Deploy changed backend files (MKCOL parents + PUT + md5 read-back)
         run: |
           set -e
           python3 - <<'PY'
-          import hashlib, json, subprocess, sys, time
+          import hashlib, json, os, subprocess, sys, time
           from pathlib import Path
 
-          WEB = Path("web.txt")
-          web = WEB.read_text().strip().rstrip("/") if WEB.exists() else None
-          import os
-          web = (web or os.environ["WEB"]).rstrip("/")
+          web = os.environ["WEB"].rstrip("/")
           auth = os.environ["AUTH"]
 
           # backend-v2.12/app/...   -> $WEB/app/...
           # backend-v2.12/api/v1/...-> $WEB/api/v1/...   (docroot = public/)
           MAPPING = {"backend-v2.12/app/": "/app/", "backend-v2.12/api/v1/": "/api/v1/"}
+
+          def dav(method, path, upload=None, timeout=120):
+              cmd = ["curl", "-4", "-sS", "-k", "--http1.1", "-m", str(timeout),
+                     "-u", auth, "-X", method]
+              if upload:
+                  cmd += ["-T", upload]
+              cmd += [web + path, "-w", "\n%{http_code}", "-o", "/dev/null"]
+              try:
+                  p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 30)
+                  body, _, code = p.stdout.rpartition("\n")
+                  return code.strip(), body
+              except Exception:
+                  return "000", ""
+
+          def ensure_parents(dst):
+              parts = dst.strip("/").split("/")
+              for i in range(1, len(parts)):
+                  d = "/" + "/".join(parts[:i])
+                  code, _ = dav("MKCOL", d)
+                  # 201 created | 405/301 exists | 200 ok — all fine
+                  if code not in ("201", "200", "405", "301"):
+                      print(f"MKCOL {d} -> {code} (continuing)")
+
+          def deploy(src, dst):
+              data = Path(src).read_bytes()
+              sent_md5 = hashlib.md5(data).hexdigest()
+              detail = ""
+              for attempt in range(4):
+                  code, _ = dav("PUT", dst, upload=src)
+                  if not code.startswith("2"):
+                      detail = f"PUT {code}"
+                      # T66/T75 quirk: stale DAV lock -> DELETE the target then retry
+                      dav("DELETE", dst)
+                      time.sleep(3 + 2 * attempt)
+                      continue
+                  gcode, _ = dav("GET", dst)
+                  if not gcode.startswith("2"):
+                      detail = f"GET {gcode}"
+                      time.sleep(3)
+                      continue
+                  rbody = subprocess.run(
+                      ["curl", "-4", "-sS", "-k", "--http1.1", "-m", "90", "-u", auth,
+                       web + dst], capture_output=True).stdout
+                  if hashlib.md5(rbody).hexdigest() != sent_md5:
+                      detail = "md5 mismatch"
+                      time.sleep(3)
+                      continue
+                  print(f"OK  {dst}  {len(data)}B  md5={sent_md5}")
+                  return True
+              print(f"FAIL {dst} -> {detail}")
+              return False
 
           files = sorted(Path("backend-v2.12").rglob("*.php"))
           files = [f for f in files if "maint/" not in f.as_posix()]
@@ -64,39 +112,9 @@ jobs:
               if dst is None:
                   failures.append((src, "no mapping"))
                   continue
-              data = Path(src).read_bytes()
-              sent_md5 = hashlib.md5(data).hexdigest()
-              ok = False
-              detail = ""
-              for attempt in range(3):
-                  put_code = subprocess.run(
-                      ["curl", "-4", "-sS", "-k", "--http1.1", "-m", "90", "-u", auth,
-                       "-X", "PUT", "--data-binary", f"@{src}", "-w", "%{http_code}",
-                       "-o", "/tmp/put.txt", web + dst],
-                      capture_output=True, text=True).stdout.strip()
-                  if put_code not in ("200", "201", "204"):
-                      detail = f"PUT {put_code}"
-                      time.sleep(5)
-                      continue
-                  get_code = subprocess.run(
-                      ["curl", "-4", "-sS", "-k", "--http1.1", "-m", "90", "-u", auth,
-                       "-w", "%{http_code}", "-o", "/tmp/readback.php", web + dst],
-                      capture_output=True, text=True).stdout.strip()
-                  if get_code != "200":
-                      detail = f"GET {get_code}"
-                      time.sleep(5)
-                      continue
-                  read_md5 = hashlib.md5(Path("/tmp/readback.php").read_bytes()).hexdigest()
-                  if read_md5 != sent_md5:
-                      detail = f"md5 {sent_md5}!={read_md5}"
-                      time.sleep(5)
-                      continue
-                  ok = True
-                  print(f"OK  {dst}  {len(data)}B  md5={sent_md5}")
-                  break
-              if not ok:
-                  print(f"FAIL {dst} -> {detail}")
-                  failures.append((dst, detail))
+              ensure_parents(dst)
+              if not deploy(src, dst):
+                  failures.append((dst, "deploy failed"))
           if failures:
               print("DEPLOY FAILURES:", json.dumps(failures))
               sys.exit(1)
@@ -107,8 +125,14 @@ jobs:
         run: |
           set -e
           sed "s/__DIAG_TOKEN__/$DIAG/" backend-v2.12/maint/xo_t80_migrate.php > /tmp/xo_t80_migrate.php
-          put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT --data-binary @/tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/xo_t80_migrate.php")
-          echo "migration PUT -> $put"
+          put=000
+          for i in 1 2 3; do
+            put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT -T /tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/xo_t80_migrate.php")
+            echo "migration PUT try$i -> $put"
+            case "$put" in 200|201|204) break;; esac
+            curl -4 -sS -k -u "$AUTH" -X DELETE "$WEB/xo_t80_migrate.php" -o /dev/null
+            sleep 4
+          done
           case "$put" in 200|201|204) ;; *) echo "migration upload failed"; exit 1;; esac
           for i in 1 2 3; do
             code=$(curl -4 -sS --http1.1 -m 60 -o /tmp/mig.json -w "%{http_code}" "$SITE/xo_t80_migrate.php?t=$DIAG")

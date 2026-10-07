@@ -2467,7 +2467,7 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                                 if (getParentActivity() == null) {
                                     return;
                                 }
-                                BulletinFactory.of(ProfileActivity.this, resourcesProvider).createSimpleBulletin(
+                                BulletinFactory.of(ProfileActivity.this).createSimpleBulletin(
                                         R.raw.contact_check,
                                         LocaleController.getString(failure == null
                                                 ? R.string.XoSecretChatOn
