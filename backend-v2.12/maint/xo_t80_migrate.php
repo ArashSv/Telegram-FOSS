@@ -72,7 +72,8 @@ $skipped = [];
 $errors = [];
 
 try {
-    $dsn = sprintf('mysql:host=%s;dbname=%s;charset=utf8mb4', $db['host'], $db['database']);
+    $dsn = sprintf('mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+        $db['host'], (int) ($db['port'] ?? 3306), $db['name']);
     $pdo = new PDO($dsn, $db['user'], $db['password'], [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_TIMEOUT => 15,
