@@ -154,6 +154,105 @@ public final class XoE2EEReencrypt {
         }
     }
 
+    /** T80: result of a plain re-upload (a cloud/group copy of an E2EE file). */
+    public static final class PlainResult {
+        public long backendFileId;
+        public long plaintextLen;
+    }
+
+    /**
+     * T80 — the CLOUD-target counterpart of {@link #reencrypt}: converts a
+     * server-resident E2EE file into a fresh PLAINTEXT file row so a cloud
+     * chat (or group) can reference it. This is what makes cross-mode
+     * forwarding of media possible: the sender's device holds the media keys
+     * (registered at receive time), downloads the ciphertext windows through
+     * the authorized route, decrypts them chunk-wise (the exact
+     * FileLoadOperation chunk math: cipherLen = plainChunk + 16 B tag) and
+     * re-uploads the plaintext with REAL metadata via the ordinary finalize.
+     *
+     * @throws Exception when this device has no media keys for the source
+     *                   (never seen the file) or any transfer fails — the
+     *                   caller must fail the forward, never silently degrade
+     */
+    public static PlainResult reuploadPlain(int account, long sourceBackendFileId,
+                                            String mime, String name,
+                                            Integer width, Integer height, Integer duration,
+                                            boolean animated) throws Exception {
+        if (sourceBackendFileId <= 0) {
+            throw new IllegalArgumentException("source file id required");
+        }
+        XoE2EE.MediaMeta meta = XoE2EE.getInstance(account).mediaKeysFor(sourceBackendFileId);
+        if (meta == null || meta.fileKey == null) {
+            throw new Exception("no e2ee media keys on this device for file " + sourceBackendFileId);
+        }
+        long plainLen = meta.plaintextLen;
+        if (plainLen <= 0) {
+            throw new Exception("e2ee source lacks plaintext length (file " + sourceBackendFileId + ")");
+        }
+        int srcChunk = meta.chunkSize > 0 ? meta.chunkSize : 131072;
+        long chunks = (plainLen + srcChunk - 1) / srcChunk;
+
+        RestFileBridge bridge = RestFileBridge.getInstance(account);
+        XoFileTransport transport = XoFileTransport.getInstance(account);
+        long treeUploadId = Utilities.random.nextLong();
+        int parts = (int) Math.max(1, (plainLen + CHUNK - 1) / CHUNK);
+        long backendId = bridge.ensureBackendFile(treeUploadId, parts);
+        XoE2eeLog.event(account, "replain.start", 0,
+                "src=" + sourceBackendFileId + " dst=" + backendId + " parts=" + parts);
+        try {
+            // stream the plaintext out of the source's ciphertext chunks and
+            // re-upload it on the fresh 96 KB plain grid
+            long uploaded = 0;
+            int part = 0;
+            java.io.ByteArrayOutputStream pending = new java.io.ByteArrayOutputStream();
+            for (long i = 0; i < chunks; i++) {
+                long cipherStart = i * (srcChunk + 16L);
+                int cipherLen = (int) (Math.min(plainLen - i * srcChunk, srcChunk) + 16);
+                byte[] ct = transport.downloadRange(sourceBackendFileId, cipherStart, cipherStart + cipherLen - 1);
+                if (ct == null || ct.length != cipherLen) {
+                    throw new Exception("short ciphertext read at chunk " + i);
+                }
+                byte[] plain = XoE2EEMedia.decryptChunk(meta.fileKey, (int) i, ct);
+                pending.write(plain, 0, plain.length);
+                uploaded += plain.length;
+                while (pending.size() >= CHUNK) {
+                    byte[] blob = pending.toByteArray();
+                    uploadAttestedPart(account, backendId, part, java.util.Arrays.copyOfRange(blob, 0, CHUNK));
+                    bridge.noteUploadBytes(treeUploadId, CHUNK);
+                    part++;
+                    pending.reset();
+                    pending.write(blob, CHUNK, blob.length - CHUNK);
+                }
+            }
+            if (uploaded != plainLen) {
+                throw new Exception("plain length mismatch: " + uploaded + " of " + plainLen);
+            }
+            if (pending.size() > 0) {
+                byte[] tail = pending.toByteArray();
+                uploadAttestedPart(account, backendId, part, tail);
+                bridge.noteUploadBytes(treeUploadId, tail.length);
+                part++;
+            }
+            JSONObject finalizeEnvelope = bridge.finalizeUpload(treeUploadId, Math.max(1, part),
+                    mime, name, width, height, duration, plainLen, animated);
+            JSONObject fileJson = finalizeEnvelope == null ? null : finalizeEnvelope.optJSONObject("file");
+            if (fileJson == null || fileJson.optLong("file_id", 0) <= 0) {
+                throw new Exception("plain finalize failed for the converted copy");
+            }
+            RestFileBridge.noteFileMetaFromJson(fileJson);
+            PlainResult result = new PlainResult();
+            result.backendFileId = fileJson.optLong("file_id", 0);
+            result.plaintextLen = plainLen;
+            XoE2eeLog.event(account, "replain.ok", 0,
+                    "src=" + sourceBackendFileId + " dst=" + result.backendFileId);
+            return result;
+        } catch (Exception e) {
+            XoE2eeLog.event(account, "replain.fail", 0,
+                    "src=" + sourceBackendFileId + " " + e.getClass().getSimpleName());
+            throw e;
+        }
+    }
+
     /**
      * ONE attested part upload — byte-for-byte the wire contract of the live
      * funnel ({@code uploadPart}): the sub-32 KB WAF pad, the &len= real

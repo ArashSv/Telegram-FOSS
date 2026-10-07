@@ -103,7 +103,15 @@ public final class XoPendingKeys {
             return false;
         }
         for (int a = 0; a < rows.size(); a++) {
-            watch(rows.get(a).dialog_id);
+            TLRPC.Message row = rows.get(a);
+            // T80: deferral is a SECRET-chat mechanic — cloud sends never
+            // wait for keys (they cannot legitimately hit E2EE_NO_KEYS; a
+            // stale state must surface its real error, not hang on a clock
+            // icon forever).
+            if (!org.telegram.tgnet.rest.RestChatIndex.getInstance(account).isSecretPeer(row.dialog_id)) {
+                return false;
+            }
+            watch(row.dialog_id);
         }
         XoE2eeLog.event(account, "pending.defer", rows.get(0).dialog_id,
                 "rows=" + rows.size() + " code=" + errorText);

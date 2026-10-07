@@ -57,6 +57,12 @@ public final class RestChatIndex {
     private final SparseArray<TLRPC.TL_chat> groupChats = new SparseArray<>();
     /** backend chat_id -> chat type ("private" | "group" | "channel"). */
     private final HashMap<Long, String> chatTypes = new HashMap<>();
+    /** T80: backend chat_id -> encryption mode ("cloud" | "secret"). The
+     * server (chats.mode) is the authority; this map is the client mirror,
+     * fed by chats/list, chat_new and chat_mode updates. A chat absent from
+     * the map is CLOUD — the always-works default (matches the server
+     * column default, and keeps every decision path total). */
+    private final HashMap<Long, String> chatModes = new HashMap<>();
     /** message id -> backend chat_id, for revoke deletes (deleteMessages carries ids only). */
     private final SparseArray<Long> chatByMessageId = new SparseArray<>();
     /** T71: bounded cache of recently SEEN messages — the E2EE forward
@@ -76,6 +82,7 @@ public final class RestChatIndex {
             userByPrivateChat.clear();
             groupChats.clear();
             chatTypes.clear();
+            chatModes.clear();
             chatByMessageId.clear();
             recentMessages.clear();
         }
@@ -83,10 +90,16 @@ public final class RestChatIndex {
 
     /** Registers a private chat mapping and returns the backend chat_id. */
     public long putPrivate(long userId, long chatId) {
+        return putPrivate(userId, chatId, "cloud");
+    }
+
+    /** T80: private chat registration carrying the server's mode. */
+    public long putPrivate(long userId, long chatId, String mode) {
         synchronized (this) {
             privateChatByUser.put(userId, chatId);
             userByPrivateChat.put((int) chatId, userId);
             chatTypes.put(chatId, "private");
+            chatModes.put(chatId, secretOrCloud(mode));
             return chatId;
         }
     }
@@ -99,6 +112,7 @@ public final class RestChatIndex {
         synchronized (this) {
             groupChats.put((int) chat.id, chat);
             chatTypes.put(chat.id, "group");
+            chatModes.remove(chat.id); // groups have no secret mode (T80)
         }
     }
 
@@ -131,6 +145,44 @@ public final class RestChatIndex {
             String type = chatTypes.get(chatId);
             return "group".equals(type) || "channel".equals(type);
         }
+    }
+
+    // ------------------------------------------------------------- modes (T80)
+
+    /** @return "cloud" | "secret" — unknown chats are cloud (server default). */
+    public String modeForChat(long chatId) {
+        synchronized (this) {
+            String mode = chatModes.get(chatId);
+            return mode == null ? "cloud" : mode;
+        }
+    }
+
+    /** T80: true only for private chats the server marked secret. */
+    public boolean isSecretChat(long chatId) {
+        return "secret".equals(modeForChat(chatId));
+    }
+
+    /** T80: the SEND-side decision — a 1:1 peer whose PAIR chat is secret. */
+    public boolean isSecretPeer(long userId) {
+        if (userId <= 0) {
+            return false;
+        }
+        long chatId = privateChatIdFor(userId);
+        return chatId != 0 && isSecretChat(chatId);
+    }
+
+    /** T80: applies a chat_mode update (server-authoritative flip). */
+    public void setChatMode(long chatId, String mode) {
+        synchronized (this) {
+            if (!chatTypes.containsKey(chatId)) {
+                return; // unknown chat: ignore until chats/list registers it
+            }
+            chatModes.put(chatId, secretOrCloud(mode));
+        }
+    }
+
+    private static String secretOrCloud(String mode) {
+        return "secret".equals(mode) ? "secret" : "cloud";
     }
 
     /** @return true when ANY mapping exists for the backend chat id. */
@@ -212,12 +264,17 @@ public final class RestChatIndex {
                 long chatId = chatJson.getLong("id");
                 String type = chatJson.optString("type", "private");
                 org.json.JSONObject peerJson = chatJson.optJSONObject("peer");
+                // T80: the chat's encryption mode rides every chat payload.
+                String mode = chatJson.optString("mode", "cloud");
                 synchronized (this) {
                     chatTypes.put(chatId, type);
+                    if ("private".equals(type)) {
+                        chatModes.put(chatId, secretOrCloud(mode));
+                    }
                 }
                 if ("private".equals(type) && peerJson != null) {
                     TLRPC.TL_user peer = TlJsonMapper.parseUser(peerJson, false);
-                    putPrivate(peer.id, chatId);
+                    putPrivate(peer.id, chatId, mode);
                     result.users.add(peer);
                     result.userByChat.put(chatId, peer);
                 } else {

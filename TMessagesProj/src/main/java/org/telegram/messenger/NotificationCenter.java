@@ -48,6 +48,8 @@ public class NotificationCenter {
     public static final int messageSendError = totalEvents++;
     /** T74: args = {peerUserId(Long), reasonCode(String)} — a 1:1 E2EE send was blocked; ChatActivity surfaces a bulletin (never silent). */
     public static final int xoE2eeSendBlocked = totalEvents++;
+    /** T80: args = {chatId(Long), mode(String "cloud"|"secret"), byUserId(Long)} — a chat's encryption mode flipped server-side; ChatActivity/dialogs refresh. */
+    public static final int xoChatModeChanged = totalEvents++;
     public static final int forceImportContactsStart = totalEvents++;
     public static final int contactsDidLoad = totalEvents++;
     public static final int contactsImported = totalEvents++;

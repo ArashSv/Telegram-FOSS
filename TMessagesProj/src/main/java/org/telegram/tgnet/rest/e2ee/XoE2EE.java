@@ -237,9 +237,13 @@ public final class XoE2EE {
 
     // ------------------------------------------------------------------ send-side encryption
 
-    /** @return true when 1:1 messages to this peer must be encrypted. */
+    /** @return true when 1:1 messages to this peer must be encrypted (T80: only
+     * when the server-side chat mode is SECRET — unknown chats are cloud). */
     public boolean isE2eeChat(long peerUserId, long selfUserId) {
-        return peerUserId > 0 && peerUserId != selfUserId;
+        if (peerUserId <= 0 || peerUserId == selfUserId) {
+            return false;
+        }
+        return org.telegram.tgnet.rest.RestChatIndex.getInstance(account).isSecretPeer(peerUserId);
     }
 
     /**

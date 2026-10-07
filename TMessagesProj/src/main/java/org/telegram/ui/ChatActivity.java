@@ -180,6 +180,8 @@ import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLObject;
 import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.rest.XoLinks;
+import org.telegram.tgnet.rest.RestGateway;
+import org.telegram.tgnet.rest.XoApiException;
 import org.telegram.tgnet.tl.TL_stories;
 import org.telegram.ui.ActionBar.ActionBar;
 import org.telegram.ui.ActionBar.ActionBarLayout;
@@ -330,6 +332,10 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
     private RadialProgressView progressBar;
     private ActionBarMenuItem.Item addContactItem;
     private ActionBarMenuItem.Item clearHistoryItem;
+    /** T80: mode-aware encryption entries — visibility follows chats.mode. */
+    private ActionBarMenuItem.Item xoE2eeInfoItem;
+    private ActionBarMenuItem.Item xoSecretChatStartItem;
+    private ActionBarMenuItem.Item xoSecretChatOffItem;
     private ActionBarMenuItem.Item viewAsTopics;
     private ActionBarMenuItem.Item closeTopicItem;
     private ActionBarMenuItem.Item openForumItem;
@@ -1402,6 +1408,8 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
     private final static int delete_chat = 16;
     private final static int share_contact = 17;
     private final static int xo_e2ee_info = 140; // T71: encryption / safety number screen
+    private final static int xo_secret_chat_start = 141; // T80: flip this cloud chat into a secret (E2E) chat
+    private final static int xo_secret_chat_off = 142; // T80: flip back to a cloud chat
     private final static int mute = 18;
     private final static int report = 21;
     private final static int star = 22;
@@ -3438,6 +3446,13 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                         return;
                     }
                     presentFragment(new org.telegram.ui.XoE2EEInfoFragment(currentUser.id));
+                } else if (id == xo_secret_chat_start) {
+                    // T80: opt into E2EE for this chat (server validates that
+                    // BOTH sides hold registered keys before flipping)
+                    xoSetChatModeFlow("secret");
+                } else if (id == xo_secret_chat_off) {
+                    // T80: back to the always-works cloud mode
+                    xoSetChatModeFlow("cloud");
                 } else if (id == mute) {
                     toggleMute(false);
                 } else if (id == add_shortcut) {
@@ -3917,9 +3932,18 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             if (currentUser != null) {
                 addContactItem = headerItem.lazilyAddSubItem(share_contact, R.drawable.msg_addcontact, LocaleController.getString("AddToContacts", R.string.AddToContacts));
             }
-            // T71: encryption / safety-number entry — 1:1 chats only (self excluded)
+            // T71/T80: encryption entries — 1:1 chats only (self excluded).
+            // The server-side chat MODE decides which entry is visible:
+            // secret chats expose the safety-number screen; cloud chats
+            // expose the opt-in "Start Secret Chat" flip.
             if (currentUser != null && !currentUser.self) {
-                headerItem.lazilyAddSubItem(xo_e2ee_info, R.drawable.ic_lock_header, LocaleController.getString(R.string.XoE2eeMenu));
+                boolean xoSecret = org.telegram.tgnet.rest.RestChatIndex.getInstance(currentAccount).isSecretPeer(currentUser.id);
+                xoE2eeInfoItem = headerItem.lazilyAddSubItem(xo_e2ee_info, R.drawable.ic_lock_header, LocaleController.getString(R.string.XoE2eeMenu));
+                xoSecretChatStartItem = headerItem.lazilyAddSubItem(xo_secret_chat_start, R.drawable.msg_secret, LocaleController.getString(R.string.XoSecretChatStart));
+                xoSecretChatOffItem = headerItem.lazilyAddSubItem(xo_secret_chat_off, R.drawable.msg_secret, LocaleController.getString(R.string.XoSecretChatOffMenu));
+                xoE2eeInfoItem.setVisibility(xoSecret ? View.VISIBLE : View.GONE);
+                xoSecretChatStartItem.setVisibility(xoSecret ? View.GONE : View.VISIBLE);
+                xoSecretChatOffItem.setVisibility(xoSecret ? View.VISIBLE : View.GONE);
             }
             if (currentEncryptedChat != null) {
                 timeItem2 = headerItem.lazilyAddSubItem(chat_enc_timer, R.drawable.msg_autodelete, LocaleController.getString("SetTimer", R.string.SetTimer));
@@ -22325,7 +22349,93 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                     BulletinFactory.of(this).createErrorBulletin(LocaleController.getString(textRes), themeDelegate).show();
                 }
             }
+        } else if (id == NotificationCenter.xoChatModeChanged) {
+            // T80: the chat's encryption mode flipped (ours or the peer's).
+            // Swap the encryption menu entries and tell the user what the
+            // chat now is — the next messages already obey the new mode.
+            if (account == currentAccount && dialog_id != 0 && args != null && args.length >= 2 && args[0] instanceof Long) {
+                long changedChatId = (Long) args[0];
+                String mode = String.valueOf(args[1]);
+                long byUserId = args.length >= 3 && args[2] instanceof Long ? (Long) args[2] : 0;
+                long peerId = dialog_id > 0 ? dialog_id : 0;
+                if (peerId > 0 && org.telegram.tgnet.rest.RestChatIndex.getInstance(currentAccount).privateChatIdFor(peerId) == changedChatId) {
+                    applyXoChatModeUi();
+                    long selfId = getUserConfig().clientUserId;
+                    if (byUserId != selfId && getParentActivity() != null) {
+                        BulletinFactory.of(this).createSimpleBulletin(R.raw.contact_check,
+                                LocaleController.getString("secret".equals(mode)
+                                        ? R.string.XoSecretChatOn
+                                        : R.string.XoSecretChatOff)).show();
+                    }
+                }
+            }
         }
+    }
+
+    /** T80: re-applies the current chat mode to the header menu entries. */
+    private void applyXoChatModeUi() {
+        if (currentUser == null || currentUser.self) {
+            return;
+        }
+        boolean secret = org.telegram.tgnet.rest.RestChatIndex.getInstance(currentAccount).isSecretPeer(currentUser.id);
+        if (xoE2eeInfoItem != null) {
+            xoE2eeInfoItem.setVisibility(secret ? View.VISIBLE : View.GONE);
+        }
+        if (xoSecretChatStartItem != null) {
+            xoSecretChatStartItem.setVisibility(secret ? View.GONE : View.VISIBLE);
+        }
+        if (xoSecretChatOffItem != null) {
+            xoSecretChatOffItem.setVisibility(secret ? View.VISIBLE : View.GONE);
+        }
+    }
+
+    /**
+     * T80: flips the open chat's encryption mode through chats/set-mode.php
+     * ("secret" = opt into E2EE, "cloud" = back to the always-works mode).
+     * Runs off the UI thread; the server-side validation is authoritative
+     * (E2EE_KEYS_MISSING surfaces as a bulletin). The chat_mode sync event
+     * applies the flip everywhere — including this fragment via
+     * xoChatModeChanged.
+     */
+    private void xoSetChatModeFlow(String mode) {
+        if (currentUser == null || currentUser.self) {
+            return;
+        }
+        final long chatId = org.telegram.tgnet.rest.RestChatIndex.getInstance(currentAccount).privateChatIdFor(currentUser.id);
+        if (chatId <= 0) {
+            return;
+        }
+        final int acct = currentAccount;
+        new Thread(() -> {
+            String errorCode = null;
+            try {
+                RestGateway.getInstance(acct).setChatMode(chatId, mode);
+                // optimistic local apply — the chat_mode update re-applies
+                // this globally for every device
+                org.telegram.tgnet.rest.RestChatIndex.getInstance(acct).setChatMode(chatId, mode);
+            } catch (Exception e) {
+                FileLog.e("ChatActivity: set-mode " + mode + " failed", e);
+                errorCode = e instanceof XoApiException ? ((XoApiException) e).errorCode : "TRANSPORT";
+            }
+            final String failure = errorCode;
+            final String requested = mode;
+            AndroidUtilities.runOnUIThread(() -> {
+                if (getParentActivity() == null) {
+                    return;
+                }
+                if (failure == null) {
+                    BulletinFactory.of(ChatActivity.this).createSimpleBulletin(R.raw.contact_check,
+                            LocaleController.getString("secret".equals(requested)
+                                    ? R.string.XoSecretChatOn
+                                    : R.string.XoSecretChatOff)).show();
+                } else {
+                    BulletinFactory.of(ChatActivity.this).createErrorBulletin(
+                            "E2EE_KEYS_MISSING".equals(failure)
+                                    ? LocaleController.getString(R.string.XoSecretChatKeysMissing)
+                                    : LocaleController.getString(R.string.XoSecretChatError), themeDelegate).show();
+                }
+            });
+        }, "xo-set-mode").start();
     }
 
     /** T74: peers already shown the E2EE-send-blocked bulletin in this fragment instance. */

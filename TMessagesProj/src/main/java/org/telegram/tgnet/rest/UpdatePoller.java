@@ -327,6 +327,14 @@ public final class UpdatePoller {
                 case "chat_new":
                     handleChatNew(update.optJSONObject("chat"), chatsArr);
                     break;
+                case "chat_mode":
+                    // T80: a private chat's encryption mode flipped (server-
+                    // authoritative; pushed to BOTH members so every device
+                    // converges). Updates RestChatIndex.chatModes and posts
+                    // xoChatModeChanged — an open ChatActivity re-renders its
+                    // header/menu immediately; nothing has to re-fetch.
+                    handleChatMode(update);
+                    break;
                 case "chat_member":
                     // T40: group membership changed around me (backend v2.2 —
                     // ids-only payload; applies directly like user_updated
@@ -450,6 +458,29 @@ public final class UpdatePoller {
         }
         tl.peer = dialogPeer;
         tlUpdates.add(tl);
+    }
+
+    /**
+     * T80: a private chat's encryption mode flipped (cloud <-> secret).
+     * Applies the server-authoritative mode into RestChatIndex.chatModes and
+     * posts {@link NotificationCenter#xoChatModeChanged} with
+     * {chatId(Long), mode(String), byUserId(Long)} — an open ChatActivity
+     * re-renders its header/menu; closed surfaces pick the mode up from the
+     * index on next use. No TL machinery needed: this is a pure client-state
+     * event, nothing in processUpdateArray consumes it.
+     */
+    private void handleChatMode(JSONObject update) {
+        long chatId = update.optLong("chat_id", 0);
+        String mode = update.optString("mode", "cloud");
+        long byUserId = update.optLong("by_user_id", 0);
+        if (chatId <= 0) {
+            return;
+        }
+        RestChatIndex index = RestChatIndex.getInstance(account);
+        index.setChatMode(chatId, mode);
+        AndroidUtilities.runOnUIThread(() ->
+                NotificationCenter.getInstance(account).postNotificationName(
+                        NotificationCenter.xoChatModeChanged, chatId, mode, byUserId));
     }
 
     private void handleUserStatus(JSONObject update, ArrayList<TLRPC.Update> tlUpdates) {

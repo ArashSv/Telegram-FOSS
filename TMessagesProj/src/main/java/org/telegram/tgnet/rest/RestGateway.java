@@ -247,6 +247,18 @@ public final class RestGateway {
         return authenticatedRequest("POST", "messages/send.php", body);
     }
 
+    /**
+     * POST /chats/set-mode.php — T80: flip a private chat's encryption mode
+     * ("cloud" | "secret"). Secret requires BOTH members to hold registered
+     * keys (400 E2EE_KEYS_MISSING otherwise — surface it, never swallow).
+     * Both members' devices learn the flip through the chat_mode sync event.
+     */
+    public JSONObject setChatMode(long chatId, String mode) {
+        JSONObject body = putNumber(new JSONObject(), "chat_id", chatId);
+        put(body, "mode", mode);
+        return authenticatedRequest("POST", "chats/set-mode.php", body);
+    }
+
     // ------------------------------------------------------------------ T71: E2EE key transport
 
     /**

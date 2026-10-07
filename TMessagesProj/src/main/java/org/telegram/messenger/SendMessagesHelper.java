@@ -7013,6 +7013,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             if (peerDialogId == selfId) {
                 return; // Saved Messages self-chat stays plaintext (server-inserted relay target)
             }
+            // T80: only SECRET chats mint media keys. Cloud chats — the
+            // default — upload PLAIN media (real mime/name, server thumbs);
+            // minting keys here would force the whole upload pipeline into
+            // the opaque e2ee path for a chat that reads plaintext.
+            if (!org.telegram.tgnet.rest.RestChatIndex.getInstance(currentAccount).isSecretPeer(peerDialogId)) {
+                return;
+            }
             // real metadata for the encrypted envelope: documents/videos carry
             // everything on the TL_document; photos only on the PhotoSize
             TLRPC.TL_document document = message.obj != null ? (TLRPC.TL_document) message.obj.getDocument() : null;

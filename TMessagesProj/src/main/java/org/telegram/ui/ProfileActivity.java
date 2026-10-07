@@ -2425,12 +2425,57 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                     fragment.setChatInfo(chatInfo);
                     presentFragment(fragment);
                 } else if (id == start_secret_chat) {
+                    // T80: the REAL secret chat — a server-validated mode flip
+                    // (chats/set-mode.php) of the pair chat, not the dead
+                    // MTProto handshake the upstream tree wired here. The
+                    // chat is created on demand when the pair never talked.
                     AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), resourcesProvider);
                     builder.setTitle(LocaleController.getString("AreYouSureSecretChatTitle", R.string.AreYouSureSecretChatTitle));
-                    builder.setMessage(LocaleController.getString("AreYouSureSecretChat", R.string.AreYouSureSecretChat));
+                    builder.setMessage(LocaleController.getString(R.string.XoSecretChatStartConfirm));
                     builder.setPositiveButton(LocaleController.getString("Start", R.string.Start), (dialogInterface, i) -> {
-                        creatingChat = true;
-                        getSecretChatHelper().startSecretChat(getParentActivity(), getMessagesController().getUser(userId));
+                        final long peerId = userId;
+                        final int acct = currentAccount;
+                        new Thread(() -> {
+                            String errorCode = null;
+                            try {
+                                org.telegram.tgnet.rest.RestChatIndex index = org.telegram.tgnet.rest.RestChatIndex.getInstance(acct);
+                                long chatId = index.privateChatIdFor(peerId);
+                                if (chatId <= 0) {
+                                    // the pair never talked: create the chat, then
+                                    // register its mapping (server answers the payload)
+                                    org.json.JSONObject created = org.telegram.tgnet.rest.RestGateway.getInstance(acct)
+                                            .createPrivateChat(peerId);
+                                    org.json.JSONObject chatJson = created == null ? null : created.optJSONObject("chat");
+                                    if (chatJson != null) {
+                                        index.scanChats(new org.json.JSONArray().put(chatJson));
+                                        chatId = index.privateChatIdFor(peerId);
+                                    }
+                                }
+                                if (chatId > 0) {
+                                    org.telegram.tgnet.rest.RestGateway.getInstance(acct).setChatMode(chatId, "secret");
+                                    org.telegram.tgnet.rest.RestChatIndex.getInstance(acct).setChatMode(chatId, "secret");
+                                } else {
+                                    errorCode = "PEER_ID_INVALID";
+                                }
+                            } catch (Exception e) {
+                                FileLog.e("ProfileActivity: set-mode secret failed", e);
+                                errorCode = e instanceof org.telegram.tgnet.rest.XoApiException
+                                        ? ((org.telegram.tgnet.rest.XoApiException) e).errorCode : "TRANSPORT";
+                            }
+                            final String failure = errorCode;
+                            AndroidUtilities.runOnUIThread(() -> {
+                                if (getParentActivity() == null) {
+                                    return;
+                                }
+                                BulletinFactory.of(ProfileActivity.this, resourcesProvider).createSimpleBulletin(
+                                        R.raw.contact_check,
+                                        LocaleController.getString(failure == null
+                                                ? R.string.XoSecretChatOn
+                                                : ("E2EE_KEYS_MISSING".equals(failure)
+                                                        ? R.string.XoSecretChatKeysMissing
+                                                        : R.string.XoSecretChatError))).show();
+                            });
+                        }, "xo-set-mode-secret").start();
                     });
                     builder.setNegativeButton(LocaleController.getString("Cancel", R.string.Cancel), null);
                     showDialog(builder.create());

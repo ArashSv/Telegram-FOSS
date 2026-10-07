@@ -1,0 +1,237 @@
+name: Ops Backend T80 Deploy (two-mode chats v2.12.0)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'backend-v2.12/**'
+      - '.github/workflows/ops-backend-t80-deploy.yml'
+
+concurrency:
+  group: ops-backend-t80
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      WEB: ${{ secrets.WEBDAV_URL }}
+      AUTH: ${{ secrets.WEBDAV_AUTH }}
+      SITE: ${{ secrets.SITE_URL }}
+      DIAG: ${{ secrets.DIAG_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Preflight connectivity (curl, IPv4, 3 tries)
+        run: |
+          set +e
+          for i in 1 2 3; do
+            code=$(curl -4 -sS --http1.1 -m 30 -o /tmp/pf.txt -w "%{http_code}" "$SITE/")
+            echo "preflight try$i -> $code"; head -c 160 /tmp/pf.txt; echo
+            [ "$code" = 200 ] && exit 0
+            sleep 6
+          done
+          echo "preflight failed 3x — host unreachable from the runner"; exit 1
+
+      - name: Deploy changed backend files (PUT + md5 read-back)
+        run: |
+          set -e
+          python3 - <<'PY'
+          import hashlib, json, subprocess, sys, time
+          from pathlib import Path
+
+          WEB = Path("web.txt")
+          web = WEB.read_text().strip().rstrip("/") if WEB.exists() else None
+          import os
+          web = (web or os.environ["WEB"]).rstrip("/")
+          auth = os.environ["AUTH"]
+
+          # backend-v2.12/app/...   -> $WEB/app/...
+          # backend-v2.12/api/v1/...-> $WEB/api/v1/...   (docroot = public/)
+          MAPPING = {"backend-v2.12/app/": "/app/", "backend-v2.12/api/v1/": "/api/v1/"}
+
+          files = sorted(Path("backend-v2.12").rglob("*.php"))
+          files = [f for f in files if "maint/" not in f.as_posix()]
+          failures = []
+          for f in files:
+              src = f.as_posix()
+              dst = None
+              for prefix, target in MAPPING.items():
+                  if src.startswith(prefix):
+                      dst = target + src[len(prefix):]
+                      break
+              if dst is None:
+                  failures.append((src, "no mapping"))
+                  continue
+              data = Path(src).read_bytes()
+              sent_md5 = hashlib.md5(data).hexdigest()
+              ok = False
+              detail = ""
+              for attempt in range(3):
+                  put_code = subprocess.run(
+                      ["curl", "-4", "-sS", "-k", "--http1.1", "-m", "90", "-u", auth,
+                       "-X", "PUT", "--data-binary", f"@{src}", "-w", "%{http_code}",
+                       "-o", "/tmp/put.txt", web + dst],
+                      capture_output=True, text=True).stdout.strip()
+                  if put_code not in ("200", "201", "204"):
+                      detail = f"PUT {put_code}"
+                      time.sleep(5)
+                      continue
+                  get_code = subprocess.run(
+                      ["curl", "-4", "-sS", "-k", "--http1.1", "-m", "90", "-u", auth,
+                       "-w", "%{http_code}", "-o", "/tmp/readback.php", web + dst],
+                      capture_output=True, text=True).stdout.strip()
+                  if get_code != "200":
+                      detail = f"GET {get_code}"
+                      time.sleep(5)
+                      continue
+                  read_md5 = hashlib.md5(Path("/tmp/readback.php").read_bytes()).hexdigest()
+                  if read_md5 != sent_md5:
+                      detail = f"md5 {sent_md5}!={read_md5}"
+                      time.sleep(5)
+                      continue
+                  ok = True
+                  print(f"OK  {dst}  {len(data)}B  md5={sent_md5}")
+                  break
+              if not ok:
+                  print(f"FAIL {dst} -> {detail}")
+                  failures.append((dst, detail))
+          if failures:
+              print("DEPLOY FAILURES:", json.dumps(failures))
+              sys.exit(1)
+          print(f"DEPLOYED {len(files)} files, all md5-verified")
+          PY
+
+      - name: Run one-shot migration (token-gated, self-deleting)
+        run: |
+          set -e
+          sed "s/__DIAG_TOKEN__/$DIAG/" backend-v2.12/maint/xo_t80_migrate.php > /tmp/xo_t80_migrate.php
+          put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT --data-binary @/tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/xo_t80_migrate.php")
+          echo "migration PUT -> $put"
+          case "$put" in 200|201|204) ;; *) echo "migration upload failed"; exit 1;; esac
+          for i in 1 2 3; do
+            code=$(curl -4 -sS --http1.1 -m 60 -o /tmp/mig.json -w "%{http_code}" "$SITE/xo_t80_migrate.php?t=$DIAG")
+            echo "migration GET -> $code"
+            [ "$code" = "200" ] && break
+            sleep 5
+          done
+          cat /tmp/mig.json; echo
+          python3 - <<'PY'
+          import json, sys
+          r = json.load(open("/tmp/mig.json"))
+          assert r.get("ok") is True, r
+          assert r.get("self_deleted") is True, r
+          print("migration applied:", r.get("applied"))
+          print("already present:", r.get("skipped"))
+          print("counts:", r.get("counts"))
+          PY
+          # the script MUST be gone now
+          code=$(curl -4 -sS --http1.1 -m 30 -o /dev/null -w "%{http_code}" "$SITE/xo_t80_migrate.php?t=$DIAG")
+          echo "post-delete probe -> $code"
+          [ "$code" = "404" ] || [ "$code" = "403" ] || { echo "migration script still reachable!"; exit 1; }
+
+      - name: Live two-account mode E2E (cloud roundtrip + flip + secret + guards)
+        run: |
+          set +e
+          cat > /tmp/t80live.py <<'PY'
+          import base64, json, os, random, string, subprocess, sys, time
+
+          SITE = os.environ["SITE"].rstrip("/")
+
+          def call(method, path, token=None, body=None):
+              cmd = ["curl", "-4", "-sS", "--http1.1", "-m", "40", "-X", method, "-w", "\n%{http_code}", SITE + path]
+              if body is not None:
+                  cmd += ["-H", "Content-Type: application/json", "-d", json.dumps(body)]
+              if token:
+                  cmd += ["-H", "Authorization: Bearer " + token]
+              for _ in range(3):
+                  try:
+                      p = subprocess.run(cmd, capture_output=True, timeout=60)
+                      out = p.stdout.decode(errors="replace")
+                      body_txt, _, code = out.rpartition("\n")
+                      if code.strip().isdigit() and code.strip() != "000":
+                          try:
+                              return int(code), json.loads(body_txt or "null")
+                          except Exception:
+                              return int(code), {"raw": body_txt[:300]}
+                  except Exception:
+                      pass
+                  time.sleep(4)
+              return 0, {"transport_error": "3 attempts failed"}
+
+          results = []
+          def check(name, cond, detail=""):
+              results.append(bool(cond))
+              print(("PASS " if cond else "FAIL ") + name + ("  " + str(detail)[:240] if detail else ""), flush=True)
+
+          def err_code(r):
+              return (r or {}).get("error", {}).get("code") if isinstance(r, dict) else None
+
+          def mk_user():
+              phone = "4049" + "".join(random.choices(string.digits, k=4))
+              password = "pw" + "".join(random.choices(string.ascii_letters + string.digits, k=9))
+              call("POST", "/api/v1/auth/register.php", body={"phone": phone, "password": password, "hint": "t80"})
+              st, r = call("POST", "/api/v1/auth/login.php", body={"phone": phone, "password": password})
+              if st != 200:
+                  return None, None
+              tok = r.get("token") or r.get("access_token")
+              return tok, phone
+
+          tokA, phoneA = mk_user()
+          tokB, phoneB = mk_user()
+          check("two probe accounts live-registered", bool(tokA) and bool(tokB), (phoneA, phoneB))
+          if not (tokA and tokB):
+              sys.exit(1)
+
+          st, meB = call("GET", "/api/v1/auth/me.php", token=tokB)
+          idB = (meB.get("user") if "user" in meB else meB)["id"]
+
+          st, r = call("POST", "/api/v1/chats/create.php", token=tokA, body={"type": "private", "peer_user_id": idB})
+          check("chat created, mode=cloud default", st == 200 and r.get("chat", {}).get("mode") == "cloud", (st, r))
+
+          plain = "t80-live-cloud"
+          st, r = call("POST", "/api/v1/messages/send.php", token=tokA, body={"chat_id": r["chat"]["id"], "content": plain})
+          check("cloud send ACK plaintext", st == 200 and r.get("message", {}).get("content") == plain, (st, r))
+          chatId = r["message"]["chat_id"] if st == 200 else None
+
+          # keys for both (synthetic shapes — server validates shapes only)
+          def register_keys(tok):
+              b64 = lambda n: base64.b64encode(os.urandom(n)).decode()
+              body = {"identity_key": b64(33), "registration_id": random.randint(1, 4000),
+                      "signed_prekey": {"key_id": 7, "pub": b64(33), "sig": b64(64)},
+                      "one_time_prekeys": [{"key_id": i, "pub": b64(33)} for i in range(3)]}
+              return call("POST", "/api/v1/e2ee/keys/register.php", token=tok, body=body)
+
+          register_keys(tokA); register_keys(tokB)
+          st, r = call("POST", "/api/v1/chats/set-mode.php", token=tokA, body={"chat_id": chatId, "mode": "secret"})
+          check("flip to secret (changed, payload secret)", st == 200 and r.get("changed") is True and r.get("chat", {}).get("mode") == "secret", (st, r))
+
+          page_c = 0
+          seen = False
+          for _ in range(6):
+              st, page = call("GET", "/api/v1/sync/index.php?cursor=0&limit=200", token=tokB)
+              ups = [u for u in (page.get("updates") or []) if u.get("type") == "chat_mode" and u.get("chat_id") == chatId]
+              if ups:
+                  seen = ups[-1].get("mode") == "secret"
+                  break
+              time.sleep(3)
+          check("peer receives chat_mode=secret update", seen)
+
+          st, r = call("POST", "/api/v1/messages/send.php", token=tokA, body={"chat_id": chatId, "content": "plain-in-secret"})
+          check("secret refuses plain content", st == 400 and err_code(r) == "E2EE_CONTENT_REQUIRED", (st, err_code(r)))
+
+          env = "XOE1:Q2lwaGVydGV4dA=="
+          st, r = call("POST", "/api/v1/messages/send.php", token=tokA, body={"chat_id": chatId, "content": env})
+          check("secret stores envelope verbatim", st == 200 and r.get("message", {}).get("content") == env, (st, r))
+
+          st, r = call("POST", "/api/v1/chats/set-mode.php", token=tokB, body={"chat_id": chatId, "mode": "cloud"})
+          check("flip back to cloud", st == 200 and r.get("chat", {}).get("mode") == "cloud", (st, r))
+          st, r = call("POST", "/api/v1/messages/send.php", token=tokA, body={"chat_id": chatId, "content": env})
+          check("cloud refuses envelope (stale-client guard)", st == 400 and err_code(r) == "E2EE_CONTENT_REFUSED", (st, err_code(r)))
+
+          n, total = sum(results), len(results)
+          print(f"== LIVE RESULT {n}/{total} ==")
+          sys.exit(0 if n == total else 1)
+          PY
+          python3 /tmp/t80live.py

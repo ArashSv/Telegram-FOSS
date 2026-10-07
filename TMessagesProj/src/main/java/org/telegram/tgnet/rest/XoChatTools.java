@@ -107,9 +107,11 @@ public final class XoChatTools {
                     // logout/re-login. The peer gets it via the message_new poll
                     // event.
                     try {
-                        // T71: seed rides the E2EE path for 1:1 chats — plaintext
-                        // must never reach the server for an encrypted dialog.
-                        boolean seedE2ee = peerUserId > 0 && peerUserId != selfId;
+                        // T71/T80: seed rides the E2EE path ONLY for secret
+                        // chats; cloud chats (the default) seed plaintext and
+                        // the server at-rest-seals it.
+                        boolean seedE2ee = org.telegram.tgnet.rest.RestChatIndex.getInstance(account)
+                                .isSecretPeer(peerUserId);
                         String seedWire = seedE2ee
                                 ? org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
                                         .encryptText(peerUserId, SEED_TEXT)
