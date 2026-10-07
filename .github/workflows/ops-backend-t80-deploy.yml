@@ -185,7 +185,9 @@ jobs:
             /public/app/Mappers/ChatMapper.php /public/app/Mappers/MessageMapper.php \
             /public/api/v1/blocked/add.php /public/api/v1/blocked/list.php /public/api/v1/blocked/remove.php \
             /public/api/v1/chats/pin.php /public/api/v1/chats/set-mode.php \
-            /public/api/v1/messages/forward.php /public/api/v1/privacy/get.php /public/api/v1/privacy/set.php ; do
+            /public/api/v1/messages/forward.php /public/api/v1/privacy/get.php /public/api/v1/privacy/set.php \
+            /public_html/tele/xo_t80_migrate.php /public_html/tele/xo_t80_mig_37574795735.php \
+            /xo_t80_migrate.php ; do
             code=$(curl -4 -sS -k -m 30 -u "$AUTH" -X DELETE "$WEB$p" -o /dev/null -w "%{http_code}")
             echo "junk DELETE $p -> $code"
           done

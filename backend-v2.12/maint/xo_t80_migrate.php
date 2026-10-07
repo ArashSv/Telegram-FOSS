@@ -40,21 +40,29 @@ if (!hash_equals(EXPECTED_TOKEN, $token)) {
     exit;
 }
 
-// standalone DB bootstrap (no app/config dependency on the live layout)
-$configCandidates = [
-    __DIR__ . '/config/config.php',
-];
+// standalone DB bootstrap (config lives OUTSIDE the docroot on the live
+// host — /home/USER/config/) — resolve it exactly like the app does:
+// walk up from this file's directory until app/bootstrap.php is found;
+// the config sits beside it (config/config.php).
+$dir = __DIR__;
 $config = null;
-foreach ($configCandidates as $path) {
-    if (is_file($path)) {
-        $config = require $path;
+for ($i = 0; $i < 10; $i++) {
+    foreach ([$dir . '/config/config.php'] as $candidate) {
+        if (is_file($candidate)) {
+            $config = require $candidate;
+            break 2;
+        }
+    }
+    $parent = dirname($dir);
+    if ($parent === $dir) {
         break;
     }
+    $dir = $parent;
 }
 if (!is_array($config)) {
     @unlink(__FILE__);
     http_response_code(500);
-    echo json_encode(['ok' => false, 'error' => 'config not found']);
+    echo json_encode(['ok' => false, 'error' => 'config not found (walked up from ' . __DIR__ . ')']);
     exit;
 }
 
