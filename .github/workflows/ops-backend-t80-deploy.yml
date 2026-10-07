@@ -44,9 +44,12 @@ jobs:
           web = os.environ["WEB"].rstrip("/")
           auth = os.environ["AUTH"]
 
-          # backend-v2.12/app/...   -> $WEB/app/...
-          # backend-v2.12/api/v1/...-> $WEB/api/v1/...   (docroot = public/)
-          MAPPING = {"backend-v2.12/app/": "/app/", "backend-v2.12/api/v1/": "/api/v1/"}
+          # PROVEN LIVE MAPPING (T77 diag-probe evidence):
+          #   $WEB/public/<path>  <->  $SITE/<path>   (the served docroot)
+          # backend-v2.12/app/...    -> $WEB/public/app/...
+          # backend-v2.12/api/v1/... -> $WEB/public/api/v1/...
+          MAPPING = {"backend-v2.12/app/": "/public/app/",
+                     "backend-v2.12/api/v1/": "/public/api/v1/"}
 
           def dav(method, path, upload=None, timeout=120):
               cmd = ["curl", "-4", "-sS", "-k", "--http1.1", "-m", str(timeout),
@@ -137,10 +140,10 @@ jobs:
           PY
           put=000
           for i in 1 2 3; do
-            put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT -T /tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/$MIG")
+            put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT -T /tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/public/$MIG")
             echo "migration PUT try$i -> $put"
             case "$put" in 200|201|204) break;; esac
-            curl -4 -sS -k -u "$AUTH" -X DELETE "$WEB/$MIG" -o /dev/null
+            curl -4 -sS -k -u "$AUTH" -X DELETE "$WEB/public/$MIG" -o /dev/null
             sleep 4
           done
           case "$put" in 200|201|204) ;; *) echo "migration upload failed"; exit 1;; esac
@@ -152,7 +155,8 @@ jobs:
             sleep 5
           done
           # the script must be GONE regardless of the outcome (defense in depth)
-          curl -4 -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/$MIG" -o /dev/null -w "cleanup DELETE -> %{http_code}\n" || true
+          curl -4 -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/public/$MIG" -o /dev/null -w "cleanup DELETE(public) -> %{http_code}\n" || true
+          curl -4 -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/$MIG" -o /dev/null -w "cleanup DELETE(root) -> %{http_code}\n" || true
           [ "$ok" = "1" ] || { echo "migration did not run"; exit 1; }
           cat /tmp/mig.json; echo
           python3 - <<'PY'
@@ -163,6 +167,21 @@ jobs:
           print("already present:", r.get("skipped"))
           print("counts:", r.get("counts"))
           PY
+
+      - name: Post-deploy health probe + new-endpoint reachability
+        run: |
+          set +e
+          for i in 1 2 3; do
+            code=$(curl -4 -sS --http1.1 -m 30 -o /tmp/h.txt -w "%{http_code}" "$SITE/")
+            echo "index -> $code $(head -c 160 /tmp/h.txt)"
+            [ "$code" = "200" ] && break
+            sleep 5
+          done
+          # the T80 endpoint must at least be ROUTABLE now (401/400 = live;
+          # 404 = wrong tree, fail fast before the E2E)
+          code=$(curl -4 -sS --http1.1 -m 30 -o /tmp/sm.txt -w "%{http_code}" -X POST "$SITE/api/v1/chats/set-mode.php")
+          echo "set-mode.php unauthenticated probe -> $code $(head -c 160 /tmp/sm.txt)"
+          [ "$code" != "404" ] || { echo "set-mode.php NOT ROUTED — deploy tree wrong"; exit 1; }
 
       - name: Live two-account mode E2E (cloud roundtrip + flip + secret + guards)
         run: |
