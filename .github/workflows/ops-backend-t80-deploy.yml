@@ -124,7 +124,13 @@ jobs:
       - name: Run one-shot migration (token-gated, self-deleting)
         run: |
           set -e
-          sed "s/__DIAG_TOKEN__/$DIAG/" backend-v2.12/maint/xo_t80_migrate.php > /tmp/xo_t80_migrate.php
+          python3 - <<'PY'
+          import os
+          src = open("backend-v2.12/maint/xo_t80_migrate.php", encoding="utf-8").read()
+          # python replacement: the DIAG token may contain sed-special characters
+          open("/tmp/xo_t80_migrate.php", "w", encoding="utf-8").write(
+              src.replace("__DIAG_TOKEN__", os.environ["DIAG"]))
+          PY
           put=000
           for i in 1 2 3; do
             put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT -T /tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/xo_t80_migrate.php")
@@ -135,7 +141,7 @@ jobs:
           done
           case "$put" in 200|201|204) ;; *) echo "migration upload failed"; exit 1;; esac
           for i in 1 2 3; do
-            code=$(curl -4 -sS --http1.1 -m 60 -o /tmp/mig.json -w "%{http_code}" "$SITE/xo_t80_migrate.php?t=$DIAG")
+            code=$(curl -4 -sS --http1.1 -m 60 -o /tmp/mig.json -w "%{http_code}" -G "$SITE/xo_t80_migrate.php" --data-urlencode "t=$DIAG")
             echo "migration GET -> $code"
             [ "$code" = "200" ] && break
             sleep 5
