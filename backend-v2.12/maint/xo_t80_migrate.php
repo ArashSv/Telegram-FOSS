@@ -25,9 +25,18 @@ header('Content-Type: application/json; charset=utf-8');
 
 $token = isset($_GET['t']) ? (string) $_GET['t'] : '';
 if (!hash_equals(EXPECTED_TOKEN, $token)) {
+    // T55 discipline: a wrong token deletes the script immediately. The diag
+    // hashes (first 8 hex of sha256) let the operator match configured vs
+    // received tokens WITHOUT leaking either.
+    $diag = [
+        'gone'      => true,
+        'recv_len'  => strlen($token),
+        'recv_sha8' => substr(hash('sha256', $token), 0, 8),
+        'exp_sha8'  => substr(hash('sha256', EXPECTED_TOKEN), 0, 8),
+    ];
     @unlink(__FILE__);
     http_response_code(404);
-    echo json_encode(['ok' => false, 'gone' => true]);
+    echo json_encode($diag);
     exit;
 }
 

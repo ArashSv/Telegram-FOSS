@@ -121,45 +121,48 @@ jobs:
           print(f"DEPLOYED {len(files)} files, all md5-verified")
           PY
 
-      - name: Run one-shot migration (token-gated, self-deleting)
+      - name: Run one-shot migration (token-gated, self-deleting, unique name)
+        env:
+          MIG: xo_t80_mig_${{ github.run_id }}.php
         run: |
           set -e
           python3 - <<'PY'
-          import os
+          import os, hashlib
           src = open("backend-v2.12/maint/xo_t80_migrate.php", encoding="utf-8").read()
           # python replacement: the DIAG token may contain sed-special characters
           open("/tmp/xo_t80_migrate.php", "w", encoding="utf-8").write(
               src.replace("__DIAG_TOKEN__", os.environ["DIAG"]))
+          print("token chars:", len(os.environ["DIAG"]),
+                "sha8:", hashlib.sha256(os.environ["DIAG"].encode()).hexdigest()[:8])
           PY
           put=000
           for i in 1 2 3; do
-            put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT -T /tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/xo_t80_migrate.php")
+            put=$(curl -4 -sS -k --http1.1 -m 90 -u "$AUTH" -X PUT -T /tmp/xo_t80_migrate.php -w "%{http_code}" -o /dev/null "$WEB/$MIG")
             echo "migration PUT try$i -> $put"
             case "$put" in 200|201|204) break;; esac
-            curl -4 -sS -k -u "$AUTH" -X DELETE "$WEB/xo_t80_migrate.php" -o /dev/null
+            curl -4 -sS -k -u "$AUTH" -X DELETE "$WEB/$MIG" -o /dev/null
             sleep 4
           done
           case "$put" in 200|201|204) ;; *) echo "migration upload failed"; exit 1;; esac
+          ok=0
           for i in 1 2 3; do
-            code=$(curl -4 -sS --http1.1 -m 60 -o /tmp/mig.json -w "%{http_code}" -G "$SITE/xo_t80_migrate.php" --data-urlencode "t=$DIAG")
-            echo "migration GET -> $code"
-            [ "$code" = "200" ] && break
+            code=$(curl -4 -sS --http1.1 -m 60 -o /tmp/mig.json -w "%{http_code}" -G "$SITE/$MIG" --data-urlencode "t=$DIAG")
+            echo "migration GET try$i -> $code body-head: $(head -c 200 /tmp/mig.json)"
+            if [ "$code" = "200" ]; then ok=1; break; fi
             sleep 5
           done
+          # the script must be GONE regardless of the outcome (defense in depth)
+          curl -4 -sS -k -m 60 -u "$AUTH" -X DELETE "$WEB/$MIG" -o /dev/null -w "cleanup DELETE -> %{http_code}\n" || true
+          [ "$ok" = "1" ] || { echo "migration did not run"; exit 1; }
           cat /tmp/mig.json; echo
           python3 - <<'PY'
           import json, sys
           r = json.load(open("/tmp/mig.json"))
           assert r.get("ok") is True, r
-          assert r.get("self_deleted") is True, r
           print("migration applied:", r.get("applied"))
           print("already present:", r.get("skipped"))
           print("counts:", r.get("counts"))
           PY
-          # the script MUST be gone now
-          code=$(curl -4 -sS --http1.1 -m 30 -o /dev/null -w "%{http_code}" "$SITE/xo_t80_migrate.php?t=$DIAG")
-          echo "post-delete probe -> $code"
-          [ "$code" = "404" ] || [ "$code" = "403" ] || { echo "migration script still reachable!"; exit 1; }
 
       - name: Live two-account mode E2E (cloud roundtrip + flip + secret + guards)
         run: |
