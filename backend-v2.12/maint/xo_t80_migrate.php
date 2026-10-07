@@ -96,18 +96,25 @@ try {
         $skipped[] = 'chats.mode already present';
     }
 
-    // 2. update_queue enum extension (idempotent: MODIFY is safe to re-run)
+    // 2. update_queue enum extension — UNION with the LIVE values. The
+    //    live enum carries MORE types than this build knows about
+    //    (dialog_pin / privacy / blocked ...), and MODIFY-ing with a
+    //    narrower list truncates existing rows (error 1265). Never narrow.
     $stmt = $pdo->prepare(
         "SELECT COLUMN_TYPE FROM information_schema.COLUMNS
          WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'update_queue' AND COLUMN_NAME = 'type'"
     );
     $stmt->execute();
-    $colType = (string) $stmt->fetchColumn();
+    $colType = (string) $stmt->fetchColumn(); // e.g. enum('message_new',...)
     if (strpos($colType, 'chat_mode') === false) {
-        $pdo->exec("ALTER TABLE update_queue MODIFY COLUMN type ENUM(
-            'message_new','message_edit','message_delete','read','chat_new',
-            'user_updated','chat_member','gifs','user_status','chat_mode') NOT NULL");
-        $applied[] = 'update_queue.type enum + chat_mode';
+        preg_match_all("/'([^']+)'/", $colType, $m);
+        $values = $m[1] ?: [];
+        if (!in_array('chat_mode', $values, true)) {
+            $values[] = 'chat_mode';
+        }
+        $enumSql = "ENUM('" . implode("','", $values) . "') NOT NULL";
+        $pdo->exec("ALTER TABLE update_queue MODIFY COLUMN type " . $enumSql);
+        $applied[] = 'update_queue.type enum + chat_mode (union of ' . count($values) . ' values)';
     } else {
         $skipped[] = 'update_queue.type already includes chat_mode';
     }
