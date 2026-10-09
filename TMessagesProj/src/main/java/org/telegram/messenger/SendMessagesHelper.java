@@ -6240,7 +6240,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 } else {
                     // T75: defer whole albums whose destination has no keys yet —
                     // every row stays pending (clock) and auto-flushes together
-                    if (org.telegram.tgnet.rest.e2ee.XoPendingKeys.getInstance(currentAccount)
+                    if (org.telegram.tgnet.rest.e2ee.XoSecretPending.getInstance(currentAccount)
                             .maybeDeferObjects(error.text, msgObjs, scheduled)) {
                         for (int i = 0; i < msgObjs.size(); i++) {
                             removeFromSendingMessages(msgObjs.get(i).getId(), scheduled);
@@ -6597,11 +6597,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             }
                         }
                     } else {
-                        // T75: "peer has no keys yet" is a WAIT, not a failure —
+                        // T78: "peer has no key yet" is a WAIT, not a failure —
                         // the row keeps its clock icon and auto-retries when the
-                        // peer's keys appear (XoPendingKeys). Never silent plaintext,
-                        // never a dead error row, no error bulletin.
-                        if (org.telegram.tgnet.rest.e2ee.XoPendingKeys.getInstance(currentAccount)
+                        // peer's public key appears (XoSecretPending). Never silent
+                        // plaintext, never a dead error row, no error bulletin.
+                        if (org.telegram.tgnet.rest.e2ee.XoSecretPending.getInstance(currentAccount)
                                 .maybeDefer(error.text, newMsgObj, scheduled)) {
                             removeFromSendingMessages(newMsgObj.id, scheduled);
                             return;
@@ -7006,11 +7006,23 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 return;
             }
             long peerDialogId = message.peer;
-            if (peerDialogId <= 0) {
-                return; // groups stay plaintext (v1 scope: 1:1 chats only)
+            long intentPeer = peerDialogId;
+            if (peerDialogId < 0) {
+                // T78: SECRET chats ride the chat space (negative dialog id) —
+                // the intent peer is the PEER USER (key lookup); the dialog
+                // itself is only the routing address
+                if (!org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(peerDialogId)) {
+                    return; // groups stay plaintext (cloud scope)
+                }
+                intentPeer = org.telegram.tgnet.rest.e2ee.XoSecret.secretPeerUser(-peerDialogId);
+                if (intentPeer <= 0) {
+                    return; // index not warm yet — the next schedule refresh renotes
+                }
+            } else if (peerDialogId == 0) {
+                return; // no destination
             }
             long selfId = UserConfig.getInstance(currentAccount).clientUserId;
-            if (peerDialogId == selfId) {
+            if (intentPeer == selfId) {
                 return; // Saved Messages self-chat stays plaintext (server-inserted relay target)
             }
             // T80: only SECRET chats mint media keys. Cloud chats — the
@@ -7023,10 +7035,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             // real metadata for the encrypted envelope: documents/videos carry
             // everything on the TL_document; photos only on the PhotoSize
             TLRPC.TL_document document = message.obj != null ? (TLRPC.TL_document) message.obj.getDocument() : null;
-            org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(currentAccount)
-                    .noteUploadIntent(location, peerDialogId, message.photoSize, document);
+            org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
+                    .noteUploadIntent(location, intentPeer, message.photoSize, document);
         } catch (Throwable e) {
-            FileLog.e("SendMessagesHelper: e2ee upload intent failed", e);
+            FileLog.e("SendMessagesHelper: secret upload intent failed", e);
         }
     }
 
@@ -9278,7 +9290,8 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 // key; the key travels inside the message envelope (tk) and
                 // is bound to the tree id for the e2ee finalize declaration.
                 long peerDialogId = msgObj != null ? msgObj.getDialogId() : 0;
-                boolean e2eeThumb = peerDialogId > 0 && peerDialogId != UserConfig.getInstance(account).clientUserId;
+                boolean e2eeThumb = peerDialogId > 0 && peerDialogId != UserConfig.getInstance(account).clientUserId
+                        || org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(peerDialogId);
                 byte[] payload = thumbBytes;
                 byte[] thumbKey = null;
                 if (e2eeThumb) {
@@ -9293,8 +9306,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 long treeId = payload == null ? 0 : RestDispatcher.uploadSmallBlocking(account, payload);
                 if (treeId != 0) {
                     if (thumbKey != null) {
-                        org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account)
-                                .putDirectTreeIntent(treeId, peerDialogId, thumbKey);
+                        long intentPeer = peerDialogId;
+                        if (intentPeer < 0) {
+                            // T78: secret dialogs bind the thumb intent to the PEER USER id
+                            intentPeer = org.telegram.tgnet.rest.e2ee.XoSecret.secretPeerUser(-intentPeer);
+                        }
+                        org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(account)
+                                .putDirectTreeIntent(treeId, intentPeer, thumbKey);
                     }
                     TLRPC.TL_inputFile inputFile = new TLRPC.TL_inputFile();
                     inputFile.id = treeId;

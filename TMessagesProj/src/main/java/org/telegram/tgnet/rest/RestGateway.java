@@ -226,6 +226,18 @@ public final class RestGateway {
     }
 
     /**
+     * T78: POST /chats/create.php {type: "secret"} — find-or-create the
+     * SEPARATE secret chat with a peer (pair_key namespace "secret:a:b",
+     * idempotent). The secret chat is a distinct row: the cloud chat of the
+     * same pair keeps existing and working beside it.
+     */
+    public JSONObject createSecretChat(long peerUserId) {
+        JSONObject body = put(new JSONObject(), "type", "secret");
+        putNumber(body, "peer_user_id", peerUserId);
+        return authenticatedRequest("POST", "chats/create.php", body);
+    }
+
+    /**
      * GET /messages/history.php — two modes: maxId > 0 scrolls back (older
      * than maxId), maxId == 0 loads the newest page. Returns ascending.
      */

@@ -1779,9 +1779,9 @@ public class FileLoadOperation {
             if (backendId <= 0) {
                 return true;
             }
-            org.telegram.tgnet.rest.e2ee.XoE2EE e2ee =
-                    org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(currentAccount);
-            org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta = e2ee.mediaKeysFor(backendId);
+            org.telegram.tgnet.rest.e2ee.XoSecret secretMgr =
+                    org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(currentAccount);
+            org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta = secretMgr.mediaKeysFor(backendId);
             if (meta == null || meta.fileKey == null) {
                 return true; // not an E2EE file — untouched flow
             }

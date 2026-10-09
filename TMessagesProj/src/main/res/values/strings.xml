@@ -9116,12 +9116,10 @@
     <string name="XoE2eeResetSession">هویت جدید تایید شد؛ بازنشانی سشن</string>
     <string name="XoE2eeNotReady">رمزنگاری هنوز آماده نیست. بعد از آنلاین شدن هر دو طرف دوباره بررسی کنید.</string>
     <string name="XoE2eeLockedMessage">🔒 این پیام قابل رمزگشایی نیست (سشن قدیمی یا تغییر هویت).</string>
-    <!-- T80: two chat modes — cloud (server-side encryption) vs secret (E2EE) -->
-    <string name="XoSecretChatStart">شروع چت رمزنگاری‌شده</string>
-    <string name="XoSecretChatOffMenu">خروج از چت رمزنگاری‌شده</string>
-    <string name="XoSecretChatStartConfirm">چت رمزنگاری سرتاسری فعال شود؟ پیام‌های جدید فقط بین دستگاه شما و دستگاه طرف مقابل رمزگشایی می‌شوند و سرور به محتوای آن‌ها دسترسی ندارد. می‌توانید هر زمان از منوی همان چت به حالت عادی (کلاد) برگردید.</string>
-    <string name="XoSecretChatOn">چت رمزنگاری سرتاسری فعال شد 🔒</string>
-    <string name="XoSecretChatOff">چت به حالت عادی (کلاد) برگشت</string>
-    <string name="XoSecretChatKeysMissing">طرف مقابل هنوز کلیدهای رمزنگاری ثبت نکرده است. بعد از ورود او به برنامه دوباره تلاش کنید.</string>
-    <string name="XoSecretChatError">تغییر حالت چت ممکن نشد. دوباره تلاش کنید.</string>
+    <!-- T78: secret chat (separate Telegram-style dialog, simple asymmetric keys) -->
+    <string name="XoSecretTitle">چت رمزی</string>
+    <string name="XoSecretActive">این یک چت رمزی جداگانه است. پیام‌ها با یک جفت‌کلید ساده و امن (کلید خصوصی فقط روی دستگاه شما) رمزنگاری می‌شوند و سرور هرگز نمی‌تواند محتوای آن‌ها را بخواند. چت معمولی همین کاربر جداگانه و بدون تغییر کار می‌کند.</string>
+    <string name="XoSecretFingerprintHeader">اثر انگشت رمزنگاری</string>
+    <string name="XoSecretFingerprintHint">این مقدار روی هر دو دستگاه یکسان است. برای اطمینان کامل، آن را با طرف مقابل (حضوری یا از راه مطمئن) مقایسه کنید.</string>
+    <string name="XoSecretKeyChanged">کلید رمزنگاری طرف مقابل تغییر کرده است (نصب مجدد یا دستگاه جدید). برای اطمینان، اثر انگشت را دوباره بررسی کنید.</string>
 </resources>

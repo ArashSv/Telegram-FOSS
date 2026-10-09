@@ -252,6 +252,66 @@ public final class TlJsonMapper {
         return result;
     }
 
+    /**
+     * T78 — builds the TL_chat that represents a SECRET chat in the UI.
+     *
+     * <p>The secret chat is a SEPARATE backend row (its own id, coexisting
+     * with the cloud chat of the same user), so it gets its own dialog
+     * (dialog_id = -chatId, the chat-id space). Display info comes from the
+     * PEER user: name + avatar, with a lock marker in the title so the lock
+     * is visible in the chat list, the header and notifications (the
+     * "آیکون قفل" requirement) without touching any rendering code.
+     */
+    public static TLRPC.TL_chat parseSecretChat(JSONObject chat, TLRPC.TL_user peer) throws JSONException {
+        TLRPC.TL_chat result = new TLRPC.TL_chat();
+        result.id = chat.getLong("id");
+        String name = peer != null && peer.first_name != null && peer.first_name.length() > 0
+                ? peer.first_name
+                : (peer != null && peer.username != null && peer.username.length() > 0 ? peer.username : null);
+        if (name == null || name.length() == 0) {
+            name = chat.optString("title", null);
+        }
+        if (name == null || name.length() == 0) {
+            name = "chat" + result.id;
+        }
+        result.title = "🔒 " + name;
+        result.participants_count = 2;
+        result.date = (int) chat.optLong("created_at", System.currentTimeMillis() / 1000L);
+        result.version = 0;
+        result.creator = true;
+        result.flags |= 1;
+        // Fully permissive rights — a 2-member secret chat must allow every
+        // composer action (same defaults as basic groups above).
+        TLRPC.TL_chatBannedRights defaults = new TLRPC.TL_chatBannedRights();
+        defaults.view_messages = false;
+        defaults.send_messages = false;
+        defaults.send_media = false;
+        defaults.send_stickers = false;
+        defaults.send_gifs = false;
+        defaults.send_polls = false;
+        defaults.embed_links = false;
+        defaults.change_info = true;
+        defaults.invite_users = true;
+        defaults.pin_messages = true;
+        defaults.until_date = 0;
+        defaults.flags = 1024 | 32768 | 131072;
+        result.default_banned_rights = defaults;
+        result.flags |= 262144;
+        if (peer != null && peer.photo != null && peer.photo instanceof TLRPC.TL_userProfilePhoto) {
+            // mirror the peer's avatar onto the chat so the list/header show
+            // the familiar face (volume_id contract identical to groups)
+            TLRPC.TL_userProfilePhoto peerPhoto = (TLRPC.TL_userProfilePhoto) peer.photo;
+            TLRPC.TL_chatPhoto chatPhoto = new TLRPC.TL_chatPhoto();
+            chatPhoto.photo_small = peerPhoto.photo_small;
+            chatPhoto.photo_big = peerPhoto.photo_big;
+            chatPhoto.dc_id = peerPhoto.dc_id;
+            result.photo = chatPhoto;
+        } else {
+            result.photo = new TLRPC.TL_chatPhotoEmpty();
+        }
+        return result;
+    }
+
     // ------------------------------------------------------------------ T32: avatar surfaces
 
     /**
@@ -392,59 +452,38 @@ public final class TlJsonMapper {
         String content = msg.isNull("content") ? null : msg.optString("content", null);
         message.message = content == null ? "" : content;
 
-        // T71/T73: E2EE decrypt hook — the SINGLE JSON→TL boundary. Every 1:1
-        // envelope is opened here; failures degrade to a neutral placeholder
-        // (never an exception into the update pipeline, never garbage text).
+        // T78: SECRET-chat decrypt hook — the SINGLE JSON→TL boundary. Only
+        // SECRET chats (chats.type='secret', chat-space dialog ids) carry
+        // envelopes; CLOUD chats are plaintext end to end (the backend
+        // encrypts at rest — XOCC1 — and answers plaintext here). The XOSC1
+        // scheme is STATELESS: opening an envelope is a pure function of
+        // (own private key, envelope, AAD context), so re-parses are
+        // deterministic and idempotent — the memo machinery of the ratchet
+        // era is gone because nothing can desynchronize anymore.
         //
-        // T73 (critical): OWN outgoing echoes (sender == self) are NEVER run
-        // through decryptFromPeer. The sender's ciphertext is encrypted under
-        // the SENDING chain — libsignal cannot re-open it (UntrustedIdentity/
-        // InvalidMessage), and a PreKey-type attempt consults isTrustedIdentity
-        // with OUR OWN key under the PEER's address, which flags the peer and
-        // kills ALL further sends to them (the "no messages can be sent" bug).
-        // Own rows render from the sent-inner cache recorded at send time.
+        // OWN echoes (sender == self) still render from the sent-inner cache
+        // recorded at send time (the sender cannot re-open its own GCM
+        // output without re-deriving — the cache is the honest path).
         org.json.JSONObject e2eeInner = null;
-        if (!isGroup && org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.isEnvelope(message.message)) {
-            final long rowId = msg.optLong("id", 0L);
+        final boolean legacyXoe1 = message.message != null
+                && message.message.startsWith("XOE1:");
+        final boolean secretChat = dialogId < 0
+                && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretChatId(-dialogId);
+        if (legacyXoe1 && !secretChat) {
+            // Pre-T78 protocol rows in (now) cloud chats: the Signal-era
+            // scheme was amputated, these envelopes are undecryptable BY
+            // DESIGN. Return null so callers SKIP the row entirely — no
+            // permanent lock garbage, no fake text.
+            return null;
+        }
+        if (secretChat && org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isEnvelope(message.message)) {
             final String inner;
             if (senderId == selfId) {
-                inner = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
+                inner = org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account)
                         .getSentInnerForRender(msg.optLong("id", 0L));
             } else {
-                // T75: IDEMPOTENT RECEIVE — the same server row is parsed
-                // multiple times by design (update_queue message_new racing
-                // the history load, retries, scroll-back). libsignal's replay
-                // protection turns every 2nd+ open of the same ciphertext into
-                // DuplicateMessageException; without the memo the losing
-                // parse's "🔒" row replaced the winning parse's good row (the
-                // reported "first message not decrypted" defect). The memo is
-                // consulted BEFORE libsignal and written exactly on success,
-                // so re-parses are deterministic and cheap.
-                final org.telegram.tgnet.rest.e2ee.XoE2EEStore e2eeStore =
-                        org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(account);
-                // T76 fix: single-assignment shape (run-112 compile gate) —
-                // memo hit wins, otherwise one decrypt attempt feeds both the
-                // store and the render. Assigns the OUTER `inner` exactly once.
-                final String memo = e2eeStore.getDecryptedInner(rowId);
-                if (memo != null) {
-                    inner = memo;
-                } else {
-                    final String decrypted = org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
-                            .decryptFromPeer(senderId, message.message);
-                    if (decrypted != null) {
-                        e2eeStore.noteDecryptedInner(rowId, decrypted);
-                        // T77: a prior failure for this row is now healed
-                        e2eeStore.dropLockedEnvelope(rowId);
-                    } else {
-                        // T77 ROOT FIX: NEVER let a transient decrypt failure
-                        // destroy the ciphertext. The row still renders "🔒"
-                        // below (display-only), but the envelope is preserved
-                        // and the repair sweep re-opens it when the protocol
-                        // state improves — the chat no longer corrupts.
-                        e2eeStore.noteLockedEnvelope(rowId, dialogId, message.message);
-                    }
-                    inner = decrypted;
-                }
+                inner = org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account)
+                        .decryptFromPeer(-dialogId, senderId, message.message);
             }
             if (inner != null) {
                 try {
@@ -577,27 +616,27 @@ public final class TlJsonMapper {
         message.flags |= 512;
         message.dialog_id = dialogId;
 
-        // T71: media envelope post-processing — for kind='e2ee' rows the
+        // T78: media envelope post-processing — for kind='e2ee' rows the
         // decrypted payload carries the REAL mime/name/dimensions/caption
         // (the server row is opaque octet-stream). Rebuild the media shape
         // from the plaintext metadata and register the media keys for the
         // download-decrypt step. Caption was already applied above.
         if (e2eeInner != null && "m".equals(e2eeInner.optString("t", ""))) {
             try {
-                org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta =
-                        org.telegram.tgnet.rest.e2ee.XoE2EE.parseMediaMeta(e2eeInner);
+                org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta =
+                        org.telegram.tgnet.rest.e2ee.XoSecret.parseMediaMeta(e2eeInner);
                 if (meta != null) {
                     long fileId = mediaJson != null ? mediaJson.optLong("file_id", 0) : 0;
-                    org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteMediaKeys(fileId, meta);
+                    org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account).noteMediaKeys(fileId, meta);
                     long thumbFileId = mediaJson != null ? mediaJson.optLong("thumb_file_id", 0) : 0;
                     if (thumbFileId > 0 && meta.thumbKey != null) {
-                        org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta tm =
-                                new org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta();
+                        org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta tm =
+                                new org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta();
                         tm.fileKey = meta.thumbKey;
                         tm.chunkSize = meta.chunkSize;
                         tm.thumbEncrypted = true;
                         tm.thumbFileId = meta.thumbFileId;
-                        org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteMediaKeys(thumbFileId, tm);
+                        org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account).noteMediaKeys(thumbFileId, tm);
                     }
                     message.media = rebuildE2eeMedia(meta, mediaJson, message.date);
                 }
@@ -1004,14 +1043,18 @@ public final class TlJsonMapper {
 
                     JSONObject lastJson = chat.optJSONObject("last_message");
                     if (lastJson != null) {
+                        // T78: legacy XOE1 rows parse to null (skipped) — the
+                        // dialog then simply has no preview line
                         TLRPC.TL_message last = parseMessage(account, lastJson, dialogId, isGroup,
                                 isGroup ? 0 : peer.id, selfId);
-                        dialog.top_message = last.id;
-                        dialog.last_message_date = last.date;
-                        dialog.read_outbox_max_id = last.id; // v1 has no outbox cursor; sync 'read' events correct it
-                        dialog.read_inbox_max_id = dialog.unread_count == 0 ? last.id
-                                : Math.max(0, last.id - dialog.unread_count);
-                        container.messages.add(last);
+                        if (last != null) {
+                            dialog.top_message = last.id;
+                            dialog.last_message_date = last.date;
+                            dialog.read_outbox_max_id = last.id; // v1 has no outbox cursor; sync 'read' events correct it
+                            dialog.read_inbox_max_id = dialog.unread_count == 0 ? last.id
+                                    : Math.max(0, last.id - dialog.unread_count);
+                            container.messages.add(last);
+                        }
                     }
                     container.dialogs.add(dialog);
                 } catch (JSONException e) {
@@ -1036,7 +1079,12 @@ public final class TlJsonMapper {
         if (messagesJson != null) {
             for (int a = 0; a < messagesJson.length(); a++) {
                 JSONObject msg = messagesJson.getJSONObject(a);
-                messages.add(parseMessage(account, msg, dialogId, isGroup, peerUserId, selfId));
+                // T78: legacy XOE1 rows parse to null and are skipped (the
+                // pre-T78 protocol is amputated; the row is dead history)
+                TLRPC.TL_message parsed = parseMessage(account, msg, dialogId, isGroup, peerUserId, selfId);
+                if (parsed != null) {
+                    messages.add(parsed);
+                }
             }
         }
         return messages;
@@ -1050,7 +1098,7 @@ public final class TlJsonMapper {
      * download attestation (X-File-Size / X-Range-Sha256) is over the
      * ciphertext bytes and must not be patched.
      */
-    private static TLRPC.MessageMedia rebuildE2eeMedia(org.telegram.tgnet.rest.e2ee.XoE2EE.MediaMeta meta,
+    private static TLRPC.MessageMedia rebuildE2eeMedia(org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta,
                                                        JSONObject mediaJson, int messageDate) {
         if (mediaJson == null) {
             return new TLRPC.TL_messageMediaEmpty();

@@ -169,14 +169,14 @@ public final class UpdatePoller {
             lastPresenceBackground = isBackground();
             lastPresenceFlipElapsed = SystemClock.elapsedRealtime();
             FileLog.d("UpdatePoller: started for account " + account + " user " + selfId);
-            // T71: opportunistic E2EE key registration — a fresh login posts
-            // its public prekey bundle as soon as the session is live, so the
-            // FIRST incoming 1:1 message can already be encrypted. Async +
-            // idempotent; a failure retries before the first send.
+            // T78: opportunistic SECRET-chat key registration — a fresh login
+            // posts its X25519 public key to the registry as soon as the
+            // session is live. Async + idempotent; a failure retries before
+            // the first secret send. Cloud chats need no keys at all.
             try {
-                org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).ensureRegisteredAsync();
+                org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account).ensureRegisteredAsync();
             } catch (Throwable e) {
-                FileLog.e("UpdatePoller: e2ee registration kick failed", e);
+                FileLog.e("UpdatePoller: secret registration kick failed", e);
             }
             scheduler.execute(this::tick);
         }
@@ -605,8 +605,19 @@ public final class UpdatePoller {
             return false; // parked — was: dropped forever
         }
         boolean isGroup = index.isGroup(chatId);
+        boolean isSecret = index.isSecret(chatId); // T78: secret chats are chat-space dialogs
         long peerUserId = 0;
-        if (isGroup) {
+        if (isSecret) {
+            TLRPC.TL_chat chat = index.secretChat(chatId);
+            if (chat == null) {
+                return false; // parked — the chat object hydration races the first sync
+            }
+            chatsArr.add(chat);
+            peerUserId = index.secretPeerUser(chatId);
+            if (peerUserId == 0) {
+                return false; // parked
+            }
+        } else if (isGroup) {
             TLRPC.TL_chat chat = index.groupChat(chatId);
             if (chat == null) {
                 return false; // parked — was: dropped forever
@@ -619,8 +630,12 @@ public final class UpdatePoller {
             }
         }
         try {
-            long dialogId = isGroup ? -chatId : peerUserId;
-            TLRPC.TL_message message = TlJsonMapper.parseMessage(account, msgJson, dialogId, isGroup, peerUserId, selfId);
+            long dialogId = (isSecret || isGroup) ? -chatId : peerUserId;
+            TLRPC.TL_message message = TlJsonMapper.parseMessage(account, msgJson, dialogId,
+                    isGroup || isSecret, peerUserId, selfId);
+            if (message == null) {
+                return true; // legacy XOE1 row — deliberately skipped
+            }
             index.rememberMessages(chatId, java.util.Collections.singletonList(message));
             TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
             update.message = message;
@@ -653,8 +668,19 @@ public final class UpdatePoller {
             return; // the edit concerns a chat this device never opened; history will load it fresh
         }
         boolean isGroup = index.isGroup(chatId);
+        boolean isSecret = index.isSecret(chatId); // T78
         long peerUserId = 0;
-        if (isGroup) {
+        if (isSecret) {
+            TLRPC.TL_chat chat = index.secretChat(chatId);
+            if (chat == null) {
+                return;
+            }
+            chatsArr.add(chat);
+            peerUserId = index.secretPeerUser(chatId);
+            if (peerUserId == 0) {
+                return;
+            }
+        } else if (isGroup) {
             TLRPC.TL_chat chat = index.groupChat(chatId);
             if (chat == null) {
                 return;
@@ -667,8 +693,12 @@ public final class UpdatePoller {
             }
         }
         try {
-            long dialogId = isGroup ? -chatId : peerUserId;
-            TLRPC.TL_message message = TlJsonMapper.parseMessage(account, msgJson, dialogId, isGroup, peerUserId, selfId);
+            long dialogId = (isSecret || isGroup) ? -chatId : peerUserId;
+            TLRPC.TL_message message = TlJsonMapper.parseMessage(account, msgJson, dialogId,
+                    isGroup || isSecret, peerUserId, selfId);
+            if (message == null) {
+                return; // legacy XOE1 row — deliberately skipped
+            }
             index.rememberMessages(chatId, java.util.Collections.singletonList(message));
             TLRPC.TL_updateEditMessage update = new TLRPC.TL_updateEditMessage();
             update.message = message;

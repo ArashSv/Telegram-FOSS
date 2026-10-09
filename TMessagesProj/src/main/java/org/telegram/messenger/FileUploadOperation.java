@@ -348,7 +348,7 @@ public class FileUploadOperation {
                     // T71: restore path — rebind the E2EE upload intent to the
                     // persisted tree id so resumed parts stay encrypted
                     if (currentFileId != 0) {
-                        org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(currentAccount)
+                        org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
                                 .bindTreeUploadId(uploadingFilePath, currentFileId);
                     }
                     int date = preferences.getInt(fileKey + "_time", 0);
@@ -452,7 +452,7 @@ public class FileUploadOperation {
                     currentFileId = Utilities.random.nextLong();
                     // T71: fresh start — bind the E2EE upload intent (if any)
                     // to the new tree upload id
-                    org.telegram.tgnet.rest.e2ee.XoE2EEStore.getInstance(currentAccount)
+                    org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
                             .bindTreeUploadId(uploadingFilePath, currentFileId);
                     if (!nextPartFirst && !uploadFirstPartLater && estimatedSize == 0) {
                         storeFileUploadInfo();

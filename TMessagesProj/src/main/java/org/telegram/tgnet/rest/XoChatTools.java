@@ -107,29 +107,13 @@ public final class XoChatTools {
                     // logout/re-login. The peer gets it via the message_new poll
                     // event.
                     try {
-                        // T71/T80: seed rides the E2EE path ONLY for secret
-                        // chats; cloud chats (the default) seed plaintext and
-                        // the server at-rest-seals it.
-                        boolean seedE2ee = org.telegram.tgnet.rest.RestChatIndex.getInstance(account)
-                                .isSecretPeer(peerUserId);
-                        String seedWire = seedE2ee
-                                ? org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account)
-                                        .encryptText(peerUserId, SEED_TEXT)
-                                : SEED_TEXT;
-                        JSONObject sent = gateway.send(chatId, seedWire, 0);
+                        // T78: cloud chats are plaintext end to end for the
+                        // client (the backend encrypts at rest) — the seed is a
+                        // plain row. Secret chats get their encrypted seed from
+                        // their own creation flow (addSecretChatById).
+                        JSONObject sent = gateway.send(chatId, SEED_TEXT, 0);
                         JSONObject msgJson = sent.optJSONObject("message");
                         if (msgJson != null) {
-                            // T73: own-echo rendering — the seed's plaintext inner
-                            // must be noted before the own-row parse reads it back
-                            if (seedE2ee) {
-                                try {
-                                    org.telegram.tgnet.rest.e2ee.XoE2EE.getInstance(account).noteSentInner(
-                                            msgJson.optLong("id", 0L),
-                                            org.telegram.tgnet.rest.e2ee.XoE2EEEnvelope.innerText(SEED_TEXT));
-                                } catch (Exception e2) {
-                                    FileLog.e("XoChatTools: seed sent-inner note failed", e2);
-                                }
-                            }
                             seedMessage = TlJsonMapper.parseMessage(account, msgJson, dialogId, false, peer.id, selfId);
                             RestChatIndex.getInstance(account).rememberMessages(chatId,
                                     new ArrayList<>(java.util.Collections.singletonList(seedMessage)));
@@ -193,5 +177,133 @@ public final class XoChatTools {
 
     private static void postError(Result callback, String message) {
         AndroidUtilities.runOnUIThread(() -> callback.onError(message));
+    }
+
+    /**
+     * T78 — "Start Secret Chat": creates (or reopens) the SEPARATE secret
+     * chat with a user, Telegram-style. The CLOUD chat of the same pair is
+     * untouched — both dialogs coexist in the list (the secret one carries
+     * the lock marker).
+     *
+     * <ol>
+     *   <li>{@code POST /chats/create.php type=secret} (idempotent pair_key);</li>
+     *   <li>{@link RestChatIndex#scanChats} — registers user->secretChatId and
+     *       caches the TL_chat (peer name + lock marker) so history/send/read
+     *       address the dialog immediately;</li>
+     *   <li>an ENCRYPTED seed rides the new XOSC1 scheme when the peer's
+     *       public key is already in the registry (no key yet -> the dialog
+     *       still appears; the first real send defers until the key lands);</li>
+     *   <li>UI thread: user + chat go into MessagesController, then a full
+     *       loadDialogs reload surfaces the dialog.</li>
+     * </ol>
+     */
+    public static void addSecretChatById(int account, long peerUserId, Result callback) {
+        long selfId = UserConfig.getInstance(account).clientUserId;
+        if (peerUserId <= 0) {
+            callback.onError("Invalid ID");
+            return;
+        }
+        if (peerUserId == selfId) {
+            callback.onError("A secret chat with yourself is not supported");
+            return;
+        }
+        IO_QUEUE.execute(() -> {
+            try {
+                RestGateway gateway = RestGateway.getInstance(account);
+
+                JSONArray users = gateway.usersGet(new long[]{peerUserId});
+                if (users == null || users.length() == 0) {
+                    postError(callback, "User " + peerUserId + " not found");
+                    return;
+                }
+                JSONObject userJson = users.optJSONObject(0);
+                if (userJson == null) {
+                    postError(callback, "Malformed user answer");
+                    return;
+                }
+                TLRPC.TL_user peer = TlJsonMapper.parseUser(userJson, false);
+
+                JSONObject created = gateway.createSecretChat(peerUserId);
+                JSONObject chatJson = created.optJSONObject("chat");
+                if (chatJson == null) {
+                    postError(callback, "Malformed chat answer");
+                    return;
+                }
+                boolean isNewChat = created.optBoolean("created", false);
+
+                JSONArray single = new JSONArray();
+                single.put(chatJson);
+                RestChatIndex.ScanResult scan = RestChatIndex.getInstance(account).scanChats(single);
+
+                long chatId = chatJson.optLong("id", 0);
+                long dialogId = -chatId; // chat-space dialog (own list entry, lock marker)
+                TLRPC.TL_message seedMessage = null;
+                if (isNewChat && chatId > 0) {
+                    try {
+                        // the seed rides XOSC1 when the peer key exists; without
+                        // a key the dialog still surfaces (no plaintext fallback)
+                        String seedWire = org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account)
+                                .encryptText(chatId, peerUserId, SEED_TEXT);
+                        JSONObject sent = gateway.send(chatId, seedWire, 0);
+                        JSONObject msgJson = sent.optJSONObject("message");
+                        if (msgJson != null) {
+                            org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account).noteSentInner(
+                                    msgJson.optLong("id", 0L),
+                                    org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerText(SEED_TEXT));
+                            seedMessage = TlJsonMapper.parseMessage(account, msgJson, dialogId, true, peer.id, selfId);
+                            RestChatIndex.getInstance(account).rememberMessages(chatId,
+                                    new ArrayList<>(java.util.Collections.singletonList(seedMessage)));
+                        }
+                    } catch (Exception e) {
+                        FileLog.w("XoChatTools: secret seed deferred (peer key missing?): " + e.getMessage());
+                    }
+                }
+
+                ArrayList<TLRPC.User> usersToPut = new ArrayList<>();
+                usersToPut.add(peer);
+                ArrayList<TLRPC.Chat> chatsToPut = new ArrayList<>(scan.chats);
+
+                final TLRPC.TL_message fSeed = seedMessage;
+                AndroidUtilities.runOnUIThread(() -> {
+                    try {
+                        MessagesController messagesController = MessagesController.getInstance(account);
+                        messagesController.putUsers(usersToPut, false);
+                        messagesController.putChats(chatsToPut, false);
+                        if (fSeed != null) {
+                            TLRPC.TL_updates updates = new TLRPC.TL_updates();
+                            TLRPC.TL_updateNewMessage update = new TLRPC.TL_updateNewMessage();
+                            update.message = fSeed;
+                            update.pts = 0;
+                            update.pts_count = 0;
+                            updates.updates.add(update);
+                            updates.date = (int) (System.currentTimeMillis() / 1000L);
+                            updates.seq = 0;
+                            ArrayList<TLRPC.User> usersArr = new ArrayList<>(usersToPut);
+                            Utilities.stageQueue.postRunnable(() -> {
+                                try {
+                                    messagesController.processUpdateArray(updates.updates, usersArr, chatsToPut, false, (int) (System.currentTimeMillis() / 1000L));
+                                } catch (Exception e) {
+                                    FileLog.e("XoChatTools: secret seed apply failed", e);
+                                }
+                            });
+                        } else {
+                            messagesController.loadDialogs(0, 0, 100, false);
+                        }
+                    } catch (Exception e) {
+                        FileLog.e("XoChatTools: post-secret-create UI refresh failed", e);
+                    }
+                    callback.onReady(dialogId, peer.first_name, isNewChat);
+                });
+            } catch (XoApiException e) {
+                String message = e.errorCode != null && !"UNKNOWN".equals(e.errorCode)
+                        ? e.errorCode + (TextUtils.isEmpty(e.getMessage()) ? "" : ": " + e.getMessage())
+                        : (e.getMessage() != null ? e.getMessage() : "Request failed");
+                FileLog.e("XoChatTools: add secret chat failed", e);
+                postError(callback, message);
+            } catch (Exception e) {
+                FileLog.e("XoChatTools: add secret chat failed", e);
+                postError(callback, e.getMessage() != null ? e.getMessage() : "Connection failed");
+            }
+        });
     }
 }

@@ -53,8 +53,14 @@ public final class RestChatIndex {
     private final LongSparseArray<Long> privateChatByUser = new LongSparseArray<>();
     /** backend chat_id -> user_id for private chats (reverse view). */
     private final SparseArray<Long> userByPrivateChat = new SparseArray<>();
+    /** T78: user_id -> backend SECRET chat id (separate row per pair). */
+    private final LongSparseArray<Long> secretChatByUser = new LongSparseArray<>();
+    /** T78: backend SECRET chat id -> peer user id (reverse view). */
+    private final SparseArray<Long> userBySecretChat = new SparseArray<>();
     /** backend chat_id -> last seen group Chat object (for sync chatsArr hydration). */
     private final SparseArray<TLRPC.TL_chat> groupChats = new SparseArray<>();
+    /** T78: backend SECRET chat id -> last seen Chat object (peer info for UI). */
+    private final SparseArray<TLRPC.TL_chat> secretChats = new SparseArray<>();
     /** backend chat_id -> chat type ("private" | "group" | "channel"). */
     private final HashMap<Long, String> chatTypes = new HashMap<>();
     /** T80: backend chat_id -> encryption mode ("cloud" | "secret"). The
@@ -80,7 +86,10 @@ public final class RestChatIndex {
         synchronized (this) {
             privateChatByUser.clear();
             userByPrivateChat.clear();
+            secretChatByUser.clear();
+            userBySecretChat.clear();
             groupChats.clear();
+            secretChats.clear();
             chatTypes.clear();
             chatModes.clear();
             chatByMessageId.clear();
@@ -113,6 +122,59 @@ public final class RestChatIndex {
             groupChats.put((int) chat.id, chat);
             chatTypes.put(chat.id, "group");
             chatModes.remove(chat.id); // groups have no secret mode (T80)
+        }
+    }
+
+    // ----------------------------------------------------------- secret chats (T78)
+
+    /** Registers a SECRET chat mapping (user -> its own separate chat row). */
+    public long putSecret(long userId, long chatId) {
+        synchronized (this) {
+            secretChatByUser.put(userId, chatId);
+            userBySecretChat.put((int) chatId, userId);
+            chatTypes.put(chatId, "secret");
+            return chatId;
+        }
+    }
+
+    /** Registers/updates the SECRET chat object (peer display info for the UI). */
+    public void putSecretChat(TLRPC.TL_chat chat) {
+        if (chat == null) {
+            return;
+        }
+        synchronized (this) {
+            secretChats.put((int) chat.id, chat);
+            chatTypes.put(chat.id, "secret");
+        }
+    }
+
+    /** @return true when this backend chat id is a SECRET chat. */
+    public boolean isSecret(long chatId) {
+        synchronized (this) {
+            return "secret".equals(chatTypes.get(chatId));
+        }
+    }
+
+    /** @return the backend SECRET chat id for a user, or 0 when none. */
+    public long secretChatIdFor(long userId) {
+        synchronized (this) {
+            Long chatId = secretChatByUser.get(userId);
+            return chatId == null ? 0L : chatId;
+        }
+    }
+
+    /** @return the peer user id of a SECRET chat, or 0 when unknown. */
+    public long secretPeerUser(long chatId) {
+        synchronized (this) {
+            Long userId = userBySecretChat.get((int) chatId);
+            return userId == null ? 0L : userId;
+        }
+    }
+
+    /** @return the cached SECRET chat object, or null. */
+    public TLRPC.TL_chat secretChat(long chatId) {
+        synchronized (this) {
+            return secretChats.get((int) chatId);
         }
     }
 
@@ -272,7 +334,22 @@ public final class RestChatIndex {
                         chatModes.put(chatId, secretOrCloud(mode));
                     }
                 }
-                if ("private".equals(type) && peerJson != null) {
+                if ("secret".equals(type) && peerJson != null) {
+                    // T78: a secret chat is a SEPARATE dialog with its own
+                    // backend id — represented as a TL_chat (chat-style
+                    // dialog id = -chatId) so it coexists with the cloud
+                    // chat of the same user. The peer user drives the key
+                    // lookup; the display info rides the chat object.
+                    TLRPC.TL_user peer = TlJsonMapper.parseUser(peerJson, false);
+                    putSecret(peer.id, chatId);
+                    result.users.add(peer);
+                    result.userByChat.put(chatId, peer);
+                    TLRPC.TL_chat secretChat = TlJsonMapper.parseSecretChat(chatJson, peer);
+                    if (secretChat != null) {
+                        putSecretChat(secretChat);
+                        result.chats.add(secretChat);
+                    }
+                } else if ("private".equals(type) && peerJson != null) {
                     TLRPC.TL_user peer = TlJsonMapper.parseUser(peerJson, false);
                     putPrivate(peer.id, chatId, mode);
                     result.users.add(peer);

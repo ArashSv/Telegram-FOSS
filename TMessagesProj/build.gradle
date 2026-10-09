@@ -37,14 +37,11 @@ dependencies {
     implementation 'androidx.interpolator:interpolator:1.0.0'
     implementation 'androidx.biometric:biometric:1.1.0'
 
-    // T71 — End-to-End encryption for 1:1 chats: the Signal Protocol
-    // (X3DH + Double Ratchet) reference implementation. The *java* artifact
-    // is deliberate: it is pure JVM (curve25519-java + protobuf-javalite),
-    // adds NO native .so (nothing for the T66 16KB-page CI gate to re-check,
-    // no per-ABI bloat), runs identically on device AND in the CI JVM test
-    // job, and implements the audited protocol instead of a hand-rolled
-    // ratchet (see docs/E2EE.md). License GPLv3 — matches this fork's own.
-    implementation 'org.whispersystems:signal-protocol-java:2.8.1'
+    // T78 — the Signal-protocol dependency was REMOVED with the protocol
+    // itself. Secret chats now use the dependency-free stateless scheme in
+    // tgnet/rest/e2ee/ (XoCurve25519 RFC 7748 port + HKDF + JCA AES-GCM),
+    // pinned by the official RFC 7748 test vectors in the JVM suite.
+    // Cloud chats carry NO client crypto at all (server-side at-rest key).
 
     compileOnly 'org.checkerframework:checker-qual:2.5.2'
     compileOnly 'org.checkerframework:checker-compat-qual:2.5.0'

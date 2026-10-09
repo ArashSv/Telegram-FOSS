@@ -21,52 +21,36 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * T75 — "chat creation request" semantics for E2EE 1:1 chats (user
- * requirement: a chat must be creatable — and messageable — even when the
- * peer has no keys yet: not logged in, fresh install, old build).
+ * T78 — deferral for secret-chat sends when the PEER has no public key yet
+ * (not installed / old build). Same UX contract the user required in T75:
+ * the chat IS created server-side (the peer sees it on next sync), the
+ * pending rows keep their clock icon, and a probe loop re-dispatches them
+ * the moment the peer's key appears in the registry.
  *
- * <p>Contract: the private chat row is ALREADY created server-side before
- * the encryption gate runs (requireChatId → chats/create-private), so the
- * peer sees the chat on their next sync. What cannot happen yet is the
- * ENCRYPTED send. Instead of failing the message (the pre-T75 behavior),
- * the send error branches call {@link #maybeDefer}: the row STAYS in the
- * sending state (clock icon — standard Telegram pending semantics, no error
- * bulletin, no plaintext fallback), and the dialog joins the watch set.
- *
- * <p>The probe loop asks the backend {@code GET e2ee/keys/exists.php} (a
- * pure SELECT — never bundle.php, which CONSUMES one-time prekeys) whether
- * each watched peer has registered keys. On the first "yes" the dialog's
- * pending rows (mid&lt;0 AND send_state=SENDING, persisted by the tree) are
- * re-dispatched through {@link SendMessagesHelper#retrySendMessage} — the
- * full pipeline, exactly as if the user had tapped retry. Single-flight per
- * dialog, bounded probe cadence, watch set persisted across process death.
- *
- * <p>Conflict safety ("بدون تداخل"): the flush re-enters the canonical send
- * path, so ordering, key binding (same location → same upload key) and
- * server-side dedupe keep their usual guarantees; a flush that hits a
- * still-keyless peer simply re-defers. Identity-rotation failures are NEVER
- * deferred (only the "no keys yet" code qualifies).
+ * <p>Adapted from the T75 XoPendingKeys: watched ids are now SECRET DIALOG
+ * ids (negative, chat space); the probe asks the pure-SELECT
+ * {@code GET secret/keys.php?user_id=} — no consumption, no races.
  */
-public final class XoPendingKeys {
+public final class XoSecretPending {
 
     /** The ONLY error text that qualifies for deferral. */
-    public static final String DEFERRABLE_CODE = "E2EE_NO_PEER_KEYS";
+    public static final String DEFERRABLE_CODE = XoSecret.REASON_NO_PEER_KEY;
 
     private static final long PROBE_INTERVAL_MS = 45_000;
     private static final long PROBE_INTERVAL_BACKGROUND_MS = 3 * 60_000;
     private static final long MIN_FLUSH_GAP_MS = 60_000;
 
-    private static final XoPendingKeys[] instances = new XoPendingKeys[UserConfig.MAX_ACCOUNT_COUNT];
+    private static final XoSecretPending[] instances = new XoSecretPending[UserConfig.MAX_ACCOUNT_COUNT];
 
-    public static XoPendingKeys getInstance(int account) {
-        if (account < 0 || account >= UserConfig.MAX_ACCOUNT_COUNT) {
+    public static XoSecretPending getInstance(int account) {
+        if (account < 0 || account >= instances.length) {
             account = 0;
         }
-        XoPendingKeys mgr;
-        synchronized (XoPendingKeys.class) {
+        XoSecretPending mgr;
+        synchronized (XoSecretPending.class) {
             mgr = instances[account];
             if (mgr == null) {
-                mgr = new XoPendingKeys(account);
+                mgr = new XoSecretPending(account);
                 instances[account] = mgr;
             }
         }
@@ -75,31 +59,30 @@ public final class XoPendingKeys {
 
     private final int account;
     private final Object lock = new Object();
-    private final Set<Long> watchedPeers = new HashSet<>();
+    private final Set<Long> watchedDialogs = new HashSet<>();
     private final Set<Long> flushing = new HashSet<>();
+    private final HashMap<Long, Long> flushTimestamps = new HashMap<>();
     private final SharedPreferences prefs;
     private boolean scheduled;
     private boolean started;
 
-    private XoPendingKeys(int account) {
+    private XoSecretPending(int account) {
         this.account = account;
         this.prefs = ApplicationLoader.applicationContext.getSharedPreferences(
-                "xopendingkeys_" + account, Context.MODE_PRIVATE);
+                "xosecretpending_" + account, Context.MODE_PRIVATE);
     }
 
-    // ------------------------------------------------------------------ defer seam (called from send error branches)
+    // ------------------------------------------------------------------ defer seam
 
     /**
-     * Deferral gate for the send error branches. Handles EXACTLY the
-     * "peer has no keys yet" code and nothing else.
+     * Deferral gate for the send error branches — EXACTLY the "peer has no
+     * key yet" code and nothing else.
      *
-     * @return true when the rows were deferred — the caller must NOT mark
-     *         them as send-error, NOT show an error bulletin, and simply
-     *         return (the rows keep their clock icon and the probe loop
-     *         re-dispatches them when the peer's keys appear)
+     * @return true when the rows were deferred (caller must NOT mark them
+     * as send-error and NOT show an error bulletin)
      */
     public boolean maybeDefer(String errorText, List<TLRPC.Message> rows, boolean scheduled_) {
-        if (!deferrable(errorText, rows, UserConfig.getInstance(account).clientUserId)) {
+        if (!deferrable(errorText, rows)) {
             return false;
         }
         for (int a = 0; a < rows.size(); a++) {
@@ -113,28 +96,9 @@ public final class XoPendingKeys {
             }
             watch(row.dialog_id);
         }
-        XoE2eeLog.event(account, "pending.defer", rows.get(0).dialog_id,
-                "rows=" + rows.size() + " code=" + errorText);
+        XoE2eeLog.event(account, "secret.pending.defer", rows.get(0).dialog_id,
+                "rows=" + rows.size());
         startProbing();
-        return true;
-    }
-
-    /**
-     * Pure decision core (JVM-testable): only the exact "no keys yet" code,
-     * only non-empty rows, only PRIVATE non-self dialogs (groups stay
-     * plaintext — there is nothing to wait for; self-chats are never E2EE).
-     */
-    public static boolean deferrable(String errorText, List<TLRPC.Message> rows, long selfId) {
-        if (errorText == null || !DEFERRABLE_CODE.equals(errorText) || rows == null || rows.isEmpty()) {
-            return false;
-        }
-        for (int a = 0; a < rows.size(); a++) {
-            TLRPC.Message row = rows.get(a);
-            long dialogId = row.dialog_id;
-            if (dialogId <= 0 || dialogId == selfId) {
-                return false; // group / self rows never defer
-            }
-        }
         return true;
     }
 
@@ -148,12 +112,7 @@ public final class XoPendingKeys {
         return maybeDefer(errorText, list, scheduled_);
     }
 
-    /**
-     * Overload for the group callbacks (albums carry MessageObject lists).
-     * T76: NOT a generic erasure-compatible overload of the Message variant
-     * (same erasure = compile error); a distinct name keeps both lists
-     * first-class without boxing through a Map.
-     */
+    /** Overload for the album callbacks (MessageObject lists). */
     public boolean maybeDeferObjects(String errorText, List<MessageObject> rows, boolean scheduled_) {
         if (errorText == null || !DEFERRABLE_CODE.equals(errorText) || rows == null || rows.isEmpty()) {
             return false;
@@ -165,31 +124,46 @@ public final class XoPendingKeys {
         return maybeDefer(errorText, owners, scheduled_);
     }
 
+    /**
+     * Pure decision core (JVM-testable): the exact "no key yet" code, and
+     * every row must belong to a SECRET dialog (negative chat-space id).
+     */
+    public static boolean deferrable(String errorText, List<TLRPC.Message> rows) {
+        if (errorText == null || !DEFERRABLE_CODE.equals(errorText) || rows == null || rows.isEmpty()) {
+            return false;
+        }
+        for (int a = 0; a < rows.size(); a++) {
+            if (rows.get(a).dialog_id >= 0) {
+                return false; // cloud dialogs never defer
+            }
+        }
+        return true;
+    }
+
     // ------------------------------------------------------------------ watch set
 
     private void watch(long dialogId) {
         synchronized (lock) {
-            watchedPeers.add(dialogId);
+            watchedDialogs.add(dialogId);
             persistLocked();
         }
     }
 
     public boolean isWatched(long dialogId) {
         synchronized (lock) {
-            return watchedPeers.contains(dialogId);
+            return watchedDialogs.contains(dialogId);
         }
     }
 
     public int watchedCount() {
         synchronized (lock) {
-            return watchedPeers.size();
+            return watchedDialogs.size();
         }
     }
 
-    /** Test seam: forget everything (JVM suite). */
     public void resetForTests() {
         synchronized (lock) {
-            watchedPeers.clear();
+            watchedDialogs.clear();
             flushing.clear();
             flushTimestamps.clear();
             started = false;
@@ -200,12 +174,12 @@ public final class XoPendingKeys {
     private void persistLocked() {
         try {
             JSONArray arr = new JSONArray();
-            for (Long did : watchedPeers) {
+            for (Long did : watchedDialogs) {
                 arr.put(did);
             }
             prefs.edit().putString("dialogs", arr.toString()).apply();
         } catch (Exception e) {
-            FileLog.e("XoPendingKeys: persist failed", e);
+            FileLog.e("XoSecretPending: persist failed", e);
         }
     }
 
@@ -219,21 +193,20 @@ public final class XoPendingKeys {
             if (raw != null) {
                 JSONArray arr = new JSONArray(raw);
                 for (int a = 0; a < arr.length(); a++) {
-                    watchedPeers.add(arr.optLong(a, 0));
+                    watchedDialogs.add(arr.optLong(a, 0));
                 }
             }
         } catch (Exception e) {
-            FileLog.e("XoPendingKeys: restore failed", e);
+            FileLog.e("XoSecretPending: restore failed", e);
         }
     }
 
     // ------------------------------------------------------------------ probe loop
 
-    /** Starts (or resumes) the periodic probe — safe to call repeatedly. */
     public void startProbing() {
         synchronized (lock) {
             restoreLocked();
-            if (scheduled || watchedPeers.isEmpty()) {
+            if (scheduled || watchedDialogs.isEmpty()) {
                 return;
             }
             scheduled = true;
@@ -252,7 +225,7 @@ public final class XoPendingKeys {
             List<Long> due;
             boolean screenOn;
             synchronized (lock) {
-                due = new ArrayList<>(watchedPeers);
+                due = new ArrayList<>(watchedDialogs);
             }
             if (due.isEmpty()) {
                 synchronized (lock) {
@@ -268,9 +241,9 @@ public final class XoPendingKeys {
                 }
             }
             synchronized (lock) {
-                if (watchedPeers.isEmpty()) {
+                if (watchedDialogs.isEmpty()) {
                     scheduled = false;
-                    return; // nothing left to watch — loop ends
+                    return;
                 }
             }
             AndroidUtilities.runOnUIThread(this, screenOn ? PROBE_INTERVAL_MS : PROBE_INTERVAL_BACKGROUND_MS);
@@ -278,27 +251,34 @@ public final class XoPendingKeys {
     };
 
     private void probeAndMaybeFlush(final long dialogId) {
-        ExistsProbe override = probeOverride;
+        KeyProbe override = probeOverride;
         if (override != null) {
-            final boolean registered = override.registered(dialogId);
-            if (registered) {
+            if (override.registered(dialogId)) {
                 AndroidUtilities.runOnUIThread(() -> flushDialog(dialogId));
             }
             return;
         }
+        final long peerUserId = XoSecret.secretPeerUser(-dialogId);
+        if (peerUserId <= 0) {
+            return; // index not warm yet — next tick
+        }
         org.telegram.tgnet.rest.RestGateway gateway = org.telegram.tgnet.rest.RestGateway.getInstance(account);
         org.telegram.messenger.Utilities.globalQueue.postRunnable(() -> {
-            boolean registered;
             try {
-                JSONObject resp = gateway.e2eeGet("e2ee/keys/exists.php?user_id=" + dialogId);
-                registered = resp != null && resp.optBoolean("ok", false) && resp.optBoolean("registered", false);
+                JSONObject resp = gateway.e2eeGet("secret/keys.php?user_id=" + peerUserId);
+                boolean registered = resp != null && resp.optBoolean("ok", false)
+                        && resp.optBoolean("registered", false);
+                if (registered) {
+                    // warm the cache so the flush's encrypt finds the key immediately
+                    String pk = resp.optString("pk", null);
+                    if (pk != null && !pk.isEmpty()) {
+                        XoSecretStore.getInstance(account).putPeerKey(peerUserId, pk);
+                    }
+                    AndroidUtilities.runOnUIThread(() -> flushDialog(dialogId));
+                }
             } catch (Throwable t) {
-                return; // transport hiccup — the next tick retries
+                // transport hiccup — the next tick retries
             }
-            if (!registered) {
-                return;
-            }
-            AndroidUtilities.runOnUIThread(() -> flushDialog(dialogId));
         });
     }
 
@@ -314,7 +294,7 @@ public final class XoPendingKeys {
             Long lastFlush = flushTimestamps.get(dialogId);
             long now = System.currentTimeMillis();
             if (lastFlush != null && now - lastFlush < MIN_FLUSH_GAP_MS) {
-                return; // bounded retry pressure (rescheduled below via watch)
+                return;
             }
             flushTimestamps.put(dialogId, now);
             MessagesStorage storage = org.telegram.messenger.MessagesStorage.getInstance(account);
@@ -324,7 +304,7 @@ public final class XoPendingKeys {
                 pending.addAll(scheduledMessages);
                 if (pending.isEmpty()) {
                     synchronized (lock) {
-                        watchedPeers.remove(dialogId); // nothing pending anymore
+                        watchedDialogs.remove(dialogId);
                         persistLocked();
                     }
                     return;
@@ -336,15 +316,13 @@ public final class XoPendingKeys {
                     try {
                         SendMessagesHelper.getInstance(account).retrySendMessage(obj, true);
                     } catch (Throwable t) {
-                        FileLog.e("XoPendingKeys: retry failed for dialog " + dialogId, t);
+                        FileLog.e("XoSecretPending: retry failed for dialog " + dialogId, t);
                     }
                 }
-                XoE2eeLog.event(account, "pending.flush", dialogId, "rows=" + pending.size());
+                XoE2eeLog.event(account, "secret.pending.flush", dialogId, "rows=" + pending.size());
             });
-            // the watch entry stays until the rows leave pending state; the
-            // next tick re-checks and drops the dialog when nothing remains
         } catch (Throwable t) {
-            FileLog.e("XoPendingKeys: flush failed for dialog " + dialogId, t);
+            FileLog.e("XoSecretPending: flush failed for dialog " + dialogId, t);
         } finally {
             synchronized (lock) {
                 flushing.remove(dialogId);
@@ -352,17 +330,13 @@ public final class XoPendingKeys {
         }
     }
 
-    private final HashMap<Long, Long> flushTimestamps = new HashMap<>();
-
-    /** Called by the send path when a message that used to be deferred lands
-     *  (the normal send-success cleanup already removed the row; if the
-     *  dialog has no pending rows left, the watch entry is dropped). */
+    /** Called by the send path when a formerly-deferred message lands. */
     public void onSendSettled(long dialogId) {
         org.telegram.messenger.MessagesStorage storage = org.telegram.messenger.MessagesStorage.getInstance(account);
         storage.getUnsentMessagesForDialog(dialogId, 1, (messages, scheduledMessages) -> {
             if (messages.isEmpty() && scheduledMessages.isEmpty()) {
                 synchronized (lock) {
-                    watchedPeers.remove(dialogId);
+                    watchedDialogs.remove(dialogId);
                     persistLocked();
                 }
             }
@@ -370,13 +344,13 @@ public final class XoPendingKeys {
     }
 
     /** Test seam: inject the probe answer instead of hitting the gateway. */
-    public interface ExistsProbe {
+    public interface KeyProbe {
         boolean registered(long dialogId);
     }
 
-    private volatile ExistsProbe probeOverride;
+    private volatile KeyProbe probeOverride;
 
-    public void setProbeOverrideForTests(ExistsProbe probe) {
+    public void setProbeOverrideForTests(KeyProbe probe) {
         this.probeOverride = probe;
     }
 }
