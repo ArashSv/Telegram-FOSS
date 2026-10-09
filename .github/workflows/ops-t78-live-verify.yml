@@ -22,6 +22,10 @@ jobs:
 
       - name: Two-account XOSC1 end-to-end on the LIVE backend
         run: |
+          ok=0
           for i in 1 2 3; do
-            python3 scripts/t78_live_probe.py && break || { echo "probe attempt $i failed; retrying"; sleep 8; }
+            if python3 ops/t78/live_probe.py; then ok=1; break; fi
+            echo "probe attempt $i failed; retrying"
+            sleep 8
           done
+          [ "$ok" = "1" ] || { echo "LIVE E2E FAILED after 3 attempts"; exit 1; }
