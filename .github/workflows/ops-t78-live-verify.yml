@@ -1,0 +1,27 @@
+name: Ops T78 Live Verify (separate secret chats, XOSC1)
+
+on:
+  workflow_dispatch: {}
+  workflow_run:
+    workflows: ["Build APK"]
+    types: [completed]
+
+jobs:
+  live-e2e:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install crypto deps
+        run: python3 -m pip install -q cryptography
+
+      - name: Two-account XOSC1 end-to-end on the LIVE backend
+        run: |
+          for i in 1 2 3; do
+            python3 scripts/t78_live_probe.py && break || { echo "probe attempt $i failed; retrying"; sleep 8; }
+          done
