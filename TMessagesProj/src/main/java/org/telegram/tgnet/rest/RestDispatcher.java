@@ -445,8 +445,12 @@ public final class RestDispatcher {
         // re-opened by its sender; the cache is the render source). Cloud
         // rows are plaintext on the wire and need no cache.
         if (peer.isSecret) {
-            XoSecret.getInstance(account).noteSentInner(msgJson.optLong("id", 0L),
-                    org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerText(req.message));
+            try {
+                XoSecret.getInstance(account).noteSentInner(msgJson.optLong("id", 0L),
+                        org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerText(req.message));
+            } catch (Exception e) {
+                FileLog.e("RestDispatcher: sent-inner note failed", e);
+            }
         }
         TLRPC.TL_message message;
         try {
@@ -2798,8 +2802,12 @@ public final class RestDispatcher {
         // the edit re-encrypted the text — refresh the own-echo source so
         // the edited row renders the NEW text on this device
         if (peer.isSecret) {
-            XoSecret.getInstance(account).noteSentInner(req.id,
-                    org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerEdit(req.message));
+            try {
+                XoSecret.getInstance(account).noteSentInner(req.id,
+                        org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerEdit(req.message));
+            } catch (Exception e) {
+                FileLog.e("RestDispatcher: edit sent-inner note failed", e);
+            }
         }
         long selfId = UserConfig.getInstance(account).clientUserId;
         TLRPC.TL_message message;
