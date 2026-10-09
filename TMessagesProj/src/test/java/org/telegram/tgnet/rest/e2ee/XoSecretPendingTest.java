@@ -15,7 +15,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class XoSecretPendingTest {
 
-    private static TLRPC.TL_message row(long dialogId) {
+    private static TLRPC.Message row(long dialogId) {
         TLRPC.TL_message m = new TLRPC.TL_message();
         m.dialog_id = dialogId;
         return m;
@@ -23,7 +23,7 @@ public class XoSecretPendingTest {
 
     @Test
     public void onlyTheNoPeerKeyCodeDefers() {
-        List<TLRPC.TL_message> rows = new ArrayList<>();
+        List<TLRPC.Message> rows = new ArrayList<>();
         rows.add(row(-4242));
         assertTrue(XoSecretPending.deferrable(XoSecret.REASON_NO_PEER_KEY, rows));
         assertFalse(XoSecretPending.deferrable("SECRET_IDENTITY_CHANGED", rows));
@@ -34,7 +34,7 @@ public class XoSecretPendingTest {
 
     @Test
     public void cloudDialogsNeverDefer() {
-        List<TLRPC.TL_message> rows = new ArrayList<>();
+        List<TLRPC.Message> rows = new ArrayList<>();
         rows.add(row(10001)); // cloud private dialog = positive user id
         rows.add(row(-33));   // group dialog
         assertFalse(XoSecretPending.deferrable(XoSecret.REASON_NO_PEER_KEY, rows));
@@ -43,7 +43,7 @@ public class XoSecretPendingTest {
     @Test
     public void mixedBatchNeverDefers() {
         // one cloud row in the batch -> the whole batch fails loudly instead
-        List<TLRPC.TL_message> rows = new ArrayList<>();
+        List<TLRPC.Message> rows = new ArrayList<>();
         rows.add(row(-4242));
         rows.add(row(10001));
         assertFalse(XoSecretPending.deferrable(XoSecret.REASON_NO_PEER_KEY, rows));

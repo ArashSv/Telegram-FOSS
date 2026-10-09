@@ -1,6 +1,7 @@
 package org.telegram.tgnet.rest.e2ee;
 
 import org.junit.BeforeClass;
+import org.telegram.tgnet.rest.XoTestEnv;
 import org.junit.Test;
 
 import java.io.File;
