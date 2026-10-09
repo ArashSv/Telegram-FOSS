@@ -50,6 +50,8 @@ public class NotificationCenter {
     public static final int xoE2eeSendBlocked = totalEvents++;
     // T78: the peer's secret-chat public key changed (new device/reinstall)
     public static final int xoSecretKeyChanged = totalEvents++;
+    /** T80: args = {chatId(Long), mode(String), byUserId(Long)} — legacy mode-flip event; kept for wire compatibility. */
+    public static final int xoChatModeChanged = totalEvents++;
     public static final int forceImportContactsStart = totalEvents++;
     public static final int contactsDidLoad = totalEvents++;
     public static final int contactsImported = totalEvents++;

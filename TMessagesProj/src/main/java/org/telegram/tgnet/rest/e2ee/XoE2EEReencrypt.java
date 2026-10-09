@@ -181,7 +181,7 @@ public final class XoE2EEReencrypt {
         if (sourceBackendFileId <= 0) {
             throw new IllegalArgumentException("source file id required");
         }
-        XoE2EE.MediaMeta meta = XoE2EE.getInstance(account).mediaKeysFor(sourceBackendFileId);
+        XoSecret.MediaMeta meta = XoSecret.getInstance(account).mediaKeysFor(sourceBackendFileId);
         if (meta == null || meta.fileKey == null) {
             throw new Exception("no e2ee media keys on this device for file " + sourceBackendFileId);
         }

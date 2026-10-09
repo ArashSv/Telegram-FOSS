@@ -284,13 +284,13 @@ final class ChatsController
         $meId = (int) $me['id'];
         $type = Validator::str($request->input('type'), 'type', 4, 10);
 
-        if ($type === 'private') {
-            return self::createPrivate($request, $me, $meId);
+        if ($type === 'private' || $type === 'secret') {
+            return self::createOneToOne($request, $me, $meId, $type);
         }
         if ($type === 'group') {
             return self::createGroup($request, $me, $meId);
         }
-        throw new ApiError('VALIDATION_ERROR', 'type must be "private" or "group"', 400, ['field' => 'type']);
+        throw new ApiError('VALIDATION_ERROR', 'type must be "private", "secret" or "group"', 400, ['field' => 'type']);
     }
 
     /** POST /chats/add-member.php  {chat_id, user_id} */
@@ -931,13 +931,22 @@ final class ChatsController
     }
 
     /** @param array<string,mixed> $me @return array<string,mixed> */
-    private static function createPrivate(Request $request, array $me, int $meId): array
+    private static function createOneToOne(Request $request, array $me, int $meId, string $type): array
     {
+        // v2.12.1 (T78): one shared one-to-one creator. $type is 'private'
+        // (cloud chat) or 'secret' (the SEPARATE Telegram-style encrypted
+        // dialog). The two modes are DISTINCT chat rows with distinct
+        // pair_key namespaces ("private:a:b" vs "secret:a:b"), so the SAME
+        // pair of users runs a cloud chat AND a secret chat side by side —
+        // the explicit user requirement (replacing the T80 mode-flip).
         $peerId = Validator::int($request->input('peer_user_id'), 'peer_user_id', 1);
         // T38/15: peer == self is the SAVED MESSAGES chat — a first-class
-        // self-chat (pair_key private:me:me, one member row) through the
+        // self-chat (pair_key <type>:me:me, one member row) through the
         // ordinary message system, never a special case that bypasses it.
         $isSelfChat = $peerId === $meId;
+        if ($isSelfChat && $type === 'secret') {
+            throw new ApiError('VALIDATION_ERROR', 'A secret chat with yourself is not supported', 400, ['field' => 'peer_user_id']);
+        }
         if (!$isSelfChat) {
             if (Db::fetch('SELECT id FROM users WHERE id = ?', [$peerId]) === null) {
                 throw new ApiError('NOT_FOUND', "User {$peerId} does not exist", 404);
@@ -951,7 +960,7 @@ final class ChatsController
             }
         }
 
-        $pairKey = sprintf('private:%d:%d', min($meId, $peerId), max($meId, $peerId));
+        $pairKey = sprintf('%s:%d:%d', $type, min($meId, $peerId), max($meId, $peerId));
         $existing = Db::fetch('SELECT * FROM chats WHERE pair_key = ?', [$pairKey]);
         if ($existing !== null) {
             return ['chat' => self::chatPayload($me, (int) $existing['id']), 'created' => false];
@@ -959,12 +968,13 @@ final class ChatsController
 
         $now = time();
         try {
-            $chatId = Db::transaction(static function () use ($meId, $peerId, $pairKey, $now, $isSelfChat): int {
+            $chatId = Db::transaction(static function () use ($meId, $peerId, $pairKey, $now, $isSelfChat, $type): int {
                 $chatId = Db::insert('chats', [
-                    'type'       => 'private',
-                    // v2.12.0 (T80): private chats are CLOUD by default; the
-                    // secret mode is an explicit, later per-chat decision.
-                    'mode'       => MessagesController::MODE_CLOUD,
+                    'type'       => $type,
+                    // private chats are CLOUD by default; a secret chat is
+                    // born secret (MessagesController::chatMode also keys off
+                    // the type, so the two can never disagree)
+                    'mode'       => $type === 'secret' ? MessagesController::MODE_SECRET : MessagesController::MODE_CLOUD,
                     'pair_key'   => $pairKey,
                     'created_by' => $meId,
                     'created_at' => $now,

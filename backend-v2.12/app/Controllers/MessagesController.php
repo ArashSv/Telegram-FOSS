@@ -49,6 +49,13 @@ final class MessagesController
         if ($row === null) {
             throw new ApiError('NOT_FOUND', 'Chat not found', 404);
         }
+        // v2.12.1 (T78): SEPARATE secret chats (chats.type='secret', the
+        // Telegram-style own-dialog rows) are ALWAYS secret — their mode
+        // column is set at creation and never flipped; the type is the
+        // authority so the two cannot disagree.
+        if ((string) ($row['type'] ?? 'private') === 'secret') {
+            return self::MODE_SECRET;
+        }
         $mode = (string) ($row['mode'] ?? self::MODE_CLOUD);
         return $mode === self::MODE_SECRET ? self::MODE_SECRET : self::MODE_CLOUD;
     }
@@ -67,7 +74,9 @@ final class MessagesController
         if ($content === null || $content === '') {
             return;
         }
-        $isEnvelope = str_starts_with($content, 'XOE1:');
+        // v2.12.1 (T78): both envelope generations qualify — the legacy XOE1
+        // (pre-T78 rows in mode-flipped chats) and the new stateless XOSC1.
+        $isEnvelope = str_starts_with($content, 'XOE1:') || str_starts_with($content, 'XOSC1:');
         if ($mode === self::MODE_SECRET && !$isEnvelope) {
             throw new ApiError('E2EE_CONTENT_REQUIRED', 'This is a secret chat: messages must arrive as XOE1 envelopes', 400, ['field' => $field]);
         }
@@ -319,6 +328,17 @@ final class MessagesController
                     }
                 }
 
+                // v2.12.1 (T78): a SECRET chat is never a forward SOURCE —
+                // envelopes are AAD/row-bound to their chat and Telegram
+                // semantics forbid forwarding out of secret chats. Without
+                // this guard a verbatim copy of an XOSC1 envelope would leak
+                // opaque text into a cloud chat (CloudCrypto passes unknown
+                // prefixes through untouched).
+                $srcType = (string) Db::fetchColumn('SELECT type FROM chats WHERE id = ?', [$srcChatId]);
+                if ($srcType === 'secret') {
+                    throw new ApiError('FORBIDDEN', 'Forwarding out of a secret chat is not supported', 403);
+                }
+
                 // v2.12.0 (T80): the copy's content obeys the target mode.
                 // $src['content'] is the RAW stored form (XOC1 / XOE1 / legacy
                 // plain) — renderable only through CloudCrypto for cloud rows.
@@ -326,12 +346,12 @@ final class MessagesController
                 if ($copyContent !== null && $copyContent !== '') {
                     $rawCopy = (string) $copyContent;
                     if ($targetMode === self::MODE_SECRET) {
-                        if (!str_starts_with($rawCopy, 'XOE1:')) {
+                        if (!str_starts_with($rawCopy, 'XOE1:') && !str_starts_with($rawCopy, 'XOSC1:')) {
                             throw new ApiError('E2EE_CONTENT_REQUIRED', 'secret-chat copies must arrive as client envelopes (update the client)', 400, ['field' => 'message_ids']);
                         }
                         $storedCopy = $rawCopy;
                     } else {
-                        if (str_starts_with($rawCopy, 'XOE1:')) {
+                        if (str_starts_with($rawCopy, 'XOE1:') || str_starts_with($rawCopy, 'XOSC1:')) {
                             throw new ApiError('E2EE_FORWARD_UNAVAILABLE', "message {$msgId} is end-to-end encrypted; forward it from its chat so the client can convert it", 400, ['field' => 'message_ids']);
                         }
                         $plainCopy = CloudCrypto::decryptForChat($srcChatId, (int) $src['id'], $rawCopy);
@@ -744,7 +764,8 @@ final class MessagesController
     private static function assertNotBlockedByPeers(int $chatId, int $meId): void
     {
         $type = Db::fetchColumn('SELECT type FROM chats WHERE id = ?', [$chatId]);
-        if ($type !== 'private') {
+        // v2.12.1 (T78): secret chats are DMs too — the block gate applies.
+        if ($type !== 'private' && $type !== 'secret') {
             return;
         }
         $peerId = Db::fetchColumn(

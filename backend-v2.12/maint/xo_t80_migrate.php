@@ -137,10 +137,62 @@ try {
         }
     }
 
+    // ---- v2.12.1 (T78): the separate secret-chat schema -------------------
+    // 4. users.secret_pk / users.secret_pk_updated — the X25519 public-key
+    //    registry (private keys never leave the device).
+    if (!$colExists($pdo, 'users', 'secret_pk')) {
+        $pdo->exec("ALTER TABLE users ADD COLUMN secret_pk VARCHAR(64) DEFAULT NULL AFTER token_ver");
+        $applied[] = 'users.secret_pk ADD';
+    } else {
+        $skipped[] = 'users.secret_pk already present';
+    }
+    if (!$colExists($pdo, 'users', 'secret_pk_updated')) {
+        $pdo->exec('ALTER TABLE users ADD COLUMN secret_pk_updated BIGINT UNSIGNED DEFAULT NULL AFTER secret_pk');
+        $applied[] = 'users.secret_pk_updated ADD';
+    } else {
+        $skipped[] = 'users.secret_pk_updated already present';
+    }
+
+    // 5. chats.type ENUM widened with 'secret' — UNION with the LIVE values
+    //    (the T80 fix8 lesson: never narrow an enum). Appending at the END
+    //    is metadata-only.
+    $stmt2 = $pdo->prepare(
+        "SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chats' AND COLUMN_NAME = 'type'"
+    );
+    $stmt2->execute();
+    $chatTypeCol = (string) $stmt2->fetchColumn();
+    if (strpos($chatTypeCol, 'secret') === false) {
+        preg_match_all("/'([^']+)'/", $chatTypeCol, $m2);
+        $typeValues = $m2[1] ?: [];
+        if (!in_array('secret', $typeValues, true)) {
+            $typeValues[] = 'secret';
+        }
+        $typeEnumSql = "ENUM('" . implode("','", $typeValues) . "') NOT NULL";
+        $pdo->exec('ALTER TABLE chats MODIFY COLUMN type ' . $typeEnumSql);
+        $applied[] = 'chats.type enum + secret (union of ' . count($typeValues) . ' values)';
+    } else {
+        $skipped[] = 'chats.type already includes secret';
+    }
+
+    // 6. mode-flip retirement (T78: the user replaced the T80 in-place mode
+    //    flip with SEPARATE secret chats). Legacy flipped private chats
+    //    revert to cloud — their XOE1 history is dead by design (the client
+    //    skips those rows); NEW secret conversations happen in dedicated
+    //    chats.type='secret' rows, which are born secret and never flipped.
+    $reset = $pdo->exec("UPDATE chats SET mode = 'cloud' WHERE mode = 'secret' AND type <> 'secret'");
+    if ($reset > 0) {
+        $applied[] = 'mode-flip retirement: ' . $reset . ' chat(s) back to cloud';
+    } else {
+        $skipped[] = 'no legacy secret-mode chats to retire';
+    }
+
     $counts = [
         'chats_total'  => (int) $pdo->query('SELECT COUNT(*) FROM chats')->fetchColumn(),
         'chats_cloud'  => (int) $pdo->query("SELECT COUNT(*) FROM chats WHERE mode = 'cloud'")->fetchColumn(),
         'chats_secret' => (int) $pdo->query("SELECT COUNT(*) FROM chats WHERE mode = 'secret'")->fetchColumn(),
+        'chats_type_secret' => (int) $pdo->query("SELECT COUNT(*) FROM chats WHERE type = 'secret'")->fetchColumn(),
+        'users_with_secret_pk' => (int) $pdo->query('SELECT COUNT(*) FROM users WHERE secret_pk IS NOT NULL')->fetchColumn(),
     ];
 
     $report = ['ok' => true, 'applied' => $applied, 'skipped' => $skipped, 'counts' => $counts];

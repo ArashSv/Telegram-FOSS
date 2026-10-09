@@ -51,13 +51,13 @@ final class CloudCrypto
         if ($plain === null || $plain === '') {
             return $plain;
         }
-        // Defensive: never double-wrap (a stale client pushing XOE1 into a
-        // cloud chat is refused at the controller; an already-XOC1 payload
-        // would be a logic bug upstream — keep it verbatim rather than
-        // wrapping an envelope in an envelope).
-        if (str_starts_with($plain, self::PREFIX) || str_starts_with($plain, 'XOE1:')) {
-            return $plain;
-        }
+        // v2.12.1 (T78): EVERYTHING that reaches this method is user-typed
+        // plaintext — the controller refuses envelope content (XOE1/XOSC1)
+        // for cloud chats upstream. A user literally typing "XOC1:..." is
+        // therefore SEALED like any other text (the old verbatim passthrough
+        // made such rows undecryptable on read — marker confusion). There is
+        // no double-wrap risk left: the only caller is the controller write
+        // path, which has already mode-gated the content.
         $nonce = random_bytes(self::NONCE_BYTES);
         $tag = '';
         $cipher = openssl_encrypt(
