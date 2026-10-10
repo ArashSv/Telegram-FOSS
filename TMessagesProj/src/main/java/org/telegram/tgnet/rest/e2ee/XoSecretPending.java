@@ -87,11 +87,12 @@ public final class XoSecretPending {
         }
         for (int a = 0; a < rows.size(); a++) {
             TLRPC.Message row = rows.get(a);
-            // T80: deferral is a SECRET-chat mechanic — cloud sends never
-            // wait for keys (they cannot legitimately hit E2EE_NO_KEYS; a
-            // stale state must surface its real error, not hang on a clock
-            // icon forever).
-            if (!org.telegram.tgnet.rest.RestChatIndex.getInstance(account).isSecretPeer(row.dialog_id)) {
+            // T78 fix: deferral is a SECRET-chat mechanic keyed on the NEGATIVE
+            // chat-space dialog id. The retired T80 isSecretPeer() check here
+            // expected a positive user id, so keyless-peer sends became error
+            // rows instead of deferred clock icons (the deferrable() core and
+            // its unit test always required negative ids).
+            if (!org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(account, row.dialog_id)) {
                 return false;
             }
             watch(row.dialog_id);
@@ -258,7 +259,7 @@ public final class XoSecretPending {
             }
             return;
         }
-        final long peerUserId = XoSecret.secretPeerUser(-dialogId);
+        final long peerUserId = XoSecret.secretPeerUser(account, -dialogId);
         if (peerUserId <= 0) {
             return; // index not warm yet — next tick
         }

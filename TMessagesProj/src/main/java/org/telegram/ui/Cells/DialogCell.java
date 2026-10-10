@@ -407,6 +407,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
     private TLRPC.User user;
     private TLRPC.Chat chat;
     private TLRPC.EncryptedChat encryptedChat;
+    /** T78: REST secret chat (chats type=secret) — draws the Telegram-style
+     *  name lock like legacy MTProto encrypted chats. */
+    private boolean xoRestSecret;
     private CharSequence lastPrintString;
     private int printingStringType;
     private boolean draftVoice;
@@ -1193,7 +1196,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 }
             }
 
-            if (encryptedChat != null) {
+            if (encryptedChat != null || xoRestSecret) {
                 if (currentDialogFolderId == 0) {
                     drawNameLock = true;
                     if (useForceThreeLines || SharedConfig.useThreeLinesLayout) {
@@ -2977,6 +2980,7 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
             user = null;
             chat = null;
             encryptedChat = null;
+            xoRestSecret = false;
 
             long dialogId;
             if (currentDialogFolderId != 0) {
@@ -3016,6 +3020,9 @@ public class DialogCell extends BaseCell implements StoriesListPlaceProvider.Ava
                 } else if (DialogObject.isUserDialog(dialogId)) {
                     user = MessagesController.getInstance(currentAccount).getUser(dialogId);
                 } else {
+                    // T78: REST secret chats are chat-space dialogs — the lock
+                    // must render even though the object is a TL_chat.
+                    xoRestSecret = org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, dialogId);
                     chat = MessagesController.getInstance(currentAccount).getChat(-dialogId);
                     if (!isDialogCell && chat != null && chat.migrated_to != null) {
                         TLRPC.Chat chat2 = MessagesController.getInstance(currentAccount).getChat(chat.migrated_to.channel_id);

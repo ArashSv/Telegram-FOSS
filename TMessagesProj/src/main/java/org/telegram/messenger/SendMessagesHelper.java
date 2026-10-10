@@ -7011,10 +7011,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 // T78: SECRET chats ride the chat space (negative dialog id) —
                 // the intent peer is the PEER USER (key lookup); the dialog
                 // itself is only the routing address
-                if (!org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(peerDialogId)) {
+                if (!org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, peerDialogId)) {
                     return; // groups stay plaintext (cloud scope)
                 }
-                intentPeer = org.telegram.tgnet.rest.e2ee.XoSecret.secretPeerUser(-peerDialogId);
+                intentPeer = org.telegram.tgnet.rest.e2ee.XoSecret.secretPeerUser(currentAccount, -peerDialogId);
                 if (intentPeer <= 0) {
                     return; // index not warm yet — the next schedule refresh renotes
                 }
@@ -7025,13 +7025,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             if (intentPeer == selfId) {
                 return; // Saved Messages self-chat stays plaintext (server-inserted relay target)
             }
-            // T80: only SECRET chats mint media keys. Cloud chats — the
-            // default — upload PLAIN media (real mime/name, server thumbs);
-            // minting keys here would force the whole upload pipeline into
-            // the opaque e2ee path for a chat that reads plaintext.
-            if (!org.telegram.tgnet.rest.RestChatIndex.getInstance(currentAccount).isSecretPeer(peerDialogId)) {
-                return;
-            }
+            // T78 fix (media gap): the ONLY gate is the secret-dialog check
+            // above. The retired T80 isSecretPeer() gate that stood here
+            // expected a positive USER id but was fed the NEGATIVE dialog id,
+            // so it failed for every secret chat and NO upload intent was ever
+            // minted — every photo/video/file/GIF/album send into a secret
+            // chat died with E2EE_MEDIA_KEY_MISSING after the full upload.
             // real metadata for the encrypted envelope: documents/videos carry
             // everything on the TL_document; photos only on the PhotoSize
             TLRPC.TL_document document = message.obj != null ? (TLRPC.TL_document) message.obj.getDocument() : null;
@@ -9290,8 +9289,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 // key; the key travels inside the message envelope (tk) and
                 // is bound to the tree id for the e2ee finalize declaration.
                 long peerDialogId = msgObj != null ? msgObj.getDialogId() : 0;
-                boolean e2eeThumb = peerDialogId > 0 && peerDialogId != UserConfig.getInstance(account).clientUserId
-                        || org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(peerDialogId);
+                // T78 fix: ONLY secret dialogs encrypt thumbs. The T75-era
+                // "private chat" test (positive dialog id) would also encrypt
+                // CLOUD thumbs — the cloud envelope carries no key, so the
+                // receiver could never decrypt its own video preview.
+                boolean e2eeThumb = org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(account, peerDialogId);
                 byte[] payload = thumbBytes;
                 byte[] thumbKey = null;
                 if (e2eeThumb) {
@@ -9309,7 +9311,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                         long intentPeer = peerDialogId;
                         if (intentPeer < 0) {
                             // T78: secret dialogs bind the thumb intent to the PEER USER id
-                            intentPeer = org.telegram.tgnet.rest.e2ee.XoSecret.secretPeerUser(-intentPeer);
+                            intentPeer = org.telegram.tgnet.rest.e2ee.XoSecret.secretPeerUser(account, -intentPeer);
                         }
                         org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(account)
                                 .putDirectTreeIntent(treeId, intentPeer, thumbKey);

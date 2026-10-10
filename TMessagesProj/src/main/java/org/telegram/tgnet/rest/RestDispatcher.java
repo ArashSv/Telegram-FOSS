@@ -1489,7 +1489,7 @@ public final class RestDispatcher {
             }
             // T78: a secret chat is never a forward SOURCE (backend rule too —
             // envelopes are AAD-bound to their chat; Telegram semantics agree)
-            if (src.dialog_id < 0 && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretChatId(-src.dialog_id)) {
+            if (src.dialog_id < 0 && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretChatId(account, -src.dialog_id)) {
                 throw new XoApiException(403, "SECRET_FORWARD_FORBIDDEN",
                         "forwarding out of a secret chat is not supported");
             }

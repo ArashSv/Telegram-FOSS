@@ -75,12 +75,25 @@ public final class XoSecret {
 
     /** @return true when this BACKEND chat id (positive) is a secret chat. */
     public static boolean isSecretChatId(long backendChatId) {
-        return backendChatId > 0 && RestChatIndex.getInstance(UserConfig.selectedAccount).isSecret(backendChatId);
+        return isSecretChatId(UserConfig.selectedAccount, backendChatId);
+    }
+
+    /** Account-aware form — ALWAYS prefer this from per-account pipelines
+     *  (dispatcher, mapper, send helper): the selected account can differ
+     *  from the account whose rows are being parsed (T78 fix: latent
+     *  multi-account mismatch). */
+    public static boolean isSecretChatId(int account, long backendChatId) {
+        return backendChatId > 0 && RestChatIndex.getInstance(account).isSecret(backendChatId);
     }
 
     /** @return true when this UI dialog id (negative = chat space) is a secret chat. */
     public static boolean isSecretDialog(long dialogId) {
-        return dialogId < 0 && isSecretChatId(-dialogId);
+        return isSecretDialog(UserConfig.selectedAccount, dialogId);
+    }
+
+    /** Account-aware form — see {@link #isSecretChatId(int, long)}. */
+    public static boolean isSecretDialog(int account, long dialogId) {
+        return dialogId < 0 && isSecretChatId(account, -dialogId);
     }
 
     /** Backend chat id for a secret dialog id (negates). */
@@ -90,7 +103,12 @@ public final class XoSecret {
 
     /** Peer user id of a secret BACKEND chat id. */
     public static long secretPeerUser(long backendChatId) {
-        return RestChatIndex.getInstance(UserConfig.selectedAccount).secretPeerUser(backendChatId);
+        return secretPeerUser(UserConfig.selectedAccount, backendChatId);
+    }
+
+    /** Account-aware form — see {@link #isSecretChatId(int, long)}. */
+    public static long secretPeerUser(int account, long backendChatId) {
+        return RestChatIndex.getInstance(account).secretPeerUser(backendChatId);
     }
 
     // ------------------------------------------------------------------ registration

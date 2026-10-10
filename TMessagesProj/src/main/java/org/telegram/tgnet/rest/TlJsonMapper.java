@@ -274,7 +274,10 @@ public final class TlJsonMapper {
         if (name == null || name.length() == 0) {
             name = "chat" + result.id;
         }
-        result.title = "🔒 " + name;
+        // T78: no emoji lock in the title — the dialog list draws the real
+        // Telegram-style lock drawable (DialogCell), the chat header shows the
+        // plain peer name, and notifications read like normal dialogs.
+        result.title = name;
         result.participants_count = 2;
         result.date = (int) chat.optLong("created_at", System.currentTimeMillis() / 1000L);
         result.version = 0;
@@ -468,7 +471,7 @@ public final class TlJsonMapper {
         final boolean legacyXoe1 = message.message != null
                 && message.message.startsWith("XOE1:");
         final boolean secretChat = dialogId < 0
-                && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretChatId(-dialogId);
+                && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretChatId(account, -dialogId);
         if (legacyXoe1 && !secretChat) {
             // Pre-T78 protocol rows in (now) cloud chats: the Signal-era
             // scheme was amputated, these envelopes are undecryptable BY

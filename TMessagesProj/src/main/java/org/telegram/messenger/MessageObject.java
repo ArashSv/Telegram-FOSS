@@ -9367,6 +9367,13 @@ public class MessageObject {
 
     public boolean canForwardMessage() {
         if (isQuickReply()) return false;
+        // T78: a secret chat is never a forward source (the envelopes are
+        // AAD-bound to their chat; the dispatcher refuses with
+        // SECRET_FORWARD_FORBIDDEN) — hide the action instead of failing late.
+        if (messageOwner != null
+                && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, messageOwner.getDialogId())) {
+            return false;
+        }
         return !(messageOwner instanceof TLRPC.TL_message_secret) && !needDrawBluredPreview() && !isLiveLocation() && type != MessageObject.TYPE_PHONE_CALL && !isSponsored() && !messageOwner.noforwards;
     }
 
