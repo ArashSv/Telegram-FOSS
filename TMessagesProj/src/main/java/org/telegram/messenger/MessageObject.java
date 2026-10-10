@@ -9371,7 +9371,7 @@ public class MessageObject {
         // AAD-bound to their chat; the dispatcher refuses with
         // SECRET_FORWARD_FORBIDDEN) — hide the action instead of failing late.
         if (messageOwner != null
-                && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, messageOwner.getDialogId())) {
+                && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, messageOwner.dialog_id)) {
             return false;
         }
         return !(messageOwner instanceof TLRPC.TL_message_secret) && !needDrawBluredPreview() && !isLiveLocation() && type != MessageObject.TYPE_PHONE_CALL && !isSponsored() && !messageOwner.noforwards;
