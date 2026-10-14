@@ -962,6 +962,20 @@ public class ChatAvatarContainer extends FrameLayout implements NotificationCent
                 } else {
                     newSubtitle = LocaleController.formatString("TopicProfileStatus", R.string.TopicProfileStatus, chat.title);
                 }
+            } else if (chat != null && parentFragment.getDialogId() < 0 && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, parentFragment.getDialogId())) {
+                // T81 (last-seen root fix L4): REST secret chats are TL_chat
+                // dialogs — upstream secret chats show the PEER's presence in
+                // the header, never "N members". Render the peer user's status
+                // exactly like a private chat does.
+                long secretPeerId = org.telegram.tgnet.rest.e2ee.XoSecret.secretPeerUser(currentAccount, -parentFragment.getDialogId());
+                TLRPC.User peerUser = secretPeerId > 0 ? MessagesController.getInstance(currentAccount).getUser(secretPeerId) : null;
+                if (peerUser != null && !UserObject.isReplyUser(peerUser) && !peerUser.bot) {
+                    isOnline[0] = false;
+                    newSubtitle = LocaleController.formatUserStatus(currentAccount, peerUser, isOnline, allowShorterStatus ? statusMadeShorter : null);
+                    useOnlineColor = isOnline[0];
+                } else {
+                    newSubtitle = getChatSubtitle(chat, parentFragment.getCurrentChatInfo(), onlineCount);
+                }
             } else if (chat != null) {
                 TLRPC.ChatFull info = parentFragment.getCurrentChatInfo();
                 newSubtitle = getChatSubtitle(chat, info, onlineCount);
@@ -1234,6 +1248,19 @@ public class ChatAvatarContainer extends FrameLayout implements NotificationCent
         }
     }
 
+    // T81 (last-seen root fix L3): a 30s self-heal tick — an expired
+    // TL_userStatusOnline flips to the last-seen string on its own even when
+    // the offline fan-out event was missed (killed app, poller blackout).
+    private final Runnable statusSelfHealTicker = new Runnable() {
+        @Override
+        public void run() {
+            if (isAttachedToWindow() && parentFragment != null) {
+                updateSubtitle(false);
+                postDelayed(this, 30000);
+            }
+        }
+    };
+
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
@@ -1245,6 +1272,7 @@ public class ChatAvatarContainer extends FrameLayout implements NotificationCent
             }
             currentConnectionState = ConnectionsManager.getInstance(currentAccount).getConnectionState();
             updateCurrentConnectionState();
+            postDelayed(statusSelfHealTicker, 30000);
         }
         if (emojiStatusDrawable != null) {
             emojiStatusDrawable.attach();
@@ -1254,6 +1282,7 @@ public class ChatAvatarContainer extends FrameLayout implements NotificationCent
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
+        removeCallbacks(statusSelfHealTicker);
         if (parentFragment != null) {
             NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.didUpdateConnectionState);
             NotificationCenter.getGlobalInstance().removeObserver(this, NotificationCenter.emojiLoaded);

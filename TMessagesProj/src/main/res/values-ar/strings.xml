@@ -952,6 +952,8 @@
     <string name="UploadItems">رفع %1$s</string>
     <string name="SendAsFile">إرسال كملف</string>
     <string name="SendAsFiles">إرسال كملفات</string>
+    <string name="SendAsEncryptedFile">إرسال كملف مشفّر</string>
+    <string name="SendAsEncryptedFiles">إرسال كملفات مشفّرة</string>
     <string name="OpenUrlTitle">فتح الرابط</string>
     <string name="OpenUrlAlert2">هل ترغب في فتح %1$s؟</string>
     <string name="OpenUrlOption1">تسجيل الدخول إلى %1$s من حساب **%2$s**</string>

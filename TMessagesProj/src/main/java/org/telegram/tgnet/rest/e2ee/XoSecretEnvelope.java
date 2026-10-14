@@ -31,6 +31,9 @@ public final class XoSecretEnvelope {
 
     public static final String PREFIX = "XOSC1:";
 
+    /** T81: the encrypted-FILE envelope family (cloud chats, ss-derived key). */
+    public static final String PREFIX_FILE = "XOSF1:";
+
     /** Guava is on the classpath and works on the JVM test suite too. */
     private static final com.google.common.io.BaseEncoding B64 = com.google.common.io.BaseEncoding.base64();
 
@@ -49,13 +52,34 @@ public final class XoSecretEnvelope {
         return content != null && content.startsWith(PREFIX) && content.length() > PREFIX.length() + 8;
     }
 
+    /** T81: TRUE for the encrypted-file envelope family. */
+    public static boolean isFileEnvelope(String content) {
+        return content != null && content.startsWith(PREFIX_FILE) && content.length() > PREFIX_FILE.length() + 8;
+    }
+
+    /** T81: TRUE for either envelope family (parse routing). */
+    public static boolean isAnyEnvelope(String content) {
+        return isEnvelope(content) || isFileEnvelope(content);
+    }
+
     /** Raw body bytes after the prefix, or null when malformed. */
     public static byte[] bodyOf(String envelope) {
-        if (!isEnvelope(envelope)) {
+        if (isEnvelope(envelope)) {
+            return bodyOf(envelope, PREFIX);
+        }
+        if (isFileEnvelope(envelope)) {
+            return bodyOf(envelope, PREFIX_FILE);
+        }
+        return null;
+    }
+
+    /** Raw body bytes after a SPECIFIC prefix, or null when malformed. */
+    public static byte[] bodyOf(String envelope, String prefix) {
+        if (envelope == null || !envelope.startsWith(prefix) || envelope.length() <= prefix.length() + 8) {
             return null;
         }
         try {
-            return b64Decode(envelope.substring(PREFIX.length()));
+            return b64Decode(envelope.substring(prefix.length()));
         } catch (Throwable t) {
             return null;
         }
@@ -92,6 +116,51 @@ public final class XoSecretEnvelope {
         JSONObject json = new JSONObject();
         json.put("t", "m");
         json.put("fk", b64Encode(fileKey));
+        json.put("pl", plaintextLen);
+        json.put("cs", chunkSize);
+        json.put("mi", mime == null ? "application/octet-stream" : mime);
+        if (name != null) {
+            json.put("na", name);
+        }
+        if (width > 0) {
+            json.put("w", width);
+        }
+        if (height > 0) {
+            json.put("h", height);
+        }
+        if (duration > 0) {
+            json.put("du", duration);
+        }
+        if (caption != null && caption.length() > 0) {
+            json.put("cap", caption);
+        }
+        json.put("an", animated ? 1 : 0);
+        if (thumbEncrypted) {
+            json.put("th", 1);
+            if (thumbKey != null) {
+                json.put("tk", b64Encode(thumbKey));
+            }
+            if (thumbFileId > 0) {
+                json.put("tf", thumbFileId);
+            }
+        }
+        return json.toString();
+    }
+
+    /**
+     * T81: media payload for the ENCRYPTED-FILE family (cloud chats).
+     * Identical schema to {@link #innerMedia} EXCEPT the file key is NOT
+     * transported — both sides derive the one symmetric key from the
+     * static-static DH (the "kf":"ss" marker tells the receiver which
+     * derivation to run). The server sees neither the key nor the metadata.
+     */
+    public static String innerMediaSs(long plaintextLen, int chunkSize, String mime,
+                                      String name, int width, int height, int duration,
+                                      String caption, boolean thumbEncrypted,
+                                      byte[] thumbKey, long thumbFileId, boolean animated) throws Exception {
+        JSONObject json = new JSONObject();
+        json.put("t", "m");
+        json.put("kf", "ss");
         json.put("pl", plaintextLen);
         json.put("cs", chunkSize);
         json.put("mi", mime == null ? "application/octet-stream" : mime);

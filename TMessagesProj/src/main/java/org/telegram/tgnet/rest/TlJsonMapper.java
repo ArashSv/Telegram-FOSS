@@ -165,6 +165,14 @@ public final class TlJsonMapper {
         if (!statusPlanted) {
             user.status = new TLRPC.TL_userStatusEmpty();
         }
+        // T81 (last-seen root fix L2): flag 64 is the TL contract for "status
+        // is present". Without it TL_user.serializeToStream DROPS the status
+        // from the DB blob while the int status column still gets written —
+        // and the read side ignores that column when the blob has no status,
+        // so every DB round-trip (restart, cache trim) erased the last seen.
+        // Every parsed user now carries a status object AND the flag, so the
+        // blob round-trips exactly like an MTProto-parsed user.
+        user.flags |= 64;
         return user;
     }
 
@@ -443,6 +451,9 @@ public final class TlJsonMapper {
      */
     public static TLRPC.TL_message parseMessage(int account, JSONObject msg, long dialogId, boolean isGroup,
                                                 long peerUserId, long selfId) throws JSONException {
+        // T81: holder for the ss-derived file key between the decrypt hook and
+        // the media post-processing (Java lambdas/locals cannot cross the gap)
+        byte[] e2eeFileKeyHolder = null;
         TLRPC.TL_message message = new TLRPC.TL_message();
         message.id = (int) msg.getLong("id");
         long senderId = msg.getLong("sender_id");
@@ -472,6 +483,8 @@ public final class TlJsonMapper {
                 && message.message.startsWith("XOE1:");
         final boolean secretChat = dialogId < 0
                 && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretChatId(account, -dialogId);
+        final boolean fileEncrypted = !secretChat && dialogId > 0
+                && org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isFileEnvelope(message.message);
         if (legacyXoe1 && !secretChat) {
             // Pre-T78 protocol rows in (now) cloud chats: the Signal-era
             // scheme was amputated, these envelopes are undecryptable BY
@@ -479,7 +492,55 @@ public final class TlJsonMapper {
             // permanent lock garbage, no fake text.
             return null;
         }
-        if (secretChat && org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isEnvelope(message.message)) {
+        if (fileEncrypted) {
+            // T81: ENCRYPTED-FILE envelope in a private cloud chat (XOSF1).
+            // The chunk file key is NOT transported — it is derived from the
+            // static-static DH of the two registered identities (the ONE
+            // symmetric key both sides already exchanged). Own echoes render
+            // from the sent-inner cache recorded at send time; peer rows open
+            // with the same ECIES machinery under the XOSF1 wire family.
+            final String inner;
+            final byte[] derivedFileKey;
+            if (senderId == selfId) {
+                String cached = org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account)
+                        .getSentInnerForRender(msg.optLong("id", 0L));
+                if (cached != null) {
+                    inner = cached;
+                    derivedFileKey = org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account)
+                            .deriveFileKeyForPeerCached(dialogId);
+                } else {
+                    inner = null;
+                    derivedFileKey = null;
+                }
+            } else {
+                org.telegram.tgnet.rest.e2ee.XoSecret.OpenedMedia opened =
+                        org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account)
+                                .decryptMediaFromPeer(dialogId, senderId, message.message);
+                inner = opened != null ? opened.inner : null;
+                derivedFileKey = opened != null ? opened.fileKey : null;
+            }
+            if (inner != null) {
+                try {
+                    e2eeInner = new org.json.JSONObject(inner);
+                    String type = e2eeInner.optString("t", "t");
+                    String text = e2eeInner.optString("x", "");
+                    if ("m".equals(type)) {
+                        String cap = e2eeInner.isNull("cap") ? "" : e2eeInner.optString("cap", "");
+                        message.message = cap;
+                    } else {
+                        message.message = text;
+                    }
+                } catch (org.json.JSONException e) {
+                    message.message = "";
+                }
+            }
+            if (e2eeInner == null) {
+                message.message = "🔒";
+            }
+            // the derived key rides in e2eeFileKey — consumed by the media
+            // post-processing below (parseMediaMeta ss variant)
+            e2eeFileKeyHolder = derivedFileKey;
+        } else if (secretChat && org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isEnvelope(message.message)) {
             final String inner;
             if (senderId == selfId) {
                 inner = org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account)
@@ -626,8 +687,9 @@ public final class TlJsonMapper {
         // download-decrypt step. Caption was already applied above.
         if (e2eeInner != null && "m".equals(e2eeInner.optString("t", ""))) {
             try {
-                org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta =
-                        org.telegram.tgnet.rest.e2ee.XoSecret.parseMediaMeta(e2eeInner);
+                org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta = e2eeFileKeyHolder != null
+                        ? org.telegram.tgnet.rest.e2ee.XoSecret.parseMediaMeta(e2eeInner, e2eeFileKeyHolder)
+                        : org.telegram.tgnet.rest.e2ee.XoSecret.parseMediaMeta(e2eeInner);
                 if (meta != null) {
                     long fileId = mediaJson != null ? mediaJson.optLong("file_id", 0) : 0;
                     org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account).noteMediaKeys(fileId, meta);

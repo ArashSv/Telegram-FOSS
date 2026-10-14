@@ -619,7 +619,10 @@ public class UserCell extends FrameLayout implements NotificationCenter.Notifica
                     // covering contacts lists, group member lists and every
                     // other UserCell surface in one place.
                     CharSequence statusText = LocaleController.formatUserStatus(currentAccount, currentUser);
-                    if (!TextUtils.isEmpty(currentUser.phone)) {
+                    // T81 (last-seen root fix L1): the phone YIELDS to a real
+                    // presence status (it replaced the last seen on every
+                    // known-phone user since the backend ships phones globally).
+                    if (!UserObject.hasRealStatus(currentUser) && !TextUtils.isEmpty(currentUser.phone)) {
                         String phonePretty = PhoneFormat.getInstance().format("+" + currentUser.phone);
                         if (!TextUtils.isEmpty(phonePretty) && phonePretty.contains("+") && !phonePretty.equals("+")) {
                             statusText = phonePretty;

@@ -952,6 +952,8 @@
     <string name="UploadItems">Upload %1$s</string>
     <string name="SendAsFile">Als bestand</string>
     <string name="SendAsFiles">Als bestand</string>
+    <string name="SendAsEncryptedFile">Als versleuteld bestand</string>
+    <string name="SendAsEncryptedFiles">Als versleutelde bestanden</string>
     <string name="OpenUrlTitle">Link openen</string>
     <string name="OpenUrlAlert2">Wil je %1$s openen?</string>
     <string name="OpenUrlOption1">Log in op %1$s als %2$s</string>

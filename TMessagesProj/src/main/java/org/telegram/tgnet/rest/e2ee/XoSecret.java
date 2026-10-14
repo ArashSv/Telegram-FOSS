@@ -14,10 +14,12 @@ import org.telegram.tgnet.rest.RestChatIndex;
  * stateless per-user ECIES scheme (see XoSecretCrypto) bound to SEPARATE
  * secret chats (chats.type='secret', TL_chat dialogs, lock icon).
  *
- * <p>CLOUD chats never call into this class — they send plaintext over TLS
- * and the backend encrypts at rest (XOCC1). The send-path decision is
- * {@link #isSecret(long)}: true ONLY for secret chat ids (negative dialog
- * space, chatTypes from RestChatIndex).
+ * <p>CLOUD chats send plaintext over TLS (the backend encrypts at rest —
+ * XOCC1). The ONE exception is T81's encrypted-file feature: a cloud 1:1
+ * chat MAY carry "XOSF1" envelopes when the user explicitly sends a file
+ * with the encrypted-file option (see {@link #encryptForPeerFile} and
+ * {@link #decryptMediaFromPeer}) — text and normal media in cloud chats
+ * never touch this class.
  */
 public final class XoSecret {
 
@@ -251,6 +253,172 @@ public final class XoSecret {
         }
     }
 
+    // ------------------------------------------------------------------ T81: encrypted files
+
+    /**
+     * T81 — encrypts a media envelope for the ENCRYPTED-FILE family in a
+     * private CLOUD chat. The AAD chat context is the CANONICAL PAIR LOW ID
+     * (min of the two user ids — the one number both sides agree on; dialog
+     * ids are perspective-relative and would mismatch). The chunk file key
+     * is NOT in the envelope: both parties derive the one symmetric key via
+     * {@link #deriveFileKeyForPeer(long)} / {@link XoSecretCrypto#deriveFileKey}.
+     */
+    public String encryptForPeerFile(long peerUserId, String innerJson) throws SecretUnavailableException {
+        try {
+            ensureRegistered();
+            byte[] peerPub = keyForPeer(peerUserId, false);
+            if (peerPub == null) {
+                peerPub = keyForPeer(peerUserId, true);
+            }
+            if (peerPub == null) {
+                XoE2eeLog.event(account, "xosf1.encrypt.blocked", peerUserId, REASON_NO_PEER_KEY);
+                throw new SecretUnavailableException(REASON_NO_PEER_KEY,
+                        "the peer has no encryption key yet (needs a newer app version)");
+            }
+            long selfId = UserConfig.getInstance(account).clientUserId;
+            byte[] ownPriv = store().getPrivateKey();
+            byte[] ownPub = store().getPublicKey();
+            byte[] inner = innerJson.getBytes("UTF-8");
+            String envelope = XoSecretCrypto.encryptWire(XoSecretCrypto.WIRE_FILE,
+                    Math.min(selfId, peerUserId), selfId,
+                    peerUserId, ownPriv, ownPub, peerPub, inner);
+            if (envelope.length() > MAX_ENVELOPE_CHARS) {
+                XoE2eeLog.event(account, "xosf1.encrypt.fail", peerUserId, "PAYLOAD_TOO_LARGE len=" + envelope.length());
+                throw new SecretUnavailableException(REASON_PAYLOAD_TOO_LARGE, "encrypted payload exceeds transport cap");
+            }
+            XoE2eeLog.event(account, "xosf1.encrypt.ok", peerUserId, "peer=" + peerUserId);
+            return envelope;
+        } catch (SecretUnavailableException e) {
+            throw e;
+        } catch (Exception e) {
+            XoE2eeLog.event(account, "xosf1.encrypt.fail", peerUserId, String.valueOf(e.getClass().getSimpleName()));
+            FileLog.e("XoSecret: file encrypt failed for peer " + peerUserId, e);
+            throw new SecretUnavailableException(REASON_ENCRYPT_FAILED, "could not encrypt the file message");
+        }
+    }
+
+    /**
+     * T81 — THE one symmetric file key for a private-chat pair, derived from
+     * the static-static DH of the registered identities. Blocking on the
+     * first contact only (registry fetch, then cached); returns null when
+     * the peer has no key — callers MUST fail closed (never send plaintext).
+     * The cache is validated against the CURRENT registry key so a peer
+     * key rotation transparently re-derives (old files stay undecryptable —
+     * the same acceptance as XOSC1 history after a reinstall).
+     */
+    public byte[] deriveFileKeyForPeer(long peerUserId) {
+        return deriveFileKeyForPeer(peerUserId, true);
+    }
+
+    /**
+     * T81: NON-BLOCKING variant for parse paths — cache/registry-store only,
+     * never a forced network refresh (parseMessage runs on hot paths).
+     */
+    public byte[] deriveFileKeyForPeerCached(long peerUserId) {
+        return deriveFileKeyForPeer(peerUserId, false);
+    }
+
+    private byte[] deriveFileKeyForPeer(long peerUserId, boolean allowFetch) {
+        byte[] peerPub = keyForPeer(peerUserId, false);
+        if (peerPub == null && allowFetch) {
+            peerPub = keyForPeer(peerUserId, true);
+        }
+        if (peerPub == null) {
+            return null;
+        }
+        synchronized (fileKeyCache) {
+            FileKeyEntry entry = fileKeyCache.get(peerUserId);
+            if (entry != null && java.util.Arrays.equals(entry.peerPub, peerPub)) {
+                return entry.key;
+            }
+        }
+        try {
+            XoSecretStore s = store();
+            if (!s.hasIdentity()) {
+                return null;
+            }
+            byte[] key = XoSecretCrypto.deriveFileKey(
+                    UserConfig.getInstance(account).clientUserId,
+                    s.getPrivateKey(), s.getPublicKey(), peerUserId, peerPub);
+            if (key != null) {
+                synchronized (fileKeyCache) {
+                    fileKeyCache.put(peerUserId, new FileKeyEntry(peerPub, key));
+                }
+                XoE2eeLog.event(account, "xosf1.key.derived", peerUserId, "ok");
+            }
+            return key;
+        } catch (Throwable t) {
+            FileLog.e("XoSecret: file key derivation failed for peer " + peerUserId, t);
+            return null;
+        }
+    }
+
+    /** Decrypted-file payload: the inner JSON plus the derived chunk key. */
+    public static final class OpenedMedia {
+        public final String inner;
+        public final byte[] fileKey;
+
+        OpenedMedia(String inner, byte[] fileKey) {
+            this.inner = inner;
+            this.fileKey = fileKey;
+        }
+    }
+
+    private static final class FileKeyEntry {
+        final byte[] peerPub;
+        final byte[] key;
+
+        FileKeyEntry(byte[] peerPub, byte[] key) {
+            this.peerPub = peerPub;
+            this.key = key;
+        }
+    }
+
+    private final java.util.HashMap<Long, FileKeyEntry> fileKeyCache = new java.util.HashMap<>();
+
+    /**
+     * T81 — opens an incoming XOSF1 envelope in a private cloud chat and
+     * derives the file key from the envelope-carried sender public key (NO
+     * registry fetch on the receive path). The AAD chat context is the
+     * canonical pair low id — the same number the sender bound. Returns
+     * null when it cannot be opened; callers render "🔒" — never plaintext,
+     * never a crash.
+     *
+     * @param dialogId  our dialog id (the PEER's user id — perspective-relative)
+     * @param senderId  the row's sender user id
+     */
+    public OpenedMedia decryptMediaFromPeer(long dialogId, long senderId, String envelope) {
+        try {
+            XoSecretStore s = store();
+            if (!s.hasIdentity()) {
+                XoE2eeLog.event(account, "xosf1.decrypt.fail", senderId, "no own key");
+                return null;
+            }
+            long selfId = UserConfig.getInstance(account).clientUserId;
+            byte[] inner = XoSecretCrypto.decryptWire(XoSecretCrypto.WIRE_FILE,
+                    Math.min(selfId, senderId), senderId, selfId,
+                    s.getPrivateKey(), s.getPublicKey(), envelope);
+            if (inner == null) {
+                XoE2eeLog.event(account, "xosf1.decrypt.fail", senderId, "open failed");
+                return null;
+            }
+            byte[] envPub = XoSecretCrypto.envelopeSenderPub(envelope);
+            byte[] fileKey = envPub == null ? null : XoSecretCrypto.deriveFileKey(
+                    UserConfig.getInstance(account).clientUserId,
+                    s.getPrivateKey(), s.getPublicKey(), senderId, envPub);
+            if (fileKey == null) {
+                XoE2eeLog.event(account, "xosf1.decrypt.fail", senderId, "file key derivation failed");
+                return null;
+            }
+            XoE2eeLog.event(account, "xosf1.decrypt.ok", senderId, "peer=" + dialogId);
+            return new OpenedMedia(new String(inner, "UTF-8"), fileKey);
+        } catch (Throwable t) {
+            XoE2eeLog.event(account, "xosf1.decrypt.fail", senderId, String.valueOf(t.getClass().getSimpleName()));
+            FileLog.e("XoSecret: file decrypt failed from peer " + senderId, t);
+            return null;
+        }
+    }
+
     // ------------------------------------------------------- own-echo rendering
 
     public void noteSentInner(long messageId, String innerJson) {
@@ -327,9 +495,21 @@ public final class XoSecret {
     }
 
     public static MediaMeta parseMediaMeta(JSONObject inner) {
+        try {
+            return parseMediaMeta(inner, XoSecretEnvelope.b64Decode(inner.getString("fk")));
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * T81: ss-mode variant — the file key is DERIVED ("kf":"ss"), not
+     * transported. Everything else is identical to the fk-based parse.
+     */
+    public static MediaMeta parseMediaMeta(JSONObject inner, byte[] derivedFileKey) {
         MediaMeta meta = new MediaMeta();
         try {
-            meta.fileKey = XoSecretEnvelope.b64Decode(inner.getString("fk"));
+            meta.fileKey = derivedFileKey;
             meta.plaintextLen = inner.optLong("pl", 0);
             meta.chunkSize = inner.optInt("cs", 0);
             meta.mime = inner.optString("mi", "application/octet-stream");

@@ -9357,6 +9357,12 @@ public class MessageObject {
         return messageOwner.replies != null ? messageOwner.replies.replies : 0;
     }
 
+    /** T81: TRUE for an XOSF1 encrypted-file row (cloud chat). */
+    public boolean isEncryptedFileMessage() {
+        return messageOwner != null && messageOwner.message != null
+                && org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isFileEnvelope(messageOwner.message);
+    }
+
     public boolean canEditMessage(TLRPC.Chat chat) {
         return canEditMessage(currentAccount, messageOwner, chat, scheduled);
     }
@@ -9374,11 +9380,18 @@ public class MessageObject {
                 && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, messageOwner.dialog_id)) {
             return false;
         }
+        // T81: an encrypted-file envelope (XOSF1) is bound to its user pair —
+        // a forwarded copy can NEVER be decrypted by anyone else (the chunk
+        // key is derived from the pair's static keys). Hide the action instead
+        // of delivering a permanent 🔒 row.
+        if (isEncryptedFileMessage()) {
+            return false;
+        }
         return !(messageOwner instanceof TLRPC.TL_message_secret) && !needDrawBluredPreview() && !isLiveLocation() && type != MessageObject.TYPE_PHONE_CALL && !isSponsored() && !messageOwner.noforwards;
     }
 
     public boolean canEditMedia() {
-        if (isSecretMedia()) {
+        if (isSecretMedia() || isEncryptedFileMessage()) {
             return false;
         } else if (getMedia(messageOwner) instanceof TLRPC.TL_messageMediaPhoto) {
             return true;
@@ -9432,6 +9445,12 @@ public class MessageObject {
     }
 
     public static boolean canEditMessage(int currentAccount, TLRPC.Message message, TLRPC.Chat chat, boolean scheduled) {
+        if (message != null && message.message != null
+                && org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isFileEnvelope(message.message)) {
+            // T81: the caption lives INSIDE the XOSF1 envelope — editing it
+            // would need a re-encrypted envelope; v1 blocks the edit.
+            return false;
+        }
         if (scheduled && message.date < ConnectionsManager.getInstance(currentAccount).getCurrentTime() - 60) {
             return false;
         }

@@ -952,6 +952,8 @@
     <string name="UploadItems">%1$s 업로드</string>
     <string name="SendAsFile">파일로 보내기</string>
     <string name="SendAsFiles">파일로 보내기</string>
+    <string name="SendAsEncryptedFile">암호화된 파일로 보내기</string>
+    <string name="SendAsEncryptedFiles">암호화된 파일들로 보내기</string>
     <string name="OpenUrlTitle">링크 열기</string>
     <string name="OpenUrlAlert2">%1$s 링크를 여시겠습니까?</string>
     <string name="OpenUrlOption1">**%2$s** 님으로 %1$s에 로그인</string>

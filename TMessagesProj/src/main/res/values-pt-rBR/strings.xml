@@ -952,6 +952,8 @@
     <string name="UploadItems">Enviar %1$s</string>
     <string name="SendAsFile">Enviar arquivo</string>
     <string name="SendAsFiles">Enviar arquivos</string>
+    <string name="SendAsEncryptedFile">Como arquivo criptografado</string>
+    <string name="SendAsEncryptedFiles">Como arquivos criptografados</string>
     <string name="OpenUrlTitle">Abrir Link</string>
     <string name="OpenUrlAlert2">Deseja abrir %1$s?</string>
     <string name="OpenUrlOption1">Entrar em %1$s como %2$s</string>

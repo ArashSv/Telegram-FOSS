@@ -575,7 +575,23 @@ public final class RestDispatcher {
         // file key. What reaches the server (and the size/sha attestations
         // below) is CIPHERTEXT; the plaintext totals for the message envelope
         // are tracked separately in the encrypted store.
-        byte[] e2eeFileKey = org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(account).uploadKeyForTree(treeUploadId);
+        // T81: keyless "ss" intents derive their static-static file key HERE,
+        // once, before the first part encrypts (fail-closed: a keyless peer
+        // fails the upload — plaintext NEVER leaves the client).
+        org.telegram.tgnet.rest.e2ee.XoSecretStore ssStore = org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(account);
+        byte[] e2eeFileKey = ssStore.uploadKeyForTree(treeUploadId);
+        if (e2eeFileKey == null && ssStore.uploadNeedsDerivedKey(treeUploadId)) {
+            long ssPeer = ssStore.uploadPeerForTree(treeUploadId);
+            byte[] derived = ssPeer > 0
+                    ? org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account).deriveFileKeyForPeer(ssPeer) : null;
+            if (derived == null) {
+                XoSecret.notifySendBlocked(account, ssPeer, "E2EE_PEER_KEY_MISSING");
+                throw new XoApiException(400, "E2EE_PEER_KEY_MISSING",
+                        "the peer has no encryption key yet — the encrypted file cannot be sent (nothing was leaked)");
+            }
+            ssStore.noteDerivedUploadKey(treeUploadId, derived);
+            e2eeFileKey = derived;
+        }
         if (e2eeFileKey != null) {
             try {
                 org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(account)
@@ -856,10 +872,14 @@ public final class RestDispatcher {
             throw new XoApiException(400, "PEER_ID_INVALID", "unaddressable peer for send-media");
         }
         boolean e2eeChat = peer.isSecret;
-        org.telegram.tgnet.rest.e2ee.XoSecretStore e2eeStore = e2eeChat
+        // T81: ss intents live in the same store — inspect them for cloud chats too
+        org.telegram.tgnet.rest.e2ee.XoSecretStore e2eeStore = (e2eeChat || !alreadyBackend)
                 ? org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(account) : null;
         byte[] bodyFileKey = e2eeStore != null && !alreadyBackend ? e2eeStore.uploadKeyForTree(treeUploadId) : null;
         byte[] thumbFileKey = e2eeStore != null && thumbTreeId != 0 ? e2eeStore.uploadKeyForTree(thumbTreeId) : null;
+        org.json.JSONObject manifestMeta = e2eeStore != null && !alreadyBackend ? e2eeStore.uploadManifest(treeUploadId) : null;
+        boolean ssFile = !e2eeChat && !alreadyBackend && manifestMeta != null
+                && "ss".equals(manifestMeta.optString("kf", ""));
         // An encrypted chat NEVER references plaintext media: either the
         // upload carries an E2EE key, or the item is a re-encrypted forward
         // envelope (alreadyBackend + envelope content). Referenced plaintext
@@ -889,6 +909,27 @@ public final class RestDispatcher {
                 }
                 e2ee = true;
             }
+        }
+        if (ssFile) {
+            // T81: encrypted-file send in a private CLOUD chat. The ss intent
+            // normally carries its derived key already (uploadPart derives it
+            // before the first part encrypts); re-derive as a belt-and-braces
+            // for the cold/finalize race. Missing key = fail closed.
+            if (bodyFileKey == null && e2eeStore.uploadNeedsDerivedKey(treeUploadId)) {
+                byte[] derived = peer.userId > 0
+                        ? org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account).deriveFileKeyForPeer(peer.userId)
+                        : null;
+                if (derived != null) {
+                    e2eeStore.noteDerivedUploadKey(treeUploadId, derived);
+                    bodyFileKey = derived;
+                }
+            }
+            if (bodyFileKey == null) {
+                XoSecret.notifySendBlocked(account, peer.userId, "E2EE_PEER_KEY_MISSING");
+                throw new XoApiException(400, "E2EE_PEER_KEY_MISSING",
+                        "the encrypted file lost its derived key; cancel and resend");
+            }
+            e2ee = true;
         }
 
         long thumbBackendId = 0;
@@ -963,11 +1004,21 @@ public final class RestDispatcher {
                 boolean animated = asGif || (manifest != null && manifest.optInt("an", 0) == 1);
                 String inner;
                 try {
-                    inner = org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerMedia(
-                            bodyFileKey, plainLen, chunkSize, realMime, realName, realW, realH, realDur,
-                            caption, thumbKey != null,
-                            thumbKey, thumbBackendId, animated);
-                    wireCaption = e2eeMgr.encryptForPeer(peer.secretChatId, peer.userId, inner);
+                    if (ssFile) {
+                        // T81: the file key is NOT in the envelope — both sides
+                        // derive the one symmetric key from the static-static DH
+                        inner = org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerMediaSs(
+                                plainLen, chunkSize, realMime, realName, realW, realH, realDur,
+                                caption, thumbKey != null,
+                                thumbKey, thumbBackendId, animated);
+                        wireCaption = e2eeMgr.encryptForPeerFile(peer.userId, inner);
+                    } else {
+                        inner = org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerMedia(
+                                bodyFileKey, plainLen, chunkSize, realMime, realName, realW, realH, realDur,
+                                caption, thumbKey != null,
+                                thumbKey, thumbBackendId, animated);
+                        wireCaption = e2eeMgr.encryptForPeer(peer.secretChatId, peer.userId, inner);
+                    }
                     sentInnerForEcho = inner; // own-echo rendering source
                 } catch (org.telegram.tgnet.rest.e2ee.XoSecret.SecretUnavailableException e) {
                     XoSecret.notifySendBlocked(account, peer.userId, e.reasonCode); // never silent
@@ -979,8 +1030,9 @@ public final class RestDispatcher {
                 // register media keys so THIS device can decrypt its own later
                 // downloads (the receiver gains the same keys via the envelope)
                 try {
-                    org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta =
-                            org.telegram.tgnet.rest.e2ee.XoSecret.parseMediaMeta(new org.json.JSONObject(inner));
+                    org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta = ssFile
+                            ? org.telegram.tgnet.rest.e2ee.XoSecret.parseMediaMeta(new org.json.JSONObject(inner), bodyFileKey)
+                            : org.telegram.tgnet.rest.e2ee.XoSecret.parseMediaMeta(new org.json.JSONObject(inner));
                     e2eeMgr.noteMediaKeys(mediaFileId, meta);
                     if (thumbBackendId > 0 && thumbKey != null) {
                         org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta thumbMeta =

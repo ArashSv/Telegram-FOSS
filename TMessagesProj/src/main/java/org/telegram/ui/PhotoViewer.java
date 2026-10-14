@@ -2723,6 +2723,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
         boolean cancelButtonPressed();
         void needAddMorePhotos();
         void sendButtonPressed(int index, VideoEditedInfo videoEditedInfo, boolean notify, int scheduleDate, boolean forceDocument);
+
+        /** T81: the encrypted-file variant — default falls back to the normal send. */
+        default void sendButtonPressed(int index, VideoEditedInfo videoEditedInfo, boolean notify, int scheduleDate, boolean forceDocument, boolean asEncrypted) {
+            sendButtonPressed(index, videoEditedInfo, notify, scheduleDate, forceDocument);
+        }
         void replaceButtonPressed(int index, VideoEditedInfo videoEditedInfo);
         boolean canReplace(int index);
         int getSelectedCount();
@@ -6479,8 +6484,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
             sendPopupLayout.setBackgroundColor(0xf9222222);
 
             final boolean canReplace = placeProvider != null && placeProvider.canReplace(currentIndex);
-            final int[] order = {4, 3, 2, 0, 1};
-            for (int i = 0; i < 5; i++) {
+            final int[] order = {5, 4, 3, 2, 0, 1};
+            for (int i = 0; i < 6; i++) {
                 final int a = order[i];
                 if (a != 2 && a != 3 && canReplace) {
                     continue;
@@ -6514,7 +6519,11 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     continue;
                 } else if ((a == 2 || a == 3) && !canReplace) {
                     continue;
-                } else if (a == 4 && (isCurrentVideo || captionEdit.hasTimer())) {
+                } else if ((a == 4 || a == 5) && (isCurrentVideo || captionEdit.hasTimer())) {
+                    continue;
+                } else if (a == 5 && (parentChatActivity == null || !parentChatActivity.canSendEncryptedFiles())) {
+                    // T81: the encrypted-file send exists ONLY in private cloud
+                    // 1:1 chats (secret chats are always E2EE already)
                     continue;
                 }
                 ActionBarMenuSubItem cell = new ActionBarMenuSubItem(parentActivity, a == 0, a == 3, resourcesProvider);
@@ -6536,6 +6545,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     } else {
                         cell.setTextAndIcon(LocaleController.getString(R.string.SendAsFile), R.drawable.msg_sendfile);
                     }
+                } else if (a == 5) {
+                    // T81: encrypted-file send, right next to "Send as File"
+                    if (placeProvider != null && placeProvider.getSelectedCount() > 1) {
+                        cell.setTextAndIcon(LocaleController.getString(R.string.SendAsEncryptedFiles), R.drawable.msg_sendfile);
+                    } else {
+                        cell.setTextAndIcon(LocaleController.getString(R.string.SendAsEncryptedFile), R.drawable.msg_sendfile);
+                    }
                 }
                 cell.setMinimumWidth(dp(196));
                 cell.setColors(0xffffffff, 0xffffffff);
@@ -6554,6 +6570,8 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                         sendPressed(true, 0);
                     } else if (a == 4) {
                         sendPressed(true, 0, false, true, false);
+                    } else if (a == 5) {
+                        sendPressed(true, 0, false, true, false, true);
                     }
                 });
             }
@@ -7051,6 +7069,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
     }
 
     private void sendPressed(boolean notify, int scheduleDate, boolean replace, boolean forceDocument, boolean confirmed) {
+        sendPressed(notify, scheduleDate, replace, forceDocument, confirmed, false);
+    }
+
+    private void sendPressed(boolean notify, int scheduleDate, boolean replace, boolean forceDocument, boolean confirmed, boolean asEncrypted) {
         if (isCaptionOpen()) {
             return;
         }
@@ -7412,7 +7434,7 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                         return;
                     }
                 }
-                placeProvider.sendButtonPressed(currentIndex, videoEditedInfo, notify, scheduleDate, forceDocument);
+                placeProvider.sendButtonPressed(currentIndex, videoEditedInfo, notify, scheduleDate, forceDocument, asEncrypted);
             } else {
                 placeProvider.replaceButtonPressed(currentIndex, videoEditedInfo);
             }
@@ -15399,7 +15421,13 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
 
                     @Override
                     public void sendButtonPressed(int index, VideoEditedInfo videoEditedInfo, boolean notify, int scheduleDate, boolean forceDocument) {
-                        sendMedia(videoEditedInfo, notify, scheduleDate, false, forceDocument);
+                        sendMedia(videoEditedInfo, notify, scheduleDate, false, forceDocument, false);
+                    }
+
+                    @Override
+                    public void sendButtonPressed(int index, VideoEditedInfo videoEditedInfo, boolean notify, int scheduleDate, boolean forceDocument, boolean asEncrypted) {
+                        // T81: the encrypted-file entry of the send popup
+                        sendMedia(videoEditedInfo, notify, scheduleDate, false, forceDocument || asEncrypted, asEncrypted);
                     }
 
                     @Override
@@ -15425,6 +15453,10 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     }
 
                     private void sendMedia(VideoEditedInfo videoEditedInfo, boolean notify, int scheduleDate, boolean replace, boolean forceDocument) {
+                        sendMedia(videoEditedInfo, notify, scheduleDate, replace, forceDocument, false);
+                    }
+
+                    private void sendMedia(VideoEditedInfo videoEditedInfo, boolean notify, int scheduleDate, boolean replace, boolean forceDocument, boolean asEncrypted) {
                         if (parentChatActivity != null) {
                             final MessageObject editingMessageObject = replace ? finalMessageObject : null;
                             if (editingMessageObject != null && !TextUtils.isEmpty(photoEntry.caption)) {
@@ -15433,15 +15465,15 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                             }
                             if (photoEntry.isVideo) {
                                 if (videoEditedInfo != null) {
-                                    SendMessagesHelper.prepareSendingVideo(parentChatActivity.getAccountInstance(), photoEntry.path, videoEditedInfo, parentChatActivity.getDialogId(), parentChatActivity.getReplyMessage(), parentChatActivity.getThreadMessage(), null, parentChatActivity.getReplyQuote(), photoEntry.entities, photoEntry.ttl, editingMessageObject, notify, scheduleDate, forceDocument, photoEntry.hasSpoiler, photoEntry.caption, parentChatActivity.quickReplyShortcut, parentChatActivity.getQuickReplyId(), 0);
+                                    SendMessagesHelper.prepareSendingVideo(parentChatActivity.getAccountInstance(), photoEntry.path, videoEditedInfo, parentChatActivity.getDialogId(), parentChatActivity.getReplyMessage(), parentChatActivity.getThreadMessage(), null, parentChatActivity.getReplyQuote(), photoEntry.entities, photoEntry.ttl, editingMessageObject, notify, scheduleDate, forceDocument, photoEntry.hasSpoiler, photoEntry.caption, parentChatActivity.quickReplyShortcut, parentChatActivity.getQuickReplyId(), 0, asEncrypted);
                                 } else {
-                                    SendMessagesHelper.prepareSendingVideo(parentChatActivity.getAccountInstance(), photoEntry.path, null, parentChatActivity.getDialogId(), parentChatActivity.getReplyMessage(), parentChatActivity.getThreadMessage(), null, parentChatActivity.getReplyQuote(), photoEntry.entities, photoEntry.ttl, editingMessageObject, notify, scheduleDate, forceDocument, photoEntry.hasSpoiler, photoEntry.caption, parentChatActivity.quickReplyShortcut, parentChatActivity.getQuickReplyId(), 0);
+                                    SendMessagesHelper.prepareSendingVideo(parentChatActivity.getAccountInstance(), photoEntry.path, null, parentChatActivity.getDialogId(), parentChatActivity.getReplyMessage(), parentChatActivity.getThreadMessage(), null, parentChatActivity.getReplyQuote(), photoEntry.entities, photoEntry.ttl, editingMessageObject, notify, scheduleDate, forceDocument, photoEntry.hasSpoiler, photoEntry.caption, parentChatActivity.quickReplyShortcut, parentChatActivity.getQuickReplyId(), 0, asEncrypted);
                                 }
                             } else {
                                 if (photoEntry.imagePath != null) {
-                                    SendMessagesHelper.prepareSendingPhoto(parentChatActivity.getAccountInstance(), photoEntry.imagePath, photoEntry.thumbPath, null, parentChatActivity.getDialogId(), parentChatActivity.getReplyMessage(), parentChatActivity.getThreadMessage(), null, parentChatActivity.getReplyQuote(), photoEntry.entities, photoEntry.stickers, null, photoEntry.ttl, editingMessageObject, videoEditedInfo, notify, scheduleDate, 0, forceDocument, photoEntry.caption, parentChatActivity.quickReplyShortcut, parentChatActivity.getQuickReplyId(), 0);
+                                    SendMessagesHelper.prepareSendingPhoto(parentChatActivity.getAccountInstance(), photoEntry.imagePath, photoEntry.thumbPath, null, parentChatActivity.getDialogId(), parentChatActivity.getReplyMessage(), parentChatActivity.getThreadMessage(), null, parentChatActivity.getReplyQuote(), photoEntry.entities, photoEntry.stickers, null, photoEntry.ttl, editingMessageObject, videoEditedInfo, notify, scheduleDate, 0, forceDocument, photoEntry.caption, parentChatActivity.quickReplyShortcut, parentChatActivity.getQuickReplyId(), 0, asEncrypted);
                                 } else if (photoEntry.path != null) {
-                                    SendMessagesHelper.prepareSendingPhoto(parentChatActivity.getAccountInstance(), photoEntry.path, photoEntry.thumbPath, null, parentChatActivity.getDialogId(), parentChatActivity.getReplyMessage(), parentChatActivity.getThreadMessage(), null, parentChatActivity.getReplyQuote(), photoEntry.entities, photoEntry.stickers, null, photoEntry.ttl, editingMessageObject, videoEditedInfo, notify, scheduleDate, 0, forceDocument, photoEntry.caption, parentChatActivity.quickReplyShortcut, parentChatActivity.getQuickReplyId(), 0);
+                                    SendMessagesHelper.prepareSendingPhoto(parentChatActivity.getAccountInstance(), photoEntry.path, photoEntry.thumbPath, null, parentChatActivity.getDialogId(), parentChatActivity.getReplyMessage(), parentChatActivity.getThreadMessage(), null, parentChatActivity.getReplyQuote(), photoEntry.entities, photoEntry.stickers, null, photoEntry.ttl, editingMessageObject, videoEditedInfo, notify, scheduleDate, 0, forceDocument, photoEntry.caption, parentChatActivity.quickReplyShortcut, parentChatActivity.getQuickReplyId(), 0, asEncrypted);
                                 }
                             }
                         }

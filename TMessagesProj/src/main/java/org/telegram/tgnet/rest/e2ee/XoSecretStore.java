@@ -324,6 +324,92 @@ public final class XoSecretStore {
         }
     }
 
+    /**
+     * T81 — registers a KEYLESS "ss" upload intent for the encrypted-file
+     * feature in private cloud chats. NO key is minted here (the caller may
+     * be on the main thread): the file key is the static-static derived key,
+     * computed once at the first part upload (dispatcher) via
+     * {@link #noteDerivedUploadKey}. Refresh semantics match
+     * {@link #noteUploadIntent}: re-scheduling keeps any already-derived key.
+     */
+    public void noteUploadIntentSs(String location, long peerUserId, TLRPC.PhotoSize photoSize, TLRPC.TL_document document) {
+        synchronized (lock) {
+            loadLocked();
+            try {
+                JSONObject entry;
+                String existing = uploadIntents.get(location);
+                if (existing != null) {
+                    entry = new JSONObject(existing);
+                    if (entry.has("fk") || "ss".equals(entry.optString("kf", ""))) {
+                        entry.put("peer", peerUserId);
+                        putManifestMeta(entry, photoSize, document);
+                        uploadIntents.put(location, entry.toString());
+                        markDirtyLocked();
+                        return;
+                    }
+                }
+                entry = existing != null ? new JSONObject(existing) : new JSONObject();
+                entry.put("peer", peerUserId);
+                entry.put("kf", "ss");
+                entry.put("ts", System.currentTimeMillis());
+                putManifestMeta(entry, photoSize, document);
+                uploadIntents.put(location, entry.toString());
+                markDirtyLocked();
+            } catch (Exception e) {
+                FileLog.e("XoSecretStore: ss upload intent encode failed", e);
+            }
+        }
+    }
+
+    /** T81: TRUE when this tree needs its ss file key derived before the first part encrypts. */
+    public boolean uploadNeedsDerivedKey(long treeUploadId) {
+        synchronized (lock) {
+            loadLocked();
+            String location = uploadTreeLocations.get(treeUploadId);
+            if (location == null) {
+                return false;
+            }
+            String json = uploadIntents.get(location);
+            if (json == null) {
+                return false;
+            }
+            try {
+                JSONObject entry = new JSONObject(json);
+                return "ss".equals(entry.optString("kf", "")) && !entry.has("fk");
+            } catch (Exception e) {
+                return false;
+            }
+        }
+    }
+
+    /** T81: stores the once-derived file key on an ss intent (idempotent). */
+    public void noteDerivedUploadKey(long treeUploadId, byte[] key) {
+        if (key == null || key.length != XoE2EEMedia.FILE_KEY_LEN) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            String location = uploadTreeLocations.get(treeUploadId);
+            if (location == null) {
+                return;
+            }
+            try {
+                String json = uploadIntents.get(location);
+                if (json == null) {
+                    return;
+                }
+                JSONObject entry = new JSONObject(json);
+                if (!entry.has("fk")) { // never overwrite a minted/derived key
+                    entry.put("fk", XoSecretEnvelope.b64Encode(key));
+                    uploadIntents.put(location, entry.toString());
+                    markDirtyLocked();
+                }
+            } catch (Exception e) {
+                FileLog.e("XoSecretStore: derived key note failed", e);
+            }
+        }
+    }
+
     private static void putManifestMeta(JSONObject entry, TLRPC.PhotoSize photoSize, TLRPC.TL_document document) throws Exception {
         if (document != null) {
             if (document.mime_type != null && document.mime_type.length() > 0) {

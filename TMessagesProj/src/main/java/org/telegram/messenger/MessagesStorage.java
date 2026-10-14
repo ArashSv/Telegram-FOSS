@@ -10292,9 +10292,7 @@ public class MessagesStorage extends BaseController {
                         TLRPC.User user = TLRPC.User.TLdeserialize(data, data.readInt32(false), false);
                         data.reuse();
                         if (user != null) {
-                            if (user.status != null) {
-                                user.status.expires = cursor.intValue(1);
-                            }
+                            rehydrateUserStatus(user, cursor.intValue(1));
                             result.add(user);
                             if (userIds.size() > 50 && putUnknown) {
                                 getMessagesController().putUser(user, true, false);
@@ -10333,9 +10331,7 @@ public class MessagesStorage extends BaseController {
                         TLRPC.User user = TLRPC.User.TLdeserialize(data, data.readInt32(false), false);
                         data.reuse();
                         if (user != null) {
-                            if (user.status != null) {
-                                user.status.expires = cursor.intValue(1);
-                            }
+                            rehydrateUserStatus(user, cursor.intValue(1));
                             result.add(user);
                         }
                     }
@@ -12858,6 +12854,51 @@ public class MessagesStorage extends BaseController {
             return updateMessageStateAndIdInternal(random_id, dialogId, _oldId, newId, date, scheduled, topicId);
         }
         return null;
+    }
+
+    /**
+     * T81 (last-seen root fix L2, read side): user blobs serialized before
+     * the REST parser set flag 64 carry NO status object while the int
+     * status column still holds the last value — so every DB round-trip
+     * erased the last seen. Rehydrate a status object from the column when
+     * the blob has none:
+     * {@code exp > now} → online (expires ahead); {@code 0 < exp <= now} →
+     * offline (was_online); the upstream negative sentinels → Recently /
+     * LastWeek / LastMonth (by_me variants -1000/-1001/-1002); anything
+     * else → empty. Blob-carried statuses just get the column refresh.
+     */
+    private void rehydrateUserStatus(TLRPC.User user, int columnValue) {
+        if (user.status != null) {
+            user.status.expires = columnValue;
+            return;
+        }
+        int now = ConnectionsManager.getInstance(currentAccount).getCurrentTime();
+        if (columnValue > now) {
+            TLRPC.TL_userStatusOnline online = new TLRPC.TL_userStatusOnline();
+            online.expires = columnValue;
+            user.status = online;
+        } else if (columnValue > 0) {
+            TLRPC.TL_userStatusOffline offline = new TLRPC.TL_userStatusOffline();
+            offline.expires = columnValue;
+            user.status = offline;
+        } else if (columnValue == -100 || columnValue == -1000) {
+            TLRPC.TL_userStatusRecently recently = new TLRPC.TL_userStatusRecently();
+            recently.by_me = columnValue == -1000;
+            recently.expires = columnValue;
+            user.status = recently;
+        } else if (columnValue == -101 || columnValue == -1001) {
+            TLRPC.TL_userStatusLastWeek lastWeek = new TLRPC.TL_userStatusLastWeek();
+            lastWeek.by_me = columnValue == -1001;
+            lastWeek.expires = columnValue;
+            user.status = lastWeek;
+        } else if (columnValue == -102 || columnValue == -1002) {
+            TLRPC.TL_userStatusLastMonth lastMonth = new TLRPC.TL_userStatusLastMonth();
+            lastMonth.by_me = columnValue == -1002;
+            lastMonth.expires = columnValue;
+            user.status = lastMonth;
+        } else {
+            user.status = new TLRPC.TL_userStatusEmpty();
+        }
     }
 
     private void updateUsersInternal(ArrayList<TLRPC.User> users, boolean onlyStatus, boolean withTransaction) {

@@ -229,9 +229,12 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
     public final static int preview = 6;
     public final static int caption = 7;
     public final static int stars = 8;
+    /** T81: "Send as Encrypted File(s)" — sits right next to {@link #compress}. */
+    public final static int send_encrypted = 9;
 
     private ActionBarMenuSubItem spoilerItem;
     private ActionBarMenuSubItem compressItem;
+    private ActionBarMenuSubItem encryptedFileItem; // T81
     private ActionBarMenuSubItem starsItem;
     protected ActionBarMenuSubItem previewItem;
     public MessagePreviewView.ToggleButton captionItem;
@@ -685,6 +688,7 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
         parentAlert.selectedMenuItem.addColoredGap(preview_gap);
         parentAlert.selectedMenuItem.addSubItem(open_in, R.drawable.msg_openin, LocaleController.getString("OpenInExternalApp", R.string.OpenInExternalApp));
         compressItem = parentAlert.selectedMenuItem.addSubItem(compress, R.drawable.msg_filehq, LocaleController.getString("SendWithoutCompression", R.string.SendWithoutCompression));
+        encryptedFileItem = parentAlert.selectedMenuItem.addSubItem(send_encrypted, R.drawable.msg_sendfile, LocaleController.getString("SendAsEncryptedFile", R.string.SendAsEncryptedFile));
         parentAlert.selectedMenuItem.addSubItem(group, R.drawable.msg_ungroup, LocaleController.getString("SendWithoutGrouping", R.string.SendWithoutGrouping));
         parentAlert.selectedMenuItem.addColoredGap(media_gap);
         spoilerItem = parentAlert.selectedMenuItem.addSubItem(spoiler, R.drawable.msg_spoiler, LocaleController.getString("EnablePhotoSpoiler", R.string.EnablePhotoSpoiler));
@@ -3206,6 +3210,18 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
                 parentAlert.applyCaption();
                 parentAlert.delegate.didPressedButton(4, true, true, 0, 0, false, false);
             }
+        } else if (id == send_encrypted) {
+            // T81: the encrypted-file send — same flow as compress with the
+            // xoEnc flag riding the message params (didPressedButton(9))
+            if (parentAlert.editingMessageObject == null && parentAlert.baseFragment instanceof ChatActivity && ((ChatActivity) parentAlert.baseFragment).isInScheduleMode()) {
+                AlertsCreator.createScheduleDatePickerDialog(getContext(), ((ChatActivity) parentAlert.baseFragment).getDialogId(), (notify, scheduleDate) -> {
+                    parentAlert.applyCaption();
+                    parentAlert.delegate.didPressedButton(9, true, notify, scheduleDate, 0, false, false);
+                }, resourcesProvider);
+            } else {
+                parentAlert.applyCaption();
+                parentAlert.delegate.didPressedButton(9, true, true, 0, 0, false, false);
+            }
         } else if (id == spoiler) {
             if (parentAlert.getPhotoPreviewLayout() != null) {
                 parentAlert.getPhotoPreviewLayout().startMediaCrossfade();
@@ -3323,6 +3339,11 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
 
     @Override
     public void onSelectedItemsCountChanged(int count) {
+        // T81: the encrypted-file item mirrors the compress item's visibility
+        // and is offered ONLY in private cloud 1:1 chats (secret chats are
+        // already always E2EE — the option would be a no-op there)
+        boolean canEncryptHere = parentAlert != null && parentAlert.baseFragment instanceof ChatActivity
+                && ((ChatActivity) parentAlert.baseFragment).canSendEncryptedFiles();
         final boolean hasCompress;
         final boolean hasGroup;
         if (count <= 1 || parentAlert.editingMessageObject != null) {
@@ -3355,6 +3376,11 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
                 parentAlert.selectedMenuItem.hideSubItem(compress);
             }
         }
+        if (hasCompress && canEncryptHere) {
+            parentAlert.selectedMenuItem.showSubItem(send_encrypted);
+        } else {
+            parentAlert.selectedMenuItem.hideSubItem(send_encrypted);
+        }
         if (count != 0) {
             parentAlert.selectedMenuItem.hideSubItem(open_in);
         }
@@ -3362,11 +3388,13 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
             parentAlert.selectedMenuItem.showSubItem(preview_gap);
             parentAlert.selectedMenuItem.showSubItem(preview);
             compressItem.setText(LocaleController.getString(R.string.SendAsFiles));
+            encryptedFileItem.setText(LocaleController.getString(R.string.SendAsEncryptedFiles));
         } else {
             parentAlert.selectedMenuItem.hideSubItem(preview_gap);
             parentAlert.selectedMenuItem.hideSubItem(preview);
             if (count != 0) {
                 compressItem.setText(LocaleController.getString(R.string.SendAsFile));
+                encryptedFileItem.setText(LocaleController.getString(R.string.SendAsEncryptedFile));
             }
         }
         final boolean hasSpoiler = count > 0 && getStarsPrice() <= 0 && (parentAlert == null || parentAlert.baseFragment instanceof ChatActivity && !((ChatActivity) parentAlert.baseFragment).isSecretChat());

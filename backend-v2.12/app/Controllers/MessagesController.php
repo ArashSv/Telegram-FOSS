@@ -68,6 +68,14 @@ final class MessagesController
      *  - cloud chats refuse envelopes outright (a stale pre-T80 client
      *    cannot silently keep pushing libsignal ciphertext into a cloud
      *    chat, which the peer would render as a broken 🔒 row).
+     *
+     * v2.12.4 (T81): CLOUD chats accept the "XOSF1:" encrypted-FILE
+     * envelope family — the user explicitly chose the encrypted-file send
+     * (the button next to "Send as File"). The envelope is client-side
+     * ECIES (the server sees no keys and no metadata), the referenced file
+     * blob is uploaded ALREADY chunk-encrypted (kind='e2ee' ciphertext at
+     * rest — the server never holds plaintext), and the row is stored
+     * verbatim below. XOSC1/XOE1 stay refused in cloud mode.
      */
     private static function assertContentForMode(string $mode, ?string $content, string $field = 'content'): void
     {
@@ -76,6 +84,10 @@ final class MessagesController
         }
         // v2.12.1 (T78): both envelope generations qualify — the legacy XOE1
         // (pre-T78 rows in mode-flipped chats) and the new stateless XOSC1.
+        // v2.12.4 (T81): XOSF1 (encrypted FILE envelopes) deliberately does
+        // NOT count as $isEnvelope: cloud chats accept it (the explicit
+        // encrypted-file send), secret chats reject it (their contract is
+        // XOE1/XOSC1 only).
         $isEnvelope = str_starts_with($content, 'XOE1:') || str_starts_with($content, 'XOSC1:');
         if ($mode === self::MODE_SECRET && !$isEnvelope) {
             throw new ApiError('E2EE_CONTENT_REQUIRED', 'This is a secret chat: messages must arrive as XOE1 envelopes', 400, ['field' => $field]);

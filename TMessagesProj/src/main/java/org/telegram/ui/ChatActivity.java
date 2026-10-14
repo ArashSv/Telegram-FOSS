@@ -11733,7 +11733,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                         return;
                     }
                     editingMessageObject = chatAttachAlert.getEditingMessageObject();
-                    if (button == 8 || button == 7 || button == 4 && !chatAttachAlert.getPhotoLayout().getSelectedPhotos().isEmpty()) {
+                    if (button == 8 || button == 7 || (button == 4 || button == 9) && !chatAttachAlert.getPhotoLayout().getSelectedPhotos().isEmpty()) {
                         if (button != 8) {
                             chatAttachAlert.dismiss(true);
                         }
@@ -11767,6 +11767,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                                     info.updateStickersOrder = SendMessagesHelper.checkUpdateStickersOrder(photoEntry.caption);
                                     info.hasMediaSpoilers = photoEntry.hasSpoiler;
                                     info.stars = photoEntry.starsAmount;
+                                    info.asEncryptedFile = button == 9; // T81: the encrypted-file send
                                     photos.add(info);
                                     photoEntry.reset();
                                 }
@@ -11775,7 +11776,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                                     fillEditingMediaWithCaption(photos.get(0).caption, photos.get(0).entities);
                                     updateStickersOrder = photos.get(0).updateStickersOrder;
                                 }
-                                SendMessagesHelper.prepareSendingMedia(getAccountInstance(), photos, dialog_id, replyingMessageObject, getThreadMessage(), null, replyingQuote, button == 4 || forceDocument, arg, editingMessageObject, notify, scheduleDate, chatMode, updateStickersOrder, null, quickReplyShortcut, getQuickReplyId(), effectId, invertMedia);
+                                SendMessagesHelper.prepareSendingMedia(getAccountInstance(), photos, dialog_id, replyingMessageObject, getThreadMessage(), null, replyingQuote, button == 4 || button == 9 || forceDocument, arg, editingMessageObject, notify, scheduleDate, chatMode, updateStickersOrder, null, quickReplyShortcut, getQuickReplyId(), effectId, invertMedia, button == 9);
                             }
                             afterMessageSend();
                             chatActivityEnterView.setFieldText("");
@@ -32062,6 +32063,33 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
 
     public boolean isSecretChat() {
         return currentEncryptedChat != null;
+    }
+
+    /**
+     * T81: TRUE when the "Send as Encrypted File" action may be offered in
+     * this chat — private CLOUD 1:1 dialogs only (positive dialog id = user
+     * space). Secret chats are ALREADY end-to-end encrypted (the action
+     * would be a no-op and is hidden); groups/channels (negative ids),
+     * bots, service accounts and Saved Messages are excluded. The peer's
+     * key is resolved at send time: a keyless peer fails closed with
+     * E2EE_PEER_KEY_MISSING — plaintext never leaks.
+     */
+    public boolean canSendEncryptedFiles() {
+        long dialogId = getDialogId();
+        if (dialogId <= 0) {
+            return false; // groups/channels ride the chat space; private = user id
+        }
+        TLRPC.User user = getCurrentUser();
+        if (user == null || user.bot || user.self || UserObject.isReplyUser(user)) {
+            return false;
+        }
+        if (user.id == 333000 || user.id == 777000 || user.id == 42777 || MessagesController.isSupportUser(user)) {
+            return false;
+        }
+        if (UserObject.isUserSelf(user)) {
+            return false; // Saved Messages
+        }
+        return !org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, dialogId);
     }
 
     public boolean isChannel() {

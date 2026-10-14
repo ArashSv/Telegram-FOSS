@@ -604,6 +604,9 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         public boolean hasMediaSpoilers;
         public TLRPC.VideoSize emojiMarkup;
         public long stars;
+        /** T81: send this item AS an ENCRYPTED file (XOSF1) — set ONLY by the
+         *  dedicated UI entries; every normal path stays false (plaintext). */
+        public boolean asEncryptedFile;
     }
 
     @SuppressLint("MissingPermission")
@@ -7007,6 +7010,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             }
             long peerDialogId = message.peer;
             long intentPeer = peerDialogId;
+            // T81: the encrypted-file choice rides the unsent message's params
+            // map ("xoEnc":"1", planted by prepareSendingDocumentInternal).
+            boolean xoEnc = message.obj != null && message.obj.messageOwner != null
+                    && message.obj.messageOwner.params != null
+                    && "1".equals(message.obj.messageOwner.params.get("xoEnc"));
             if (peerDialogId < 0) {
                 // T78: SECRET chats ride the chat space (negative dialog id) —
                 // the intent peer is the PEER USER (key lookup); the dialog
@@ -7020,6 +7028,18 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 }
             } else if (peerDialogId == 0) {
                 return; // no destination
+            } else if (!xoEnc) {
+                // T81 FIX (critical regression, found by recon): the T79 rewrite
+                // dropped the positive-dialog-id gate, so EVERY private-cloud
+                // media send minted a random-key intent — uploadPart then
+                // AEAD-encrypted the parts while the dispatcher finalized the
+                // row as PLAINTEXT (no envelope, no keys registered): both
+                // sides received corrupted files. Normal cloud sending stays
+                // byte-for-byte what it was before the T78 architecture: NO
+                // intent, NO client crypto — unless the user EXPLICITLY chose
+                // the encrypted-file send (xoEnc), which mints a KEYLESS ss
+                // intent below.
+                return;
             }
             long selfId = UserConfig.getInstance(currentAccount).clientUserId;
             if (intentPeer == selfId) {
@@ -7034,8 +7054,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             // real metadata for the encrypted envelope: documents/videos carry
             // everything on the TL_document; photos only on the PhotoSize
             TLRPC.TL_document document = message.obj != null ? (TLRPC.TL_document) message.obj.getDocument() : null;
-            org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
-                    .noteUploadIntent(location, intentPeer, message.photoSize, document);
+            if (peerDialogId < 0) {
+                org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
+                        .noteUploadIntent(location, intentPeer, message.photoSize, document);
+            } else {
+                // T81: cloud + xoEnc — KEYLESS ss intent (the file key is the
+                // static-static derived key, computed at the first part upload)
+                org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
+                        .noteUploadIntentSs(location, intentPeer, message.photoSize, document);
+            }
         } catch (Throwable e) {
             FileLog.e("SendMessagesHelper: secret upload intent failed", e);
         }
@@ -7278,6 +7305,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
     private final static int ERROR_TYPE_FILE_TOO_LARGE = 2;
 
     private static int prepareSendingDocumentInternal(AccountInstance accountInstance, String path, String originalPath, Uri uri, String mime, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, final ArrayList<TLRPC.MessageEntity> entities, final MessageObject editingMessageObject, long[] groupId, boolean isGroupFinal, CharSequence caption, boolean notify, int scheduleDate, Integer[] docType, boolean forceDocument, String quickReplyShortcut, int quickReplyShortcutId, long effectId, boolean invertMedia) {
+        return prepareSendingDocumentInternal(accountInstance, path, originalPath, uri, mime, dialogId, replyToMsg, replyToTopMsg, storyItem, quote, entities, editingMessageObject, groupId, isGroupFinal, caption, notify, scheduleDate, docType, forceDocument, quickReplyShortcut, quickReplyShortcutId, effectId, invertMedia, false);
+    }
+
+    private static int prepareSendingDocumentInternal(AccountInstance accountInstance, String path, String originalPath, Uri uri, String mime, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, final ArrayList<TLRPC.MessageEntity> entities, final MessageObject editingMessageObject, long[] groupId, boolean isGroupFinal, CharSequence caption, boolean notify, int scheduleDate, Integer[] docType, boolean forceDocument, String quickReplyShortcut, int quickReplyShortcutId, long effectId, boolean invertMedia, boolean asEncryptedFile) {
         if ((path == null || path.length() == 0) && uri == null) {
             return ERROR_TYPE_UNSUPPORTED;
         }
@@ -7521,6 +7552,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
         }
         if (forceDocument && attributeAudio == null) {
             params.put("forceDocument", "1");
+        }
+        if (asEncryptedFile) {
+            // T81: encrypted-file send — rides the unsent message's params into
+            // noteE2eeUploadIntent (keyless ss intent) and ensureRestThumb; the
+            // XOSF1 envelope is built by the dispatcher from the ss intent.
+            params.put("xoEnc", "1");
         }
         if (parentFinal != null) {
             params.put("parentObject", parentFinal);
@@ -7822,6 +7859,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
 
     @UiThread
     public static void prepareSendingPhoto(AccountInstance accountInstance, String imageFilePath, String thumbFilePath, Uri imageUri, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, ArrayList<TLRPC.MessageEntity> entities, ArrayList<TLRPC.InputDocument> stickers, InputContentInfoCompat inputContent, int ttl, MessageObject editingMessageObject, VideoEditedInfo videoEditedInfo, boolean notify, int scheduleDate, int mode, boolean forceDocument, CharSequence caption, String quickReplyShortcut, int quickReplyShortcutId, long effectId) {
+        prepareSendingPhoto(accountInstance, imageFilePath, thumbFilePath, imageUri, dialogId, replyToMsg, replyToTopMsg, storyItem, quote, entities, stickers, inputContent, ttl, editingMessageObject, videoEditedInfo, notify, scheduleDate, mode, forceDocument, caption, quickReplyShortcut, quickReplyShortcutId, effectId, false);
+    }
+
+    /** T81: {@code asEncryptedFile} — the photo goes out as an XOSF1 encrypted file. */
+    @UiThread
+    public static void prepareSendingPhoto(AccountInstance accountInstance, String imageFilePath, String thumbFilePath, Uri imageUri, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, ArrayList<TLRPC.MessageEntity> entities, ArrayList<TLRPC.InputDocument> stickers, InputContentInfoCompat inputContent, int ttl, MessageObject editingMessageObject, VideoEditedInfo videoEditedInfo, boolean notify, int scheduleDate, int mode, boolean forceDocument, CharSequence caption, String quickReplyShortcut, int quickReplyShortcutId, long effectId, boolean asEncryptedFile) {
         SendingMediaInfo info = new SendingMediaInfo();
         info.path = imageFilePath;
         info.thumbPath = thumbFilePath;
@@ -7835,9 +7878,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             info.masks = new ArrayList<>(stickers);
         }
         info.videoEditedInfo = videoEditedInfo;
+        info.asEncryptedFile = asEncryptedFile;
         ArrayList<SendingMediaInfo> infos = new ArrayList<>();
         infos.add(info);
-        prepareSendingMedia(accountInstance, infos, dialogId, replyToMsg, replyToTopMsg, null, quote, forceDocument, false, editingMessageObject, notify, scheduleDate, mode, false, inputContent, quickReplyShortcut, quickReplyShortcutId, effectId, false);
+        prepareSendingMedia(accountInstance, infos, dialogId, replyToMsg, replyToTopMsg, null, quote, forceDocument || asEncryptedFile, false, editingMessageObject, notify, scheduleDate, mode, false, inputContent, quickReplyShortcut, quickReplyShortcutId, effectId, false, asEncryptedFile);
     }
 
     @UiThread
@@ -8421,6 +8465,11 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
 
     @UiThread
     public static void prepareSendingMedia(AccountInstance accountInstance, ArrayList<SendingMediaInfo> media, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, boolean forceDocument, boolean groupMedia, MessageObject editingMessageObject, boolean notify, int scheduleDate, int mode, boolean updateStikcersOrder, InputContentInfoCompat inputContent, String quickReplyShortcut, int quickReplyShortcutId, long effectId, boolean invertMedia) {
+        prepareSendingMedia(accountInstance, media, dialogId, replyToMsg, replyToTopMsg, storyItem, quote, forceDocument, groupMedia, editingMessageObject, notify, scheduleDate, mode, updateStikcersOrder, inputContent, quickReplyShortcut, quickReplyShortcutId, effectId, invertMedia, false);
+    }
+
+    /** T81: {@code asEncryptedFiles} — every item goes out as an XOSF1 encrypted file. */
+    public static void prepareSendingMedia(AccountInstance accountInstance, ArrayList<SendingMediaInfo> media, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, boolean forceDocument, boolean groupMedia, MessageObject editingMessageObject, boolean notify, int scheduleDate, int mode, boolean updateStikcersOrder, InputContentInfoCompat inputContent, String quickReplyShortcut, int quickReplyShortcutId, long effectId, boolean invertMedia, boolean asEncryptedFiles) {
         if (media.isEmpty()) {
             return;
         }
@@ -9146,12 +9195,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 long[] groupId2 = new long[1];
                 int documentsCount = sendAsDocuments.size();
                 for (int a = 0; a < documentsCount; a++) {
-                    if (forceDocument && !isEncrypted && count > 1 && mediaCount % 10 == 0) {
+                    // T81: encrypted files never group into albums — each is its
+                    // own single-document row (the XOSF1 envelope is per-message).
+                    if (forceDocument && !isEncrypted && !asEncryptedFiles && count > 1 && mediaCount % 10 == 0) {
                         groupId2[0] = Utilities.random.nextLong();
                         mediaCount = 0;
                     }
                     mediaCount++;
-                    int error = prepareSendingDocumentInternal(accountInstance, sendAsDocuments.get(a), sendAsDocumentsOriginal.get(a), sendAsDocumentsUri.get(a), extension, dialogId, replyToMsg, replyToTopMsg, storyItem, quote, sendAsDocumentsEntities.get(a), editingMessageObject, groupId2, mediaCount == 10 || a == documentsCount - 1, sendAsDocumentsCaptions.get(a), notify, scheduleDate, null, forceDocument, quickReplyShortcut, quickReplyShortcutId, effectId, invertMedia);
+                    int error = prepareSendingDocumentInternal(accountInstance, sendAsDocuments.get(a), sendAsDocumentsOriginal.get(a), sendAsDocumentsUri.get(a), extension, dialogId, replyToMsg, replyToTopMsg, storyItem, quote, sendAsDocumentsEntities.get(a), editingMessageObject, groupId2, mediaCount == 10 || a == documentsCount - 1, sendAsDocumentsCaptions.get(a), notify, scheduleDate, null, forceDocument, quickReplyShortcut, quickReplyShortcutId, effectId, invertMedia, asEncryptedFiles);
                     handleError(error, accountInstance);
                 }
             }
@@ -9293,7 +9344,13 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 // "private chat" test (positive dialog id) would also encrypt
                 // CLOUD thumbs — the cloud envelope carries no key, so the
                 // receiver could never decrypt its own video preview.
-                boolean e2eeThumb = org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(account, peerDialogId);
+                // T81: cloud rows carry thumbs encrypted ONLY for the
+                // explicit encrypted-file send (xoEnc) — the thumb key rides
+                // the XOSF1 envelope (tk).
+                boolean xoEncThumb = msgObj != null && msgObj.messageOwner != null
+                        && msgObj.messageOwner.params != null
+                        && "1".equals(msgObj.messageOwner.params.get("xoEnc"));
+                boolean e2eeThumb = org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(account, peerDialogId) || xoEncThumb;
                 byte[] payload = thumbBytes;
                 byte[] thumbKey = null;
                 if (e2eeThumb) {
@@ -9597,6 +9654,12 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
 
     @UiThread
     public static void prepareSendingVideo(AccountInstance accountInstance, String videoPath, VideoEditedInfo info, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, ArrayList<TLRPC.MessageEntity> entities, int ttl, MessageObject editingMessageObject, boolean notify, int scheduleDate, boolean forceDocument, boolean hasMediaSpoilers, CharSequence caption, String quickReplyShortcut, int quickReplyShortcutId, long effectId) {
+        prepareSendingVideo(accountInstance, videoPath, info, dialogId, replyToMsg, replyToTopMsg, storyItem, quote, entities, ttl, editingMessageObject, notify, scheduleDate, forceDocument, hasMediaSpoilers, caption, quickReplyShortcut, quickReplyShortcutId, effectId, false);
+    }
+
+    /** T81: {@code asEncryptedFile} — the video goes out as an XOSF1 encrypted file. */
+    @UiThread
+    public static void prepareSendingVideo(AccountInstance accountInstance, String videoPath, VideoEditedInfo info, long dialogId, MessageObject replyToMsg, MessageObject replyToTopMsg, TL_stories.StoryItem storyItem, ChatActivity.ReplyQuote quote, ArrayList<TLRPC.MessageEntity> entities, int ttl, MessageObject editingMessageObject, boolean notify, int scheduleDate, boolean forceDocument, boolean hasMediaSpoilers, CharSequence caption, String quickReplyShortcut, int quickReplyShortcutId, long effectId, boolean asEncryptedFile) {
         if (videoPath == null || videoPath.length() == 0) {
             return;
         }
@@ -9746,6 +9809,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 if (parentFinal != null) {
                     params.put("parentObject", parentFinal);
                 }
+                if (asEncryptedFile) {
+                    // T81: encrypted-file send — the same params ride as the document path
+                    params.put("xoEnc", "1");
+                }
                 AndroidUtilities.runOnUIThread(() -> {
                     if (thumbFinal != null && thumbKeyFinal != null) {
                         ImageLoader.getInstance().putImageToCache(new BitmapDrawable(thumbFinal), thumbKeyFinal, false);
@@ -9763,7 +9830,7 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                     }
                 });
             } else {
-                prepareSendingDocumentInternal(accountInstance, videoPath, videoPath, null, null, dialogId, replyToMsg, replyToTopMsg, storyItem, quote, entities, editingMessageObject, null, false, caption, notify, scheduleDate, null, forceDocument, quickReplyShortcut, quickReplyShortcutId, 0, false);
+                prepareSendingDocumentInternal(accountInstance, videoPath, videoPath, null, null, dialogId, replyToMsg, replyToTopMsg, storyItem, quote, entities, editingMessageObject, null, false, caption, notify, scheduleDate, null, forceDocument || asEncryptedFile, quickReplyShortcut, quickReplyShortcutId, 0, false, asEncryptedFile);
             }
         }).start();
     }

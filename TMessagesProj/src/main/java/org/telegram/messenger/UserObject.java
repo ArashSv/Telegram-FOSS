@@ -32,6 +32,16 @@ public class UserObject {
         return user != null && (user instanceof TLRPC.TL_userSelf_old3 || user.self);
     }
 
+    /**
+     * T81 (last-seen root fix): TRUE when the model carries REAL presence
+     * data (online, was_online, or one of the hidden states) — as opposed to
+     * the neutral TL_userStatusEmpty we plant for "no data yet". Surfaces
+     * that show a phone as the second line must YIELD to a real status.
+     */
+    public static boolean hasRealStatus(TLRPC.User user) {
+        return user != null && user.status != null && !(user.status instanceof TLRPC.TL_userStatusEmpty);
+    }
+
     public static boolean isReplyUser(TLRPC.User user) {
         return user != null && (user.id == 708513L || user.id == REPLY_BOT);
     }

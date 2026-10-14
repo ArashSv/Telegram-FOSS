@@ -43,8 +43,16 @@ public final class XoSecretCrypto {
     public static final int NONCE_LEN = 12;
     public static final int TAG_BITS = 128;
 
-    /** HKDF info — protocol + version separation. */
-    private static final byte[] INFO = "XOSC1|v1".getBytes(StandardCharsets.UTF_8);
+    /** Wire families sharing the ECIES framing: secret-chat messages and
+     *  T81 encrypted-file envelopes (cloud chats). The wire tag is folded
+     *  into BOTH the HKDF info and the AAD, so an envelope of one family can
+     *  never be opened under the other's context (GCM auth fails). */
+    public static final String WIRE_SECRET = "XOSC1";
+    public static final String WIRE_FILE = "XOSF1";
+
+    private static byte[] info(String wire) {
+        return (wire + "|v1").getBytes(StandardCharsets.UTF_8);
+    }
 
     private XoSecretCrypto() {
     }
@@ -107,15 +115,31 @@ public final class XoSecretCrypto {
     public static String encrypt(long chatId, long senderId, long recipientId,
                                  byte[] senderPriv, byte[] senderPub, byte[] recipientPub,
                                  byte[] plaintext) throws Exception {
+        return encryptWire(WIRE_SECRET, chatId, senderId, recipientId,
+                senderPriv, senderPub, recipientPub, plaintext);
+    }
+
+    /**
+     * T81: wire-family-general encrypt. {@code chatId} is the AAD chat
+     * context — the backend secret-chat id for {@link #WIRE_SECRET}, the
+     * CANONICAL PAIR LOW ID (min of the two user ids — the one number both
+     * sides agree on, since dialog ids are perspective-relative) for
+     * {@link #WIRE_FILE}.
+     *
+     * @return the envelope string (wire prefix + base64 body)
+     */
+    public static String encryptWire(String wire, long chatId, long senderId, long recipientId,
+                                     byte[] senderPriv, byte[] senderPub, byte[] recipientPub,
+                                     byte[] plaintext) throws Exception {
         byte[][] eph = generateKeyPair();
-        byte[] key = deriveKey(chatId, senderId, recipientId,
+        byte[] key = deriveKey(wire, chatId, senderId, recipientId,
                 eph[1], senderPub, recipientPub, senderPriv, eph[0]);
         byte[] nonce = new byte[NONCE_LEN];
         new SecureRandom().nextBytes(nonce);
         Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
         cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"),
                 new GCMParameterSpec(TAG_BITS, nonce));
-        cipher.updateAAD(aad(chatId, senderId, recipientId));
+        cipher.updateAAD(aad(wire, chatId, senderId, recipientId));
         byte[] ct = cipher.doFinal(plaintext);
 
         byte[] body = new byte[1 + 32 + 32 + NONCE_LEN + ct.length];
@@ -125,7 +149,8 @@ public final class XoSecretCrypto {
         System.arraycopy(senderPub, 0, body, off, 32); off += 32; // sender static pub
         System.arraycopy(nonce, 0, body, off, NONCE_LEN); off += NONCE_LEN;
         System.arraycopy(ct, 0, body, off, ct.length);
-        return XoSecretEnvelope.PREFIX + XoSecretEnvelope.b64Encode(body);
+        return (WIRE_FILE.equals(wire) ? XoSecretEnvelope.PREFIX_FILE : XoSecretEnvelope.PREFIX)
+                + XoSecretEnvelope.b64Encode(body);
     }
 
     // -------------------------------------------------------------- decrypt
@@ -138,6 +163,12 @@ public final class XoSecretCrypto {
      */
     public static byte[] decrypt(long chatId, long senderId, long recipientId,
                                  byte[] recipientPriv, byte[] recipientPub, String envelope) {
+        return decryptWire(WIRE_SECRET, chatId, senderId, recipientId, recipientPriv, recipientPub, envelope);
+    }
+
+    /** T81: mirror of {@link #encryptWire} for the other side. */
+    public static byte[] decryptWire(String wire, long chatId, long senderId, long recipientId,
+                                     byte[] recipientPriv, byte[] recipientPub, String envelope) {
         try {
             byte[] body = XoSecretEnvelope.bodyOf(envelope);
             if (body == null || body.length < 1 + 32 + 32 + NONCE_LEN + 16) {
@@ -160,11 +191,11 @@ public final class XoSecretCrypto {
             byte[] d2 = XoCurve25519.scalarmult(recipientPriv, senderPub);
             byte[] key = hkdf(concat(d1, d2),
                     sha256(concat(concat(ephPub, senderPub), recipientPub)),
-                    INFO, KEY_LEN);
+                    info(wire), KEY_LEN);
             Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
             cipher.init(Cipher.DECRYPT_MODE, new SecretKeySpec(key, "AES"),
                     new GCMParameterSpec(TAG_BITS, nonce));
-            cipher.updateAAD(aad(chatId, senderId, recipientId));
+            cipher.updateAAD(aad(wire, chatId, senderId, recipientId));
             return cipher.doFinal(ct);
         } catch (Throwable t) {
             return null;
@@ -208,20 +239,68 @@ public final class XoSecretCrypto {
 
     // -------------------------------------------------------------- internal
 
-    private static byte[] deriveKey(long chatId, long senderId, long recipientId,
+    private static byte[] deriveKey(String wire, long chatId, long senderId, long recipientId,
                                     byte[] ephPub, byte[] senderPub, byte[] recipientPub,
                                     byte[] senderPriv, byte[] ephPriv) throws Exception {
         byte[] d1 = XoCurve25519.scalarmult(ephPriv, recipientPub);  // DH(e, R)
         byte[] d2 = XoCurve25519.scalarmult(senderPriv, recipientPub); // DH(S, R)
         byte[] ikm = concat(d1, d2);
         byte[] salt = sha256(concat(concat(ephPub, senderPub), recipientPub));
-        return hkdf(ikm, salt, INFO, KEY_LEN);
+        return hkdf(ikm, salt, info(wire), KEY_LEN);
     }
 
-    /** AAD: binds every envelope to its chat and its two parties. */
-    static byte[] aad(long chatId, long senderId, long recipientId) {
-        return ("XOSC1|c" + chatId + "|f" + senderId + "|t" + recipientId)
+    /** AAD: binds every envelope to its wire family, chat context and parties. */
+    static byte[] aad(String wire, long chatId, long senderId, long recipientId) {
+        return (wire + "|c" + chatId + "|f" + senderId + "|t" + recipientId)
                 .getBytes(StandardCharsets.UTF_8);
+    }
+
+    // -------------------------------------------------------------- T81: file key
+
+    /**
+     * T81 — THE one symmetric file key of the encrypted-file feature. Both
+     * parties derive the IDENTICAL 32 bytes from the static-static Diffie-
+     * Hellman of their already-registered X25519 identities (the user's
+     * brief: "فقط هم یه کلید متقارن کافیه چون دو شخص قبلا از راه امن
+     * ردوبدل کردن"). No key transport, no envelope field — each side
+     * computes it from its own private key + the peer's public key.
+     *
+     * <p>Determinism contract: scalarmult(ownPriv, peerPub) is symmetric,
+     * the salt canonicalizes the two (id, pub) pairs by user id (the pair
+     * scoping — stable across chat-row re-creation), and the HKDF info
+     * domain-separates from every other derivation in this family.
+     */
+    public static byte[] deriveFileKey(long selfUserId, byte[] selfPriv, byte[] selfPub,
+                                       long peerUserId, byte[] peerPub) {
+        if (selfPriv == null || selfPub == null || peerPub == null
+                || selfPriv.length != 32 || peerPub.length != 32) {
+            return null;
+        }
+        try {
+            byte[] d = XoCurve25519.scalarmult(selfPriv, peerPub);
+            boolean selfLow = selfUserId <= peerUserId;
+            byte[] loPub = selfLow ? selfPub : peerPub;
+            byte[] hiPub = selfLow ? peerPub : selfPub;
+            byte[] loId = String.valueOf(selfLow ? selfUserId : peerUserId)
+                    .getBytes(StandardCharsets.UTF_8);
+            byte[] hiId = String.valueOf(selfLow ? peerUserId : selfUserId)
+                    .getBytes(StandardCharsets.UTF_8);
+            byte[] prefix = "XOSF1".getBytes(StandardCharsets.UTF_8);
+            byte[] saltInput = new byte[prefix.length + 4 + loId.length + 32 + 4 + hiId.length + 32];
+            int off = 0;
+            System.arraycopy(prefix, 0, saltInput, off, prefix.length); off += prefix.length;
+            saltInput[off++] = (byte) (loId.length >> 8);
+            saltInput[off++] = (byte) loId.length;
+            System.arraycopy(loId, 0, saltInput, off, loId.length); off += loId.length;
+            System.arraycopy(loPub, 0, saltInput, off, 32); off += 32;
+            saltInput[off++] = (byte) (hiId.length >> 8);
+            saltInput[off++] = (byte) hiId.length;
+            System.arraycopy(hiId, 0, saltInput, off, hiId.length); off += hiId.length;
+            System.arraycopy(hiPub, 0, saltInput, off, 32);
+            return hkdf(d, sha256(saltInput), "XOSF1|file v1".getBytes(StandardCharsets.UTF_8), KEY_LEN);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     static byte[] sha256(byte[] data) throws Exception {

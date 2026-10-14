@@ -8693,7 +8693,13 @@ public class ProfileActivity extends BaseFragment implements NotificationCenter.
                 // T53 (task 10): when the model knows this user's phone, the
                 // profile subtitle shows the formatted number (secondary info
                 // under the real name) — it never replaces the display name.
-                if (user.id != getUserConfig().getClientUserId() && user.id / 1000 != 777 && user.id / 1000 != 333 && !TextUtils.isEmpty(user.phone)) {
+                // T81 (last-seen root fix L1): the phone YIELDS to a real
+                // presence status — with v2.9.2 the backend ships a phone on
+                // EVERY user row, so this override had replaced the last seen
+                // with the number everywhere (the field report: online fine,
+                // last seen gone). The phone shows only when there is no
+                // presence data to render.
+                if (!UserObject.hasRealStatus(user) && user.id != getUserConfig().getClientUserId() && user.id / 1000 != 777 && user.id / 1000 != 333 && !TextUtils.isEmpty(user.phone)) {
                     String phoneString = PhoneFormat.getInstance().format("+" + user.phone);
                     if (!TextUtils.isEmpty(phoneString) && phoneString.contains("+") && !phoneString.equals("+")) {
                         newString2 = phoneString;
