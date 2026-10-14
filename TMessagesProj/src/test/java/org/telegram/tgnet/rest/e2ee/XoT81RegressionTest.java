@@ -226,7 +226,7 @@ public class XoT81RegressionTest {
         int[][] parts = {{0, 131072}, {1, 4096}, {2, 1}};
         for (int[] part : parts) {
             byte[] plain = new byte[part[1]];
-            new java.security.Random(part[0]).nextBytes(plain);
+            new java.util.Random(part[0]).nextBytes(plain);
             byte[] ct = XoE2EEMedia.encryptChunk(fileKey, part[0], plain);
             assertEquals(plain.length + 16 + 12, ct.length); // GCM tag + nonce
             byte[] back = XoE2EEMedia.decryptChunk(fileKey, part[0], ct);
