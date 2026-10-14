@@ -207,13 +207,28 @@ def rnd_phone():
 def register():
     phone = rnd_phone()
     pw = "pw" + "".join(random.choices(string.ascii_letters + string.digits, k=8))
-    r = call("POST", "/api/v1/auth/login.php", body={"phone": phone, "password": pw})
+    r = call("POST", "/api/v1/auth/check-phone.php", body={"phone": phone})
     if not r.get("ok"):
         return None, None, r
-    return r["token"], r["user"]["id"], r
+    r = call("POST", "/api/v1/auth/register.php", body={"phone": phone, "password": pw, "hint": "t81"})
+    if not r.get("ok"):
+        return None, None, r
+    return r["access_token"], r["user"]["id"], r
 
 
 def main():
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM  # noqa
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "cryptography"], timeout=120)
+
+    # sanity: the python X25519 against an RFC 7748 KAT
+    kat = x25519_ref(bytes.fromhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a"),
+                     bytes([9] + [0] * 31))
+    check("python X25519 KAT", kat.to_bytes(32, 'little').hex()
+          == "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+          kat.to_bytes(32, 'little').hex())
+
     print("== T81 LIVE: encrypted-file (XOSF1) contract on production ==")
     tok_a, id_a, _ = register()
     tok_b, id_b, _ = register()
