@@ -12872,7 +12872,7 @@ public class MessagesStorage extends BaseController {
             user.status.expires = columnValue;
             return;
         }
-        int now = ConnectionsManager.getInstance(currentAccount).getCurrentTime();
+        int now = org.telegram.tgnet.ConnectionsManager.getInstance(currentAccount).getCurrentTime();
         if (columnValue > now) {
             TLRPC.TL_userStatusOnline online = new TLRPC.TL_userStatusOnline();
             online.expires = columnValue;
