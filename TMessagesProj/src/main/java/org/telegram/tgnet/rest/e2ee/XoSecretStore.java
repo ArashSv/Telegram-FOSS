@@ -468,7 +468,16 @@ public final class XoSecretStore {
                 return null;
             }
             try {
-                return XoSecretEnvelope.b64Decode(new JSONObject(json).optString("fk", ""));
+                JSONObject entry = new JSONObject(json);
+                // T81: a KEYLESS ss intent has NO fk — the caller must derive
+                // and note the key first (uploadNeedsDerivedKey). Returning an
+                // EMPTY array here would break that contract (non-null empty
+                // key skips the derivation block and fails every chunk).
+                if (!entry.has("fk")) {
+                    return null;
+                }
+                byte[] key = XoSecretEnvelope.b64Decode(entry.optString("fk", ""));
+                return key.length == XoE2EEMedia.FILE_KEY_LEN ? key : null;
             } catch (Exception e) {
                 return null;
             }

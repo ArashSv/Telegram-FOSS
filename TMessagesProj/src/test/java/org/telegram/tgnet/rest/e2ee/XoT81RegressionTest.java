@@ -228,7 +228,8 @@ public class XoT81RegressionTest {
             byte[] plain = new byte[part[1]];
             new java.util.Random(part[0]).nextBytes(plain);
             byte[] ct = XoE2EEMedia.encryptChunk(fileKey, part[0], plain);
-            assertEquals(plain.length + 16 + 12, ct.length); // GCM tag + nonce
+            assertEquals("chunk AEAD = plain + GCM tag (the nonce is HKDF-derived, not prefixed)",
+                    plain.length + 16, ct.length);
             byte[] back = XoE2EEMedia.decryptChunk(fileKey, part[0], ct);
             assertArrayEquals(plain, back);
         }
