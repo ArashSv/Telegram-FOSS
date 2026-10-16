@@ -310,6 +310,11 @@ public final class RestChatIndex {
         public final ArrayList<TLRPC.TL_user> users = new ArrayList<>();
         public final ArrayList<TLRPC.TL_chat> chats = new ArrayList<>();
         public final LongSparseArray<TLRPC.TL_user> userByChat = new LongSparseArray<>();
+
+        /** T82: backend chat ids that arrived as type="secret"+peer but were
+         *  previously poisoned into groups (the payloadFromRow peer bug).
+         *  The caller must purge their cached rows + reload dialogs. */
+        public final ArrayList<Long> healedSecretChatIds = new ArrayList<>();
     }
 
     public ScanResult scanChats(org.json.JSONArray chatsJson) {
@@ -328,26 +333,49 @@ public final class RestChatIndex {
                 org.json.JSONObject peerJson = chatJson.optJSONObject("peer");
                 // T80: the chat's encryption mode rides every chat payload.
                 String mode = chatJson.optString("mode", "cloud");
+                String prevType;
+                boolean wasPoisonedGroup;
                 synchronized (this) {
+                    prevType = chatTypes.get(chatId);
                     chatTypes.put(chatId, type);
+                    // T82: the poisoned state is observable BOTH in the group
+                    // map AND in chatTypes ("group" overwrote "secret" during
+                    // the t78-era bug) — the chatTypes signal also keeps the
+                    // heal testable on the JVM (stubbed android.util maps).
+                    wasPoisonedGroup = groupChats.containsKey((int) chatId)
+                            || "group".equals(prevType);
                     if ("private".equals(type)) {
                         chatModes.put(chatId, secretOrCloud(mode));
                     }
                 }
-                if ("secret".equals(type) && peerJson != null) {
-                    // T78: a secret chat is a SEPARATE dialog with its own
-                    // backend id — represented as a TL_chat (chat-style
-                    // dialog id = -chatId) so it coexists with the cloud
-                    // chat of the same user. The peer user drives the key
-                    // lookup; the display info rides the chat object.
-                    TLRPC.TL_user peer = TlJsonMapper.parseUser(peerJson, false);
-                    putSecret(peer.id, chatId);
-                    result.users.add(peer);
-                    result.userByChat.put(chatId, peer);
-                    TLRPC.TL_chat secretChat = TlJsonMapper.parseSecretChat(chatJson, peer);
-                    if (secretChat != null) {
-                        putSecretChat(secretChat);
-                        result.chats.add(secretChat);
+                if ("secret".equals(type)) {
+                    // T82 (root hardening): a SECRET chat can NEVER be downgraded
+                    // to a group. The t78-era bug: the backend shipped peer:null
+                    // for secret rows and the generic else-branch below called
+                    // parseGroupChat + putGroup, OVERWRITING the secret type —
+                    // the exact "secret chat creates a group" field report. With
+                    // the backend fixed the peer always rides; a peerless row
+                    // stays secret-unknown (no dialog registration, NO group
+                    // fallback) and self-heals on a later payload.
+                    if (peerJson != null) {
+                        TLRPC.TL_user peer = TlJsonMapper.parseUser(peerJson, false);
+                        putSecret(peer.id, chatId);
+                        result.users.add(peer);
+                        result.userByChat.put(chatId, peer);
+                        TLRPC.TL_chat secretChat = TlJsonMapper.parseSecretChat(chatJson, peer);
+                        if (secretChat != null) {
+                            putSecretChat(secretChat);
+                            result.chats.add(secretChat);
+                        }
+                        if (wasPoisonedGroup) {
+                            // transition heal: this id used to sit in the GROUP
+                            // map (poisoned). Drop the group object; the caller
+                            // purges the poisoned cached rows.
+                            synchronized (this) {
+                                groupChats.remove((int) chatId);
+                            }
+                            result.healedSecretChatIds.add(chatId);
+                        }
                     }
                 } else if ("private".equals(type) && peerJson != null) {
                     TLRPC.TL_user peer = TlJsonMapper.parseUser(peerJson, false);
@@ -355,6 +383,9 @@ public final class RestChatIndex {
                     result.users.add(peer);
                     result.userByChat.put(chatId, peer);
                 } else {
+                    // groups (and anything unknown). NOTE: type="secret" never
+                    // reaches here — the first branch above owns ALL secret rows,
+                    // with or without a peer (the T82 no-downgrade contract).
                     TLRPC.TL_chat chat = TlJsonMapper.parseGroupChat(chatJson);
                     if (chat != null) {
                         putGroup(chat);

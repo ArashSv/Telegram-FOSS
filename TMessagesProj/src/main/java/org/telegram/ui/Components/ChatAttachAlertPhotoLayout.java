@@ -3213,14 +3213,22 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
         } else if (id == send_encrypted) {
             // T81: the encrypted-file send — same flow as compress with the
             // xoEnc flag riding the message params (didPressedButton(9))
-            if (parentAlert.editingMessageObject == null && parentAlert.baseFragment instanceof ChatActivity && ((ChatActivity) parentAlert.baseFragment).isInScheduleMode()) {
-                AlertsCreator.createScheduleDatePickerDialog(getContext(), ((ChatActivity) parentAlert.baseFragment).getDialogId(), (notify, scheduleDate) -> {
-                    parentAlert.applyCaption();
-                    parentAlert.delegate.didPressedButton(9, true, notify, scheduleDate, 0, false, false);
-                }, resourcesProvider);
-            } else {
-                parentAlert.applyCaption();
-                parentAlert.delegate.didPressedButton(9, true, true, 0, 0, false, false);
+            // T82: the user-typed رمز comes FIRST — the password dialog
+            // gates the whole send (nothing is transmitted without it).
+            if (parentAlert.baseFragment instanceof ChatActivity) {
+                if (parentAlert.editingMessageObject == null && ((ChatActivity) parentAlert.baseFragment).isInScheduleMode()) {
+                    AlertsCreator.createScheduleDatePickerDialog(getContext(), ((ChatActivity) parentAlert.baseFragment).getDialogId(), (notify, scheduleDate) -> {
+                        ((ChatActivity) parentAlert.baseFragment).showXoFilePassDialog(true, null, () -> {
+                            parentAlert.applyCaption();
+                            parentAlert.delegate.didPressedButton(9, true, notify, scheduleDate, 0, false, false);
+                        });
+                    }, resourcesProvider);
+                } else {
+                    ((ChatActivity) parentAlert.baseFragment).showXoFilePassDialog(true, null, () -> {
+                        parentAlert.applyCaption();
+                        parentAlert.delegate.didPressedButton(9, true, true, 0, 0, false, false);
+                    });
+                }
             }
         } else if (id == spoiler) {
             if (parentAlert.getPhotoPreviewLayout() != null) {

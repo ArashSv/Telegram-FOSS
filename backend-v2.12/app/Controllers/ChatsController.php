@@ -1094,8 +1094,14 @@ final class ChatsController
         // v2.7.0 (T56): per-user pin state rides every chat payload.
         $pinnedAt = isset($row['_pinned_at']) && $row['_pinned_at'] !== null ? (int) $row['_pinned_at'] : 0;
 
+        // T82 (root fix): SECRET chats MUST ship their peer exactly like
+        // private chats. Since t78 this block matched type==='private' only,
+        // so every secret chat answered peer:null and the client's chat-index
+        // scanner silently downgraded the row to a plain 2-member group
+        // (putGroup overwrote the "secret" type) — the exact
+        // "secret chat creates a group" field report.
         $peer = null;
-        if ($row['type'] === 'private') {
+        if ($row['type'] === 'private' || $row['type'] === 'secret') {
             $peerRow = Db::fetch(
                 'SELECT u.* FROM users u
                  JOIN chat_members cm ON cm.user_id = u.id
@@ -1104,10 +1110,13 @@ final class ChatsController
                 [$chatId, $meId],
             );
             $isSelfChat = false;
-            if ($peerRow === null) {
+            if ($peerRow === null && $row['type'] === 'private') {
                 // T38/15: no "other" member — the Saved Messages self-chat.
                 // The peer payload is the owner's own row (public shape; the
                 // client renders this dialog as Saved Messages by dialog id).
+                // Secret chats have no self-chat (rejected at creation): a
+                // peerless secret row stays peer:null and the client keeps it
+                // secret-unknown (never a group) until members exist.
                 $peerRow = Db::fetch('SELECT * FROM users WHERE id = ?', [$meId]);
                 $isSelfChat = true;
             }

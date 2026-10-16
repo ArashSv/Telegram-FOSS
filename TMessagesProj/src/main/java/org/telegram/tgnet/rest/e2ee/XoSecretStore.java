@@ -94,6 +94,17 @@ public final class XoSecretStore {
     // own outgoing message id -> plaintext inner JSON (echo rendering)
     private final LinkedHashMap<Long, String> sentInners = new LinkedHashMap<>();
 
+    // T82: canonical pair id (min(userA,userB)) -> the remembered file رمز.
+    // Keystore-encrypted at rest; the server NEVER sees it. Entering the
+    // correct password once per pair makes every later encrypted file of
+    // that pair unlock transparently.
+    private final HashMap<Long, String> filePasswords = new HashMap<>();
+
+    // T82: backend file ids of LOCKED (not yet unwrapped) XOSF2 files — the
+    // download gate refuses to fetch ciphertext for these until the password
+    // unlocks them (auto-download can never silently save raw ciphertext).
+    private final java.util.HashSet<Long> pwLockedFiles = new java.util.HashSet<>();
+
     private boolean loaded;
     private boolean dirty;
 
@@ -382,6 +393,101 @@ public final class XoSecretStore {
         }
     }
 
+    /**
+     * T82 — registers a "pw" upload intent for the PASSWORD-based encrypted
+     * file (XOSF2). A fresh random CEK + KDF salt are minted HERE (SecureRandom
+     * nextBytes is microseconds — safe on any thread) and persisted
+     * keystore-encrypted together with the user-typed رمز, so resumed uploads
+     * after a process death stay decryptable. Refresh semantics: re-scheduling
+     * the same location keeps the SAME cek/salt/password (idempotent).
+     */
+    public void noteUploadIntentPw(String location, long peerUserId, TLRPC.PhotoSize photoSize,
+                                   TLRPC.TL_document document, String password) {
+        synchronized (lock) {
+            loadLocked();
+            try {
+                JSONObject entry;
+                String existing = uploadIntents.get(location);
+                if (existing != null) {
+                    entry = new JSONObject(existing);
+                    if ("pw".equals(entry.optString("kf", "")) && entry.has("fk") && entry.has("s")) {
+                        entry.put("peer", peerUserId);
+                        putManifestMeta(entry, photoSize, document);
+                        uploadIntents.put(location, entry.toString());
+                        markDirtyLocked();
+                        return;
+                    }
+                }
+                byte[][] minted = XoFilePassCrypto.mintCek();
+                entry = existing != null ? new JSONObject(existing) : new JSONObject();
+                entry.put("peer", peerUserId);
+                entry.put("kf", "pw");
+                entry.put("fk", XoSecretEnvelope.b64Encode(minted[0]));
+                entry.put("s", XoSecretEnvelope.b64Encode(minted[1]));
+                entry.put("i", XoFilePassCrypto.PBKDF2_ITERS);
+                entry.put("pw", password == null ? "" : password);
+                entry.put("ts", System.currentTimeMillis());
+                putManifestMeta(entry, photoSize, document);
+                uploadIntents.put(location, entry.toString());
+                markDirtyLocked();
+            } catch (Exception e) {
+                FileLog.e("XoSecretStore: pw upload intent encode failed", e);
+            }
+        }
+    }
+
+    /** T82: TRUE when this tree carries a password-based (XOSF2) intent. */
+    public boolean uploadIsPwIntent(long treeUploadId) {
+        synchronized (lock) {
+            loadLocked();
+            String location = uploadTreeLocations.get(treeUploadId);
+            String json = location == null ? null : uploadIntents.get(location);
+            if (json == null) {
+                return false;
+            }
+            try {
+                return "pw".equals(new JSONObject(json).optString("kf", ""));
+            } catch (Exception e) {
+                return false;
+            }
+        }
+    }
+
+    /** T82: the KDF salt of a pw intent, or null. */
+    public byte[] uploadSaltForTree(long treeUploadId) {
+        synchronized (lock) {
+            loadLocked();
+            String location = uploadTreeLocations.get(treeUploadId);
+            String json = location == null ? null : uploadIntents.get(location);
+            if (json == null) {
+                return null;
+            }
+            try {
+                return XoSecretEnvelope.b64Decode(new JSONObject(json).optString("s", ""));
+            } catch (Exception e) {
+                return null;
+            }
+        }
+    }
+
+    /** T82: the user-typed رمز of a pw intent (keystore-protected at rest), or null. */
+    public String uploadPassForTree(long treeUploadId) {
+        synchronized (lock) {
+            loadLocked();
+            String location = uploadTreeLocations.get(treeUploadId);
+            String json = location == null ? null : uploadIntents.get(location);
+            if (json == null) {
+                return null;
+            }
+            try {
+                String pw = new JSONObject(json).optString("pw", "");
+                return pw.length() > 0 ? pw : null;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+    }
+
     /** T81: stores the once-derived file key on an ss intent (idempotent). */
     public void noteDerivedUploadKey(long treeUploadId, byte[] key) {
         if (key == null || key.length != XoE2EEMedia.FILE_KEY_LEN) {
@@ -606,6 +712,70 @@ public final class XoSecretStore {
         }
     }
 
+    // ------------------------------------------------------------------ T82: password-based files
+
+    /** Registers a LOCKED XOSF2 file id (the download gate refuses it). */
+    public void notePwLockedFile(long backendFileId) {
+        if (backendFileId <= 0) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            if (pwLockedFiles.add(backendFileId)) {
+                markDirtyLocked();
+            }
+        }
+    }
+
+    /** Unlocked (or send-side registered) — the download gate releases it. */
+    public void clearPwLockedFile(long backendFileId) {
+        if (backendFileId <= 0) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            if (pwLockedFiles.remove(backendFileId)) {
+                markDirtyLocked();
+            }
+        }
+    }
+
+    public boolean isPwLockedFile(long backendFileId) {
+        synchronized (lock) {
+            loadLocked();
+            return pwLockedFiles.contains(backendFileId);
+        }
+    }
+
+    /** Remembers the file رمز for a canonical pair (keystore-protected). */
+    public void noteChatFilePass(long canonicalPairId, String password) {
+        if (canonicalPairId <= 0 || password == null || password.length() == 0) {
+            return;
+        }
+        synchronized (lock) {
+            loadLocked();
+            filePasswords.put(canonicalPairId, password);
+            markDirtyLocked();
+        }
+    }
+
+    /** @return the remembered file رمز for a canonical pair, or null. */
+    public String chatFilePass(long canonicalPairId) {
+        synchronized (lock) {
+            loadLocked();
+            return filePasswords.get(canonicalPairId);
+        }
+    }
+
+    public void forgetChatFilePass(long canonicalPairId) {
+        synchronized (lock) {
+            loadLocked();
+            if (filePasswords.remove(canonicalPairId) != null) {
+                markDirtyLocked();
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ wipe
 
     /** Destroys ALL secret-chat state (logout). */
@@ -620,6 +790,8 @@ public final class XoSecretStore {
             sentInners.clear();
             uploadIntents.clear();
             uploadTreeLocations.clear();
+            filePasswords.clear();
+            pwLockedFiles.clear();
             dirty = false;
             File file = blobFile();
             if (file.exists() && !file.delete()) {
@@ -681,6 +853,18 @@ public final class XoSecretStore {
                 at.put(String.valueOf(e.getKey()), e.getValue());
             }
             json.put("albumthumbs", at);
+
+            JSONObject fp = new JSONObject();
+            for (Map.Entry<Long, String> e : filePasswords.entrySet()) {
+                fp.put(String.valueOf(e.getKey()), e.getValue());
+            }
+            json.put("filepasses", fp);
+
+            org.json.JSONArray pl = new org.json.JSONArray();
+            for (Long fid : pwLockedFiles) {
+                pl.put(fid.longValue());
+            }
+            json.put("pwlocked", pl);
 
             byte[] plain = json.toString().getBytes("UTF-8");
             byte[] blob = protect(plain);
@@ -758,6 +942,20 @@ public final class XoSecretStore {
                 while (it.hasNext()) {
                     String k = it.next();
                     albumThumbKeys.put(Long.parseLong(k), at.optString(k));
+                }
+            }
+            JSONObject fp = json.optJSONObject("filepasses");
+            if (fp != null) {
+                java.util.Iterator<String> it = fp.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    filePasswords.put(Long.parseLong(k), fp.optString(k));
+                }
+            }
+            org.json.JSONArray pla = json.optJSONArray("pwlocked");
+            if (pla != null) {
+                for (int a = 0; a < pla.length(); a++) {
+                    pwLockedFiles.add(pla.optLong(a));
                 }
             }
         } catch (Throwable t) {

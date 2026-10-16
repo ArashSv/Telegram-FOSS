@@ -6571,7 +6571,18 @@ public class PhotoViewer implements NotificationCenter.NotificationCenterDelegat
                     } else if (a == 4) {
                         sendPressed(true, 0, false, true, false);
                     } else if (a == 5) {
-                        sendPressed(true, 0, false, true, false, true);
+                        // T82: the user-typed رمز comes FIRST — the password
+                        // dialog gates the whole encrypted send (single item
+                        // or the whole multi-select batch).
+                        if (parentChatActivity != null) {
+                            parentChatActivity.showXoFilePassDialog(true, null, () -> {
+                                // T82: no eager clear — video prepare stamps the
+                                // رمز on a worker thread; the TTL owns the lifetime
+                                sendPressed(true, 0, false, true, false, true);
+                            });
+                        } else {
+                            sendPressed(true, 0, false, true, false, true);
+                        }
                     }
                 });
             }

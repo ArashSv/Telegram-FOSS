@@ -1244,6 +1244,19 @@
     <string name="SendAsFiles">Send as files</string>
     <string name="SendAsEncryptedFile">Send as encrypted file</string>
     <string name="SendAsEncryptedFiles">Send as encrypted files</string>
+    <!-- T82: password-based encrypted files (XOSF2) -->
+    <string name="XoFilePassPlaceholder">Encrypted file</string>
+    <string name="XoFilePassUnlockTitle">File encryption key</string>
+    <string name="XoFilePassSendHint">Enter the shared encryption key for this file. The file is encrypted on this device and the server can never read it. Share the key with the recipient through a trusted channel.</string>
+    <string name="XoFilePassUnlockHint">This file is encrypted. Enter the key the sender shared with you to open it.</string>
+    <string name="XoFilePassHint">Encryption key</string>
+    <string name="XoFilePassConfirm">Confirm key</string>
+    <string name="XoFilePassRemember">Remember the key for this chat</string>
+    <string name="XoFilePassUnlock">Unlock</string>
+    <string name="XoFilePassWrong">Wrong key. Please try again.</string>
+    <string name="XoFilePassEmpty">The encryption key cannot be empty.</string>
+    <string name="XoFilePassMismatch">The keys do not match.</string>
+    <string name="XoFilePassCorrupt">This encrypted file is damaged or its envelope is invalid.</string>
     <string name="OpenUrlTitle">Open Link</string>
     <string name="OpenUrlAlert2">Do you want to open %1$s?</string>
     <string name="OpenUrlOption1">Log in to %1$s as **%2$s**</string>

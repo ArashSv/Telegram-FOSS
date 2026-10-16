@@ -479,12 +479,17 @@ public final class TlJsonMapper {
         // recorded at send time (the sender cannot re-open its own GCM
         // output without re-deriving — the cache is the honest path).
         org.json.JSONObject e2eeInner = null;
+        // T82: the locked XOSF2 envelope — patched onto the row AFTER
+        // parseMedia builds the server-shape media (see below)
+        org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.PwEnvelope pwEnvLocked = null;
         final boolean legacyXoe1 = message.message != null
                 && message.message.startsWith("XOE1:");
         final boolean secretChat = dialogId < 0
                 && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretChatId(account, -dialogId);
         final boolean fileEncrypted = !secretChat && dialogId > 0
                 && org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isFileEnvelope(message.message);
+        final boolean fileEncryptedPw = !secretChat && dialogId > 0
+                && org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isFileEnvelope2(message.message);
         if (legacyXoe1 && !secretChat) {
             // Pre-T78 protocol rows in (now) cloud chats: the Signal-era
             // scheme was amputated, these envelopes are undecryptable BY
@@ -492,7 +497,102 @@ public final class TlJsonMapper {
             // permanent lock garbage, no fake text.
             return null;
         }
-        if (fileEncrypted) {
+        if (fileEncryptedPw) {
+            // T82: PASSWORD-based encrypted file (XOSF2) in a private cloud
+            // chat. The chunk key (CEK) travels ONLY wrapped under the
+            // user-typed رمز — parse NEVER has the key unless the row was
+            // already unlocked (media keys registered) or the user chose to
+            // remember the رمز for this pair. Locked rows render as a
+            // placeholder document and wait for the unlock dialog; the
+            // download gate refuses their ciphertext until then.
+            org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.PwEnvelope env =
+                    org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.parse(message.message);
+            if (env == null) {
+                message.message = "🔒";
+            } else {
+                final long pairKey = Math.min(selfId, senderId); // canonical pair id
+                String inner = null;
+                byte[] cek = null;
+                if (senderId == selfId) {
+                    // own echo: the send pipeline cached the plaintext inner
+                    String cached = org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account)
+                            .getSentInnerForRender(msg.optLong("id", 0L));
+                    if (cached != null) {
+                        inner = cached;
+                    }
+                }
+                if (inner == null) {
+                    // already unlocked (previous session, own send, heal):
+                    // the CEK is in the media-keys store — one tiny GCM, no KDF
+                    org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta mk =
+                            org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account).mediaKeysFor(env.fileId);
+                    if (mk != null && mk.fileKey != null) {
+                        try {
+                            inner = new String(org.telegram.tgnet.rest.e2ee.XoFilePassCrypto
+                                    .decryptHeader(mk.fileKey, env.headerB64), "UTF-8");
+                            cek = mk.fileKey;
+                        } catch (Exception e) {
+                            inner = null;
+                        }
+                    }
+                }
+                if (inner == null) {
+                    // still locked: try the remembered رمز for this pair ONCE
+                    // (the PBKDF2 cost is paid only while the row is locked;
+                    // success registers the media keys so later parses are fast)
+                    String remembered = org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(account)
+                            .chatFilePass(pairKey);
+                    if (remembered != null) {
+                        try {
+                            byte[] candidate = org.telegram.tgnet.rest.e2ee.XoFilePassCrypto
+                                    .unwrapCek(env.wrapJson, remembered.toCharArray());
+                            String candidateInner = new String(org.telegram.tgnet.rest.e2ee.XoFilePassCrypto
+                                    .decryptHeader(candidate, env.headerB64), "UTF-8");
+                            org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta =
+                                    org.telegram.tgnet.rest.e2ee.XoSecret.parseMediaMeta(
+                                            new org.json.JSONObject(candidateInner));
+                            if (meta != null) {
+                                cek = candidate;
+                                inner = candidateInner;
+                                org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(account)
+                                        .noteMediaKeys(env.fileId, meta);
+                                org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(account)
+                                        .clearPwLockedFile(env.fileId);
+                            }
+                        } catch (Exception e) {
+                            // remembered رمز does not open THIS file (it was sent
+                            // with a different one) — stay locked, prompt on tap
+                        }
+                    }
+                }
+                if (inner != null) {
+                    try {
+                        e2eeInner = new org.json.JSONObject(inner);
+                        String cap = e2eeInner.isNull("cap") ? "" : e2eeInner.optString("cap", "");
+                        message.message = cap;
+                    } catch (org.json.JSONException e) {
+                        message.message = "";
+                    }
+                    if (message.params == null) {
+                        message.params = new java.util.HashMap<>();
+                    }
+                    message.params.put("xoF2", "1");
+                    message.params.put("xoF2unlocked", "1");
+                } else {
+                    // LOCKED: placeholder document + the envelope rides the
+                    // params for the unlock dialog (params serialize to storage,
+                    // so the row survives restarts and heals from the store).
+                    // The media patch itself happens AFTER parseMedia below.
+                    if (message.params == null) {
+                        message.params = new java.util.HashMap<>();
+                    }
+                    message.params.put("xoF2", "1");
+                    message.params.put("xoF2Env", message.message);
+                    message.message = "";
+                    pwEnvLocked = env;
+                }
+            }
+        } else if (fileEncrypted) {
             // T81: ENCRYPTED-FILE envelope in a private cloud chat (XOSF1).
             // The chunk file key is NOT transported — it is derived from the
             // static-static DH of the two registered identities (the ONE
@@ -537,6 +637,13 @@ public final class TlJsonMapper {
             if (e2eeInner == null) {
                 message.message = "🔒";
             }
+            // T82: plant a params marker for the predicates — the message text
+            // above may have been replaced by the caption, so the envelope-text
+            // check alone misses parsed rows (the forward/edit guards).
+            if (message.params == null) {
+                message.params = new java.util.HashMap<>();
+            }
+            message.params.put("xoEncFile", "1");
             // the derived key rides in e2eeFileKey — consumed by the media
             // post-processing below (parseMediaMeta ss variant)
             e2eeFileKeyHolder = derivedFileKey;
@@ -679,6 +786,25 @@ public final class TlJsonMapper {
         message.media = parseMedia(mediaJson, message.date);
         message.flags |= 512;
         message.dialog_id = dialogId;
+
+        // T82: locked XOSF2 placeholder — the REAL name/mime/dimensions live
+        // inside the encrypted header, so the visible document stays opaque
+        // (octet-stream, placeholder name) until the رمز unlocks the row.
+        if (pwEnvLocked != null) {
+            org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(account)
+                    .notePwLockedFile(pwEnvLocked.fileId);
+            if (message.media instanceof TLRPC.TL_messageMediaDocument
+                    && ((TLRPC.TL_messageMediaDocument) message.media).document instanceof TLRPC.TL_document) {
+                TLRPC.TL_document doc = (TLRPC.TL_document) ((TLRPC.TL_messageMediaDocument) message.media).document;
+                if (doc.mime_type == null || doc.mime_type.length() == 0) {
+                    doc.mime_type = "application/octet-stream";
+                }
+                TLRPC.TL_documentAttributeFilename nameAttr = new TLRPC.TL_documentAttributeFilename();
+                nameAttr.file_name = org.telegram.messenger.LocaleController
+                        .getString(org.telegram.messenger.R.string.XoFilePassPlaceholder);
+                doc.attributes.add(nameAttr);
+            }
+        }
 
         // T78: media envelope post-processing — for kind='e2ee' rows the
         // decrypted payload carries the REAL mime/name/dimensions/caption
@@ -1163,8 +1289,30 @@ public final class TlJsonMapper {
      * download attestation (X-File-Size / X-Range-Sha256) is over the
      * ciphertext bytes and must not be patched.
      */
-    private static TLRPC.MessageMedia rebuildE2eeMedia(org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta,
+    /** T82: public — XoSecret.applyPwUnlock reuses this builder for unlocks. */
+    public static TLRPC.MessageMedia rebuildE2eeMedia(org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta,
                                                        JSONObject mediaJson, int messageDate) {
+        if (mediaJson == null) {
+            return new TLRPC.TL_messageMediaEmpty();
+        }
+        long size = Math.max(0, mediaJson.optLong("size", 0));
+        String mime = meta.mime == null ? "application/octet-stream" : meta.mime;
+        if (mime.startsWith("image/") && meta.width > 0 && meta.height > 0
+                && !"image/gif".equals(mime)) {
+            long fileId = mediaJson.optLong("file_id", 0);
+            long thumbFileId = mediaJson.optLong("thumb_file_id", 0);
+            return photoMedia(fileId, size, meta.width, meta.height, thumbFileId, messageDate);
+        }
+        return rebuildE2eeDocument(meta, mediaJson, messageDate);
+    }
+
+    /**
+     * T82: ALWAYS a document (no image special-case). XOSF2 rows keep the
+     * document shape across the unlock transition so the in-place
+     * MessageObject mutation never flips the row's type mid-render.
+     */
+    public static TLRPC.MessageMedia rebuildE2eeDocument(org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta,
+                                                         JSONObject mediaJson, int messageDate) {
         if (mediaJson == null) {
             return new TLRPC.TL_messageMediaEmpty();
         }
@@ -1172,10 +1320,8 @@ public final class TlJsonMapper {
         long size = Math.max(0, mediaJson.optLong("size", 0));
         long thumbFileId = mediaJson.optLong("thumb_file_id", 0);
         String mime = meta.mime == null ? "application/octet-stream" : meta.mime;
-        if (mime.startsWith("image/") && meta.width > 0 && meta.height > 0
-                && !"image/gif".equals(mime)) {
-            return photoMedia(fileId, size, meta.width, meta.height, thumbFileId, messageDate);
-        }
+        // NOTE: no image special-case here — this builder ALWAYS returns a
+        // document (the rebuildE2eeMedia wrapper owns the photo branch).
         TLRPC.MessageMedia media = documentMedia(fileId, mime, size, meta.name, "e2ee",
                 meta.width, meta.height, meta.duration, thumbFileId, messageDate);
         // T75: the animated attribute rides the envelope's EXPLICIT flag.

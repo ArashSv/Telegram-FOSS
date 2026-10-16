@@ -508,7 +508,11 @@ public class ContactsActivity extends BaseFragment implements NotificationCenter
                                 return;
                             }
                             creatingChat = true;
-                            SecretChatHelper.getInstance(currentAccount).startSecretChat(getParentActivity(), user);
+                            // T82: the REAL secret-chat flow (REST backend) —
+                            // the old MTProto SecretChatHelper call was dead
+                            // here (RestRouter answers XO_NOT_ROUTED → every
+                            // contact-open of "New Secret Chat" errored).
+                            startRestSecretChat(user.id);
                         } else {
                             Bundle args = new Bundle();
                             args.putLong("user_id", user.id);
@@ -603,7 +607,8 @@ public class ContactsActivity extends BaseFragment implements NotificationCenter
                         } else {
                             if (createSecretChat) {
                                 creatingChat = true;
-                                SecretChatHelper.getInstance(currentAccount).startSecretChat(getParentActivity(), user);
+                                // T82: same rewire as above (REST flow)
+                                startRestSecretChat(user.id);
                             } else {
                                 Bundle args = new Bundle();
                                 args.putLong("user_id", user.id);
@@ -966,6 +971,48 @@ public class ContactsActivity extends BaseFragment implements NotificationCenter
         AlertDialog dialog = builder.create();
         dialog.show();
         dialog.redPositive();
+    }
+
+    /**
+     * T82: the REAL secret-chat creation (REST backend), mirroring the
+     * ProfileActivity flow: confirm -> XoChatTools.addSecretChatById ->
+     * open the secret ChatActivity. The previously wired MTProto
+     * SecretChatHelper.startSecretChat was DEAD on this transport
+     * (XO_NOT_ROUTED) — every "New Secret Chat" from contacts failed.
+     */
+    private void startRestSecretChat(long userId) {
+        AlertDialog.Builder builder = new AlertDialog.Builder(getParentActivity(), null);
+        builder.setTitle(LocaleController.getString("AreYouSureSecretChatTitle", R.string.AreYouSureSecretChatTitle));
+        builder.setMessage(LocaleController.getString("AreYouSureSecretChat", R.string.AreYouSureSecretChat));
+        builder.setPositiveButton(LocaleController.getString("Start", R.string.Start), (dialogInterface, i) -> {
+            final int acc = currentAccount;
+            org.telegram.tgnet.rest.XoChatTools.addSecretChatById(acc, userId, new org.telegram.tgnet.rest.XoChatTools.Result() {
+                @Override
+                public void onReady(long dialogId, String peerName, boolean created) {
+                    creatingChat = false;
+                    AndroidUtilities.runOnUIThread(() -> {
+                        if (getParentActivity() == null) {
+                            return;
+                        }
+                        Bundle args = new Bundle();
+                        args.putInt("chat_id", (int) -dialogId);
+                        presentFragment(new ChatActivity(args), true);
+                    });
+                }
+
+                @Override
+                public void onError(String message) {
+                    creatingChat = false;
+                    AndroidUtilities.runOnUIThread(() -> {
+                        if (getParentActivity() != null) {
+                            android.widget.Toast.makeText(getParentActivity(), message, android.widget.Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                }
+            });
+        });
+        builder.setNegativeButton(LocaleController.getString("Cancel", R.string.Cancel), (dialogInterface, i) -> creatingChat = false);
+        showDialog(builder.create());
     }
 
     private void didSelectResult(final TLRPC.User user, boolean useAlert, String param) {

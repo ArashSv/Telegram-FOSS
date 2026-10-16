@@ -1668,6 +1668,13 @@ public class MessageObject {
         eventId = eid;
         wasUnread = !messageOwner.out && messageOwner.unread;
 
+        // T82: storage-reloaded XOSF2 rows never pass TlJsonMapper again —
+        // heal them here from the keystore-backed state (one tiny GCM when
+        // applicable, a params lookup otherwise). Runs once per object.
+        if (messageOwner.params != null && messageOwner.params.containsKey("xoF2")) {
+            org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.healLoadedRow(currentAccount, messageOwner);
+        }
+
         if (message.replyMessage != null) {
             replyMessageObject = new MessageObject(currentAccount, message.replyMessage, null, users, chats, sUsers, sChats, false, checkMediaExists, eid);
         }
@@ -9357,10 +9364,28 @@ public class MessageObject {
         return messageOwner.replies != null ? messageOwner.replies.replies : 0;
     }
 
-    /** T81: TRUE for an XOSF1 encrypted-file row (cloud chat). */
+    /** T81: TRUE for an XOSF1 encrypted-file row (cloud chat). The text may
+     *  have been replaced by the caption at parse time, so the params marker
+     *  planted by TlJsonMapper is checked alongside the envelope text. */
     public boolean isEncryptedFileMessage() {
-        return messageOwner != null && messageOwner.message != null
-                && org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isFileEnvelope(messageOwner.message);
+        if (messageOwner == null) {
+            return false;
+        }
+        if (org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.isFileEnvelope(messageOwner.message)) {
+            return true;
+        }
+        return messageOwner.params != null && "1".equals(messageOwner.params.get("xoEncFile"));
+    }
+
+    /** T82: TRUE for a PASSWORD-based encrypted file (XOSF2, cloud chat). */
+    public boolean isPwEncryptedFile() {
+        return messageOwner != null && messageOwner.params != null
+                && "1".equals(messageOwner.params.get("xoF2"));
+    }
+
+    /** T82: TRUE when an XOSF2 row still waits for the user's رمز. */
+    public boolean isPwFileLocked() {
+        return isPwEncryptedFile() && messageOwner.params.get("xoF2unlocked") == null;
     }
 
     public boolean canEditMessage(TLRPC.Chat chat) {

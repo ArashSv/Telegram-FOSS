@@ -880,6 +880,10 @@ public final class RestDispatcher {
         org.json.JSONObject manifestMeta = e2eeStore != null && !alreadyBackend ? e2eeStore.uploadManifest(treeUploadId) : null;
         boolean ssFile = !e2eeChat && !alreadyBackend && manifestMeta != null
                 && "ss".equals(manifestMeta.optString("kf", ""));
+        // T82: the PASSWORD-based encrypted-file send (XOSF2). The intent
+        // carries the minted CEK + KDF salt + the user-typed رمز; the body
+        // parts are ALREADY AEAD-encrypted (uploadPart used the intent's fk)
+        // — there is NO peer-key dependency and NO derivation step here.
         // An encrypted chat NEVER references plaintext media: either the
         // upload carries an E2EE key, or the item is a re-encrypted forward
         // envelope (alreadyBackend + envelope content). Referenced plaintext
@@ -928,6 +932,18 @@ public final class RestDispatcher {
                 XoSecret.notifySendBlocked(account, peer.userId, "E2EE_PEER_KEY_MISSING");
                 throw new XoApiException(400, "E2EE_PEER_KEY_MISSING",
                         "the encrypted file lost its derived key; cancel and resend");
+            }
+            e2ee = true;
+        }
+        boolean pwFile = !e2eeChat && !alreadyBackend && manifestMeta != null
+                && "pw".equals(manifestMeta.optString("kf", ""));
+        if (pwFile) {
+            // T82: the CEK is ALWAYS in the intent (minted at intent creation
+            // and persisted keystore-encrypted) — uploadKeyForTree returned it
+            // above. Missing = the intent was corrupted: fail closed.
+            if (bodyFileKey == null) {
+                throw new XoApiException(400, "E2EE_MEDIA_KEY_MISSING",
+                        "the encrypted file lost its key; cancel and resend");
             }
             e2ee = true;
         }
@@ -1012,6 +1028,30 @@ public final class RestDispatcher {
                                 caption, thumbKey != null,
                                 thumbKey, thumbBackendId, animated);
                         wireCaption = e2eeMgr.encryptForPeerFile(peer.userId, inner);
+                    } else if (pwFile) {
+                        // T82: the PASSWORD-based encrypted file. The inner
+                        // media JSON (same schema the whole media machinery
+                        // speaks, fk = the CEK) goes INSIDE the encrypted
+                        // header blob; the CEK travels ONLY wrapped under the
+                        // user-typed رمز. The server sees neither key nor
+                        // metadata — the whole feature is client-side.
+                        String pw = e2eeStore.uploadPassForTree(treeUploadId);
+                        byte[] salt = e2eeStore.uploadSaltForTree(treeUploadId);
+                        if (pw == null || salt == null || salt.length < 8) {
+                            throw new org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.BadPassword();
+                        }
+                        inner = org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerMedia(
+                                bodyFileKey, plainLen, chunkSize, realMime, realName, realW, realH, realDur,
+                                caption, false, null, 0, animated);
+                        String hb = org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.encryptHeader(
+                                bodyFileKey, inner);
+                        org.json.JSONObject wp = org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.wrapCek(
+                                bodyFileKey, pw.toCharArray(), salt,
+                                org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.PBKDF2_ITERS);
+                        wireCaption = org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.buildEnvelope(
+                                mediaFileId, plainLen, chunkSize, hb, wp);
+                        org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(account, "xosf2.encrypt.ok", peer.userId,
+                                "file=" + mediaFileId + " pl=" + plainLen);
                     } else {
                         inner = org.telegram.tgnet.rest.e2ee.XoSecretEnvelope.innerMedia(
                                 bodyFileKey, plainLen, chunkSize, realMime, realName, realW, realH, realDur,

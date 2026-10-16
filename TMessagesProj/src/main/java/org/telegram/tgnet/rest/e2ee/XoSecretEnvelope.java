@@ -34,6 +34,11 @@ public final class XoSecretEnvelope {
     /** T81: the encrypted-FILE envelope family (cloud chats, ss-derived key). */
     public static final String PREFIX_FILE = "XOSF1:";
 
+    /** T82: the PASSWORD-based encrypted-FILE family (cloud chats). The key
+     *  material travels ONLY wrapped under the user-typed رمز — the server
+     *  sees neither the password nor any usable key (see XoFilePassCrypto). */
+    public static final String PREFIX_FILE2 = "XOSF2:";
+
     /** Guava is on the classpath and works on the JVM test suite too. */
     private static final com.google.common.io.BaseEncoding B64 = com.google.common.io.BaseEncoding.base64();
 
@@ -57,9 +62,14 @@ public final class XoSecretEnvelope {
         return content != null && content.startsWith(PREFIX_FILE) && content.length() > PREFIX_FILE.length() + 8;
     }
 
+    /** T82: TRUE for the password-based encrypted-file family. */
+    public static boolean isFileEnvelope2(String content) {
+        return content != null && content.startsWith(PREFIX_FILE2) && content.length() > PREFIX_FILE2.length() + 8;
+    }
+
     /** T81: TRUE for either envelope family (parse routing). */
     public static boolean isAnyEnvelope(String content) {
-        return isEnvelope(content) || isFileEnvelope(content);
+        return isEnvelope(content) || isFileEnvelope(content) || isFileEnvelope2(content);
     }
 
     /** Raw body bytes after the prefix, or null when malformed. */
@@ -69,6 +79,9 @@ public final class XoSecretEnvelope {
         }
         if (isFileEnvelope(envelope)) {
             return bodyOf(envelope, PREFIX_FILE);
+        }
+        if (isFileEnvelope2(envelope)) {
+            return bodyOf(envelope, PREFIX_FILE2);
         }
         return null;
     }

@@ -11780,6 +11780,9 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                             }
                             afterMessageSend();
                             chatActivityEnterView.setFieldText("");
+                            // T82: NO eager arm clear — video prepare stamps the
+                            // رمز on a worker thread; the 60s TTL in
+                            // XoFilePassSend owns the lifetime.
                         }
                         if (scheduleDate != 0) {
                             if (scheduledMessagesCount == -1) {
@@ -22323,7 +22326,12 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             // per fragment. Secret dialogs match through their PEER USER.
             if (account == currentAccount && dialog_id != 0 && args != null && args.length >= 2 && args[0] instanceof Long) {
                 long blockedPeer = (Long) args[0];
-                boolean matches = dialog_id == -blockedPeer
+                // T82: CLOUD 1:1 dialogs match by the POSITIVE peer id (the
+                // encrypted-file send blocks there too) — the old condition
+                // only matched secret dialogs, so XOSF/XOSF2 failures in
+                // cloud chats were never explained to the user.
+                boolean matches = dialog_id == blockedPeer
+                        || dialog_id == -blockedPeer
                         || (dialog_id < 0 && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(dialog_id)
                                 && org.telegram.tgnet.rest.e2ee.XoSecret.secretPeerUser(-dialog_id) == blockedPeer);
                 if (blockedPeer > 0 && matches && xoE2eeBlockedBulletins.add(blockedPeer)) {
@@ -32092,6 +32100,167 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         return !org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, dialogId);
     }
 
+    /**
+     * T82 — the encrypted-file رمز dialog, the ONE gate for both directions.
+     *
+     * <p>forSend=true: collect + confirm a NEW رمز for the outgoing
+     * encrypted file(s); on OK it arms {@link org.telegram.tgnet.rest.e2ee.XoFilePassSend}
+     * and runs {@code onConfirmed} (the caller then starts the send).
+     *
+     * <p>forSend=false: unlock an incoming locked XOSF2 row — the رمز is
+     * verified by actually unwrapping the file key (GCM tag = honest
+     * wrong-رمز detection), the row is re-rendered in place, and the
+     * optional remember flag stores it per pair (keystore-protected). A
+     * wrong رمز re-opens the dialog with an error.
+     */
+    public void showXoFilePassDialog(boolean forSend, MessageObject toUnlock, Runnable onConfirmed) {
+        if (getParentActivity() == null) {
+            return;
+        }
+        android.content.Context context = getParentActivity();
+        org.telegram.ui.ActionBar.AlertDialog.Builder builder = new org.telegram.ui.ActionBar.AlertDialog.Builder(context, themeDelegate);
+        builder.setTitle(LocaleController.getString(forSend ? R.string.SendAsEncryptedFile : R.string.XoFilePassUnlockTitle));
+        builder.setMessage(LocaleController.getString(forSend ? R.string.XoFilePassSendHint : R.string.XoFilePassUnlockHint));
+
+        android.widget.LinearLayout layout = new android.widget.LinearLayout(context);
+        layout.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = AndroidUtilities.dp(20);
+        layout.setPadding(pad, pad / 2, pad, 0);
+
+        final android.widget.EditText passInput = new android.widget.EditText(context);
+        passInput.setHint(LocaleController.getString(R.string.XoFilePassHint));
+        passInput.setTextSize(18);
+        passInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+        passInput.setTypeface(AndroidUtilities.getTypeface("fonts/rmedium.ttf"));
+        passInput.setSingleLine(true);
+        layout.addView(passInput, LayoutHelper.createLinear(org.telegram.ui.Components.LayoutHelper.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final android.widget.EditText confirmInput;
+        if (forSend) {
+            confirmInput = new android.widget.EditText(context);
+            confirmInput.setHint(LocaleController.getString(R.string.XoFilePassConfirm));
+            confirmInput.setTextSize(18);
+            confirmInput.setInputType(android.text.InputType.TYPE_CLASS_TEXT
+                    | android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD);
+            confirmInput.setSingleLine(true);
+            layout.addView(confirmInput, LayoutHelper.createLinear(org.telegram.ui.Components.LayoutHelper.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+        } else {
+            confirmInput = null;
+        }
+
+        final android.widget.TextView errorView = new android.widget.TextView(context);
+        errorView.setTextColor(Theme.getColor(Theme.key_dialogTextRed2, themeDelegate));
+        errorView.setTextSize(14);
+        errorView.setVisibility(android.view.View.GONE);
+        layout.addView(errorView, LayoutHelper.createLinear(org.telegram.ui.Components.LayoutHelper.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        final android.widget.CheckBox rememberBox;
+        if (!forSend) {
+            rememberBox = new android.widget.CheckBox(context);
+            rememberBox.setText(LocaleController.getString(R.string.XoFilePassRemember));
+            rememberBox.setTextSize(15);
+            rememberBox.setChecked(true);
+            rememberBox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack, themeDelegate));
+            layout.addView(rememberBox, LayoutHelper.createLinear(org.telegram.ui.Components.LayoutHelper.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+            // prefill the remembered رمز for this pair, when one exists
+            try {
+                long pairKey = Math.min(UserConfig.getInstance(currentAccount).clientUserId, getDialogId());
+                String remembered = org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount).chatFilePass(pairKey);
+                if (remembered != null) {
+                    passInput.setText(remembered);
+                }
+            } catch (Exception ignore) {
+            }
+        } else {
+            rememberBox = null;
+        }
+
+        builder.setView(layout);
+        builder.setPositiveButton(LocaleController.getString(forSend ? R.string.Send : R.string.XoFilePassUnlock), (dialog2, which) -> {
+            final String pass = passInput.getText() == null ? "" : passInput.getText().toString();
+            if (pass.length() == 0) {
+                errorView.setText(LocaleController.getString(R.string.XoFilePassEmpty));
+                errorView.setVisibility(android.view.View.VISIBLE);
+                return;
+            }
+            if (forSend) {
+                String confirm = confirmInput.getText() == null ? "" : confirmInput.getText().toString();
+                if (!pass.equals(confirm)) {
+                    errorView.setText(LocaleController.getString(R.string.XoFilePassMismatch));
+                    errorView.setVisibility(android.view.View.VISIBLE);
+                    return;
+                }
+                org.telegram.tgnet.rest.e2ee.XoFilePassSend.arm(currentAccount, getDialogId(), pass);
+                dialog2.dismiss();
+                if (onConfirmed != null) {
+                    onConfirmed.run();
+                }
+            } else {
+                dialog2.dismiss();
+                unlockPwFile(toUnlock, pass, rememberBox != null && rememberBox.isChecked());
+            }
+        });
+        builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
+        showDialog(builder.create());
+    }
+
+    /**
+     * T82: verifies + applies the رمز for a locked XOSF2 row. The PBKDF2
+     * stretch runs OFF the main thread; the row mutation lands back on the
+     * UI thread. Wrong رمز: honest error + the dialog re-opens.
+     */
+    private void unlockPwFile(MessageObject obj, String pass, boolean remember) {
+        if (obj == null || obj.messageOwner == null || obj.messageOwner.params == null) {
+            return;
+        }
+        final int acc = currentAccount;
+        final long dialogId = getDialogId();
+        Utilities.globalQueue.postRunnable(() -> {
+            try {
+                String envStr = obj.messageOwner.params.get("xoF2Env");
+                org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.PwEnvelope env =
+                        org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.parse(envStr);
+                if (env == null) {
+                    AndroidUtilities.runOnUIThread(() -> BulletinFactory.of(ChatActivity.this).createErrorBulletin(
+                            LocaleController.getString(R.string.XoFilePassCorrupt), themeDelegate).show());
+                    return;
+                }
+                byte[] cek = org.telegram.tgnet.rest.e2ee.XoFilePassCrypto
+                        .unwrapCek(env.wrapJson, pass.toCharArray()); // throws BadPassword
+                byte[] inner = org.telegram.tgnet.rest.e2ee.XoFilePassCrypto
+                        .decryptHeader(cek, env.headerB64);
+                boolean ok = org.telegram.tgnet.rest.e2ee.XoSecret.applyPwUnlock(acc,
+                        obj.messageOwner, new String(inner, java.nio.charset.StandardCharsets.UTF_8), env.fileId);
+                if (ok && remember) {
+                    long pairKey = Math.min(UserConfig.getInstance(acc).clientUserId, dialogId);
+                    org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(acc).noteChatFilePass(pairKey, pass);
+                }
+                AndroidUtilities.runOnUIThread(() -> {
+                    if (ok) {
+                        obj.caption = obj.messageOwner.message == null ? null : obj.messageOwner.message;
+                        if (chatAdapter != null) {
+                            chatAdapter.notifyDataSetChanged();
+                        }
+                    } else {
+                        BulletinFactory.of(ChatActivity.this).createErrorBulletin(
+                                LocaleController.getString(R.string.XoFilePassCorrupt), themeDelegate).show();
+                    }
+                });
+            } catch (org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.BadPassword bad) {
+                AndroidUtilities.runOnUIThread(() -> {
+                    BulletinFactory.of(ChatActivity.this).createErrorBulletin(
+                            LocaleController.getString(R.string.XoFilePassWrong), themeDelegate).show();
+                    showXoFilePassDialog(false, obj, null);
+                });
+            } catch (Throwable t) {
+                FileLog.e("ChatActivity: pw unlock failed", t);
+                AndroidUtilities.runOnUIThread(() -> BulletinFactory.of(ChatActivity.this).createErrorBulletin(
+                        LocaleController.getString(R.string.XoFilePassCorrupt), themeDelegate).show());
+            }
+        });
+    }
+
     public boolean isChannel() {
         return ChatObject.isChannelAndNotMegaGroup(currentChat);
     }
@@ -36616,6 +36785,13 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         @Override
         public void didPressImage(ChatMessageCell cell, float x, float y) {
             MessageObject message = cell.getMessageObject();
+            // T82: a locked password-encrypted file — the رمز comes FIRST.
+            // The ciphertext is never fetched or opened without it.
+            if (message.isPwFileLocked()) {
+                message.putInDownloadsStore = false;
+                showXoFilePassDialog(false, message, null);
+                return;
+            }
             if (message.type == MessageObject.TYPE_STORY) {
                 if (message.messageOwner.media.storyItem != null && !(message.messageOwner.media.storyItem instanceof TL_stories.TL_storyItemDeleted)) {
                     TL_stories.StoryItem storyItem = message.messageOwner.media.storyItem;

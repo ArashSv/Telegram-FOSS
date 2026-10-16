@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.telegram.messenger.FileLog;
 import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.UserConfig;
+import org.telegram.tgnet.TLRPC;
 import org.telegram.tgnet.rest.RestChatIndex;
 
 /**
@@ -475,6 +476,69 @@ public final class XoSecret {
     }
 
     // ------------------------------------------------------------------ media keys
+
+    /**
+     * T82 — mutates a TL_message row to its UNLOCKED XOSF2 form given the
+     * already-decrypted header (inner JSON) and the CEK. Shared by the parse
+     * path, the unlock dialog and the storage-reload heal — the ONE place
+     * that knows the unlocked row shape:
+     * <ul>
+     *   <li>real media rebuilt from the meta (name/mime/dims/size)</li>
+     *   <li>caption applied as the message text</li>
+     *   <li>media keys registered (own + peer downloads decrypt transparently)</li>
+     *   <li>params flipped to the unlocked state (predicates + storage heal)</li>
+     * </ul>
+     *
+     * @param fileId the backend file id (media keys binding)
+     * @return true when the row was mutated
+     */
+    public static boolean applyPwUnlock(int account, TLRPC.TL_message message, String innerJson, long fileId) {
+        try {
+            if (message == null || innerJson == null || fileId <= 0) {
+                return false;
+            }
+            org.json.JSONObject inner = new org.json.JSONObject(innerJson);
+            XoSecret.MediaMeta meta = parseMediaMeta(inner);
+            if (meta == null) {
+                return false;
+            }
+            getInstance(account).noteMediaKeys(fileId, meta);
+            XoSecretStore.getInstance(account).clearPwLockedFile(fileId);
+            TLRPC.MessageMedia media = message.media;
+            org.json.JSONObject mediaJson = new org.json.JSONObject();
+            mediaJson.put("file_id", fileId);
+            mediaJson.put("size", meta.plaintextLen);
+            // reuse the exact media builder the parse path uses — the DOCUMENT
+            // variant: XOSF2 rows keep the document shape across the unlock
+            // transition so the MessageObject type never flips mid-render
+            message.media = org.telegram.tgnet.rest.TlJsonMapper.rebuildE2eeDocument(meta, mediaJson,
+                    message.date > 0 ? message.date : (int) (System.currentTimeMillis() / 1000L));
+            if (media instanceof TLRPC.TL_messageMediaDocument
+                    && message.media instanceof TLRPC.TL_messageMediaDocument
+                    && ((TLRPC.TL_messageMediaDocument) message.media).document instanceof TLRPC.TL_document
+                    && ((TLRPC.TL_messageMediaDocument) media).document instanceof TLRPC.TL_document) {
+                // carry the sender-side upload/attach path over (local file
+                // already present on the sender's device)
+                TLRPC.TL_document newDoc = (TLRPC.TL_document) ((TLRPC.TL_messageMediaDocument) message.media).document;
+                TLRPC.TL_document oldDoc = (TLRPC.TL_document) ((TLRPC.TL_messageMediaDocument) media).document;
+                if (oldDoc != null && oldDoc.dc_id != 0) {
+                    newDoc.dc_id = oldDoc.dc_id;
+                }
+            }
+            String cap = inner.isNull("cap") ? "" : inner.optString("cap", "");
+            message.message = cap;
+            if (message.params == null) {
+                message.params = new java.util.HashMap<>();
+            }
+            message.params.put("xoF2unlocked", "1");
+            message.params.remove("xoF2Env");
+            XoE2eeLog.event(account, "xosf2.unlock", 0, "file=" + fileId);
+            return true;
+        } catch (Throwable t) {
+            FileLog.e("XoSecret: pw unlock apply failed", t);
+            return false;
+        }
+    }
 
     /** Media envelope metadata extracted from a decrypted media payload. */
     public static final class MediaMeta {

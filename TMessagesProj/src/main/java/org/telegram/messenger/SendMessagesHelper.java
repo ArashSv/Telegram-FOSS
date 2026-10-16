@@ -7015,6 +7015,10 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             boolean xoEnc = message.obj != null && message.obj.messageOwner != null
                     && message.obj.messageOwner.params != null
                     && "1".equals(message.obj.messageOwner.params.get("xoEnc"));
+            // T82: the user-typed file رمز (XOSF2) — planted next to xoEnc.
+            String xoPass = message.obj != null && message.obj.messageOwner != null
+                    && message.obj.messageOwner.params != null
+                    ? message.obj.messageOwner.params.get("xoPass") : null;
             if (peerDialogId < 0) {
                 // T78: SECRET chats ride the chat space (negative dialog id) —
                 // the intent peer is the PEER USER (key lookup); the dialog
@@ -7060,8 +7064,16 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             } else {
                 // T81: cloud + xoEnc — KEYLESS ss intent (the file key is the
                 // static-static derived key, computed at the first part upload)
-                org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
-                        .noteUploadIntentSs(location, intentPeer, message.photoSize, document);
+                // T82: a password-carrying send (xoPass) takes the XOSF2 pw
+                // path INSTEAD — the CEK is minted in the store, the رمز never
+                // reaches the server in any form.
+                if (xoPass != null) {
+                    org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
+                            .noteUploadIntentPw(location, intentPeer, message.photoSize, document, xoPass);
+                } else {
+                    org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
+                            .noteUploadIntentSs(location, intentPeer, message.photoSize, document);
+                }
             }
         } catch (Throwable e) {
             FileLog.e("SendMessagesHelper: secret upload intent failed", e);
@@ -7557,7 +7569,15 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             // T81: encrypted-file send — rides the unsent message's params into
             // noteE2eeUploadIntent (keyless ss intent) and ensureRestThumb; the
             // XOSF1 envelope is built by the dispatcher from the ss intent.
+            // T82: the user-typed رمز rides alongside ("xoPass") — the pw
+            // intent (XOSF2) mints its CEK/salt in the store and the
+            // dispatcher builds the password-based envelope from it. An empty
+            // peek (no dialog arm — legacy entry points) keeps the old ss flow.
+            String xoPass = org.telegram.tgnet.rest.e2ee.XoFilePassSend.peek(accountInstance.getCurrentAccount(), dialogId);
             params.put("xoEnc", "1");
+            if (xoPass != null) {
+                params.put("xoPass", xoPass);
+            }
         }
         if (parentFinal != null) {
             params.put("parentObject", parentFinal);
@@ -8917,14 +8937,29 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                             final String parentFinal = parentObject;
                             final String originalPathFinal = originalPath;
                             final String finalPath = path;
-                            final HashMap<String, String> params = new HashMap<>();
                             final Bitmap thumbFinal = thumb;
                             final String thumbKeyFinal = thumbKey;
+                            final HashMap<String, String> params = new HashMap<>();
                             if (originalPath != null) {
                                 params.put("originalPath", originalPath);
                             }
                             if (parentFinal != null) {
                                 params.put("parentObject", parentFinal);
+                            }
+                            if (asEncryptedFiles) {
+                                // T82 (leak fix): the per-item video branch builds its
+                                // OWN params and previously NEVER stamped xoEnc — an
+                                // encrypted video send from the attach menu fell into
+                                // noteE2eeUploadIntent's no-intent path and uploaded
+                                // PLAINTEXT. Stamp both flags exactly like the
+                                // document/transcode paths (the peek also carries the
+                                // typed رمز for the XOSF2 pw intent).
+                                String xoPass = org.telegram.tgnet.rest.e2ee.XoFilePassSend
+                                        .peek(accountInstance.getCurrentAccount(), dialogId);
+                                params.put("xoEnc", "1");
+                                if (xoPass != null) {
+                                    params.put("xoPass", xoPass);
+                                }
                             }
                             if (!muted && groupMediaFinal) {
                                 mediaCount++;
@@ -9309,6 +9344,14 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
             TLRPC.TL_inputMediaUploadedDocument input = (TLRPC.TL_inputMediaUploadedDocument) req.media;
             if (input.thumb != null) {
                 return false; // the async detour did its job — nothing to do
+            }
+            // T82: XOSF2 password-encrypted files ship WITHOUT previews — a
+            // thumb would leak the first frame of an encrypted video/image to
+            // the server and the pw envelope carries no thumb key slot. The
+            // send proceeds exactly like a plain document.
+            if (msgObj.messageOwner != null && msgObj.messageOwner.params != null
+                    && msgObj.messageOwner.params.get("xoPass") != null) {
+                return false;
             }
             TLRPC.Document document = msgObj.getDocument();
             if (document == null) {
@@ -9811,7 +9854,16 @@ public class SendMessagesHelper extends BaseController implements NotificationCe
                 }
                 if (asEncryptedFile) {
                     // T81: encrypted-file send — the same params ride as the document path
+                    // T82: the رمز must ride TOO (this transcode path bypasses
+                    // prepareSendingDocumentInternal — without the stamp the
+                    // pw intent is never minted and the send falls to the
+                    // legacy ss flow and fails closed)
+                    String xoPass = org.telegram.tgnet.rest.e2ee.XoFilePassSend
+                            .peek(accountInstance.getCurrentAccount(), dialogId);
                     params.put("xoEnc", "1");
+                    if (xoPass != null) {
+                        params.put("xoPass", xoPass);
+                    }
                 }
                 AndroidUtilities.runOnUIThread(() -> {
                     if (thumbFinal != null && thumbKeyFinal != null) {

@@ -13,6 +13,7 @@ import org.telegram.messenger.NotificationCenter;
 import org.telegram.messenger.UserConfig;
 import org.telegram.tgnet.ConnectionsManager;
 import org.telegram.tgnet.TLRPC;
+import org.telegram.tgnet.rest.e2ee.XoE2eeLog;
 import org.telegram.messenger.Utilities;
 
 import android.os.SystemClock;
@@ -743,8 +744,10 @@ public final class UpdatePoller {
         single.put(chatJson);
         RestChatIndex.ScanResult scan = RestChatIndex.getInstance(account).scanChats(single);
         chatsArr.addAll(scan.chats);
-        if (!scan.chats.isEmpty()) {
+        if (!scan.chats.isEmpty() || !scan.healedSecretChatIds.isEmpty()) {
             // new group with no message yet: only a dialogs reload surfaces it
+            // T82: healed secret chats ALSO purge their poisoned cached rows
+            handleHealedSecretChats(scan.healedSecretChatIds);
             AndroidUtilities.runOnUIThread(() -> {
                 try {
                     MessagesController.getInstance(account).loadDialogs(0, 0, 100, false);
@@ -752,6 +755,30 @@ public final class UpdatePoller {
                     FileLog.e("UpdatePoller: chat_new dialogs reload failed", e);
                 }
             });
+        }
+    }
+
+    /**
+     * T82: purge + reload for chats that were poisoned into groups by the
+     * payloadFromRow peer bug and just healed back to type="secret". Their
+     * locally cached rows hold raw XOSC1 envelopes parsed through the WRONG
+     * (group) path — the deterministic cure is dropping the cached rows so
+     * the next open re-fetches from the server through the now-correct
+     * secret path (which decrypts). The dialog row itself is kept.
+     */
+    private void handleHealedSecretChats(ArrayList<Long> healedChatIds) {
+        if (healedChatIds == null || healedChatIds.isEmpty()) {
+            return;
+        }
+        for (int i = 0; i < healedChatIds.size(); i++) {
+            long chatId = healedChatIds.get(i);
+            long dialogId = -chatId;
+            try {
+                MessagesStorage.getInstance(account).deleteDialog(dialogId, 1); // messages only
+                XoE2eeLog.event(account, "secret.heal", chatId, "poisoned group purged");
+            } catch (Exception e) {
+                FileLog.e("UpdatePoller: secret-chat heal purge failed for chat " + chatId, e);
+            }
         }
     }
 
@@ -1060,7 +1087,8 @@ public final class UpdatePoller {
     /** One /chats/list.php call to warm the index after an unknown chat id. */
     private boolean rebuildChatIndex() {
         try {
-            RestChatIndex.getInstance(account).scanChats(gateway.chatsList());
+            RestChatIndex.ScanResult scan = RestChatIndex.getInstance(account).scanChats(gateway.chatsList());
+            handleHealedSecretChats(scan.healedSecretChatIds);
             return true;
         } catch (Exception e) {
             FileLog.e("UpdatePoller: chat index rebuild failed", e);

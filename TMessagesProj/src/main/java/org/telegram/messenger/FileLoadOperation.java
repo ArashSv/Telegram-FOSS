@@ -1783,6 +1783,16 @@ public class FileLoadOperation {
                     org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(currentAccount);
             org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta = secretMgr.mediaKeysFor(backendId);
             if (meta == null || meta.fileKey == null) {
+                // T82: a LOCKED XOSF2 file (password-encrypted, not yet
+                // unwrapped) — the ciphertext must never be saved/opened as
+                // if it were the real file. Fail the download honestly; the
+                // tap flow prompts for the رمز instead.
+                if (org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(currentAccount)
+                        .isPwLockedFile(backendId)) {
+                    org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.decrypt", 0,
+                            "file=" + backendId + " pw-locked refused");
+                    return false;
+                }
                 return true; // not an E2EE file — untouched flow
             }
             boolean thumbRequest = isRestThumbRequest(location);
