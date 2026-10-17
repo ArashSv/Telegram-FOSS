@@ -22,3 +22,5 @@ jobs:
             sleep 10
           done
           [ "$ok" = "1" ] || { echo "PANEL E2E FAILED after 5 attempts"; exit 1; }
+
+# re-register nudge
