@@ -32185,6 +32185,17 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                 return;
             }
             if (forSend) {
+                // T83 (security audit): the ciphertext will be PUBLIC on the
+                // server — a short رمز is brute-forceable offline BY THE
+                // SERVER, voiding the zero-knowledge promise. Send-side
+                // policy only: the unlock side gains nothing from a gate
+                // (the offline attacker never uses this dialog) and legacy
+                // files wrapped under an older short رمز must stay openable.
+                if (pass.length() < org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.MIN_PASS_LEN) {
+                    errorView.setText(LocaleController.getString(R.string.XoFilePassTooShort));
+                    errorView.setVisibility(android.view.View.VISIBLE);
+                    return;
+                }
                 String confirm = confirmInput.getText() == null ? "" : confirmInput.getText().toString();
                 if (!pass.equals(confirm)) {
                     errorView.setText(LocaleController.getString(R.string.XoFilePassMismatch));

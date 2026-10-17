@@ -82,11 +82,14 @@ public final class XoCurve25519 {
 
     private static void mul(long[] o, long[] a, long[] b) {
         long[] t = new long[31];
+        // T83 (security audit): the schoolbook loop runs UNCONDITIONALLY.
+        // A skip-if-zero branch on a limb is a data-dependent timing leak —
+        // during the ladder the operands are secret-derived, and the branch
+        // predictor would correlate with key bits. The zero-multiply is a
+        // no-op for correctness; for constant time it must still COST the
+        // same. (The swaps and the ladder shape were already constant-time.)
         for (int i = 0; i < 16; i++) {
             long ai = a[i];
-            if (ai == 0) {
-                continue;
-            }
             for (int j = 0; j < 16; j++) {
                 t[i + j] += ai * b[j];
             }

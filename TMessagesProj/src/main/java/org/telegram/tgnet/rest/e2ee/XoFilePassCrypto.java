@@ -62,6 +62,17 @@ public final class XoFilePassCrypto {
     public static final int NONCE_LEN = 12;
     public static final int TAG_BITS = 128;
 
+    /**
+     * T83 (security audit): the minimum acceptable user-typed رمز. The
+     * ciphertext is PUBLIC (the server stores it), so a short رمز is
+     * offline-brute-forceable BY THE SERVER ITSELF — which would void the
+     * feature's core promise ("سرور نتونه فایل رو رمزگشایی کنه"). The send
+     * and unlock dialogs refuse anything shorter. 6 chars is the usability
+     * floor; strength beyond that is the user's choice (the hint explains
+     * why longer is better).
+     */
+    public static final int MIN_PASS_LEN = 6;
+
     /** OWASP-recommended floor for PBKDF2-HMAC-SHA256 (2023+) is 600k; the
      * value here is the deliberate compromise for 2015-era low-end devices
      * in this fork's minSdk audience — still >=35x the 2013 1k legacy and

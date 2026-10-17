@@ -1255,6 +1255,7 @@
     <string name="XoFilePassUnlock">Unlock</string>
     <string name="XoFilePassWrong">Wrong key. Please try again.</string>
     <string name="XoFilePassEmpty">The encryption key cannot be empty.</string>
+    <string name="XoFilePassTooShort">The encryption key is too short — use at least 6 characters. The server stores this file encrypted; a short key could be guessed by brute force.</string>
     <string name="XoFilePassMismatch">The keys do not match.</string>
     <string name="XoFilePassCorrupt">This encrypted file is damaged or its envelope is invalid.</string>
     <string name="OpenUrlTitle">Open Link</string>
