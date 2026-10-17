@@ -275,7 +275,7 @@ public final class XoFilePassCrypto {
                 return false;
             }
             byte[] inner = decryptHeader(meta.fileKey, env.headerB64);
-            return XoSecret.applyPwUnlock(account, message, new String(inner, StandardCharsets.UTF_8), meta.fileKey);
+            return XoSecret.applyPwUnlock(account, message, new String(inner, StandardCharsets.UTF_8), env.fileId);
         } catch (Throwable t) {
             return false;
         }

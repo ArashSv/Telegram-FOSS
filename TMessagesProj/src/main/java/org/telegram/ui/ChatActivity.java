@@ -32150,7 +32150,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         }
 
         final android.widget.TextView errorView = new android.widget.TextView(context);
-        errorView.setTextColor(Theme.getColor(Theme.key_dialogTextRed2, themeDelegate));
+        errorView.setTextColor(Theme.getColor(Theme.key_text_RedRegular, themeDelegate));
         errorView.setTextSize(14);
         errorView.setVisibility(android.view.View.GONE);
         layout.addView(errorView, LayoutHelper.createLinear(org.telegram.ui.Components.LayoutHelper.MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -32241,8 +32241,9 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                         .unwrapCek(env.wrapJson, pass.toCharArray()); // throws BadPassword
                 byte[] inner = org.telegram.tgnet.rest.e2ee.XoFilePassCrypto
                         .decryptHeader(cek, env.headerB64);
-                boolean ok = org.telegram.tgnet.rest.e2ee.XoSecret.applyPwUnlock(acc,
-                        obj.messageOwner, new String(inner, java.nio.charset.StandardCharsets.UTF_8), env.fileId);
+                boolean ok = obj.messageOwner instanceof TLRPC.TL_message
+                        && org.telegram.tgnet.rest.e2ee.XoSecret.applyPwUnlock(acc,
+                        (TLRPC.TL_message) obj.messageOwner, new String(inner, java.nio.charset.StandardCharsets.UTF_8), env.fileId);
                 if (ok && remember) {
                     long pairKey = Math.min(UserConfig.getInstance(acc).clientUserId, dialogId);
                     org.telegram.tgnet.rest.e2ee.XoSecretStore.getInstance(acc).noteChatFilePass(pairKey, pass);

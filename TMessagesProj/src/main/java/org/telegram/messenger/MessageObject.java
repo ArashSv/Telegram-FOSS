@@ -1671,8 +1671,8 @@ public class MessageObject {
         // T82: storage-reloaded XOSF2 rows never pass TlJsonMapper again —
         // heal them here from the keystore-backed state (one tiny GCM when
         // applicable, a params lookup otherwise). Runs once per object.
-        if (messageOwner.params != null && messageOwner.params.containsKey("xoF2")) {
-            org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.healLoadedRow(currentAccount, messageOwner);
+        if (messageOwner instanceof TLRPC.TL_message && messageOwner.params != null && messageOwner.params.containsKey("xoF2")) {
+            org.telegram.tgnet.rest.e2ee.XoFilePassCrypto.healLoadedRow(currentAccount, (TLRPC.TL_message) messageOwner);
         }
 
         if (message.replyMessage != null) {

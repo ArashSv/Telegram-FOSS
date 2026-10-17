@@ -342,7 +342,12 @@ public final class RestChatIndex {
                     // map AND in chatTypes ("group" overwrote "secret" during
                     // the t78-era bug) — the chatTypes signal also keeps the
                     // heal testable on the JVM (stubbed android.util maps).
-                    wasPoisonedGroup = groupChats.containsKey((int) chatId)
+                    // T83 (CI gate): indexOfKey() is int-based — under the JVM
+                    // suite's returnDefaultValues stub it returns 0 and "0>=0"
+                    // is always TRUE, spuriously flagging every clean secret
+                    // row as poisoned. get()!=null is the same probe on the
+                    // real SparseArray and behaves correctly in BOTH worlds.
+                    wasPoisonedGroup = groupChats.get((int) chatId) != null
                             || "group".equals(prevType);
                     if ("private".equals(type)) {
                         chatModes.put(chatId, secretOrCloud(mode));
