@@ -525,6 +525,61 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
         }
 
         @Override
+        public void sendButtonPressed(int index, VideoEditedInfo videoEditedInfo, boolean notify, int scheduleDate, boolean forceDocument, boolean asEncrypted) {
+            // T85: the interface DEFAULT silently dropped asEncrypted — the
+            // PhotoViewer "Send as Encrypted File" entry therefore ran the
+            // plain path above and sent an UNENCRYPTED document. Route the
+            // encrypted intent through button 9 (the same delegate path the
+            // options-menu entry uses): XoFilePassSend's arm is still live
+            // (60s TTL), the uploads encrypt per-part, the message rides the
+            // XOSF2 envelope, and ChatActivity's button-9 branch closes the
+            // picker with the selection already cleared.
+            if (!asEncrypted) {
+                sendButtonPressed(index, videoEditedInfo, notify, scheduleDate, forceDocument);
+                return;
+            }
+            parentAlert.sent = true;
+            MediaController.PhotoEntry photoEntry = getPhotoEntryAtPosition(index);
+            if (photoEntry != null) {
+                photoEntry.editedInfo = videoEditedInfo;
+            }
+            if (selectedPhotos.isEmpty() && photoEntry != null) {
+                addToSelectedPhotos(photoEntry, -1);
+            }
+            if (parentAlert.checkCaption(parentAlert.commentTextView.getText())) {
+                return;
+            }
+            parentAlert.applyCaption();
+            if (PhotoViewer.getInstance().hasCaptionForAllMedia) {
+                HashMap<Object, Object> selectedPhotos = getSelectedPhotos();
+                ArrayList<Object> selectedPhotosOrder = getSelectedPhotosOrder();
+                if (!selectedPhotos.isEmpty()) {
+                    for (int a = 0; a < selectedPhotosOrder.size(); a++) {
+                        Object o = selectedPhotos.get(selectedPhotosOrder.get(a));
+                        if (o instanceof MediaController.PhotoEntry) {
+                            MediaController.PhotoEntry photoEntry1 = (MediaController.PhotoEntry) o;
+                            if (a == 0) {
+                                CharSequence[] caption = new CharSequence[]{PhotoViewer.getInstance().captionForAllMedia};
+                                photoEntry1.entities = MediaDataController.getInstance(UserConfig.selectedAccount).getEntities(caption, false);
+                                photoEntry1.caption = caption[0];
+                                if (parentAlert.checkCaption(photoEntry1.caption)) {
+                                    return;
+                                }
+                            } else {
+                                photoEntry1.caption = null;
+                            }
+                        }
+                    }
+                }
+            }
+            parentAlert.delegate.didPressedButton(9, true, notify, scheduleDate, 0, false, forceDocument);
+            selectedPhotos.clear();
+            cameraPhotos.clear();
+            selectedPhotosOrder.clear();
+            selectedPhotos.clear();
+        }
+
+        @Override
         public boolean allowCaption() {
             return !parentAlert.isPhotoPicker;
         }
@@ -3215,19 +3270,27 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
             // xoEnc flag riding the message params (didPressedButton(9))
             // T82: the user-typed رمز comes FIRST — the password dialog
             // gates the whole send (nothing is transmitted without it).
+            // T85: while that dialog is up, the attach sheet must NOT react
+            // to outside touches — a system dialog over a bottom sheet can
+            // synthesize an outside-down that dismisses the sheet and pops
+            // the "Discard Selection?" confirmation right after the رمز
+            // confirm (the exact field report).
             if (parentAlert.baseFragment instanceof ChatActivity) {
+                final boolean prevSuppress = xoSuppressOutsideDismiss;
+                xoSuppressOutsideDismiss = true;
+                Runnable restore = () -> xoSuppressOutsideDismiss = prevSuppress;
                 if (parentAlert.editingMessageObject == null && ((ChatActivity) parentAlert.baseFragment).isInScheduleMode()) {
                     AlertsCreator.createScheduleDatePickerDialog(getContext(), ((ChatActivity) parentAlert.baseFragment).getDialogId(), (notify, scheduleDate) -> {
                         ((ChatActivity) parentAlert.baseFragment).showXoFilePassDialog(true, null, () -> {
                             parentAlert.applyCaption();
                             parentAlert.delegate.didPressedButton(9, true, notify, scheduleDate, 0, false, false);
-                        });
+                        }, restore);
                     }, resourcesProvider);
                 } else {
                     ((ChatActivity) parentAlert.baseFragment).showXoFilePassDialog(true, null, () -> {
                         parentAlert.applyCaption();
                         parentAlert.delegate.didPressedButton(9, true, true, 0, 0, false, false);
-                    });
+                    }, restore);
                 }
             }
         } else if (id == spoiler) {
@@ -3933,8 +3996,12 @@ public class ChatAttachAlertPhotoLayout extends ChatAttachAlert.AttachAlertLayou
 
     @Override
     public boolean canDismissWithTouchOutside() {
-        return !cameraOpened;
+        return !cameraOpened && !xoSuppressOutsideDismiss;
     }
+
+    /** T85: set while the XOSF2 رمز dialog is open over the attach sheet —
+     *  see the send_encrypted handler. */
+    private boolean xoSuppressOutsideDismiss;
 
     @Override
     public void onPanTransitionStart(boolean keyboardVisible, int contentHeight) {

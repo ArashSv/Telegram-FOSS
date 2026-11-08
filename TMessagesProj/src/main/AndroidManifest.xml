@@ -82,7 +82,13 @@
     <uses-permission android:name="com.oppo.launcher.permission.WRITE_SETTINGS"/>
     <uses-permission android:name="me.everything.badger.permission.BADGE_COUNT_READ"/>
     <uses-permission android:name="me.everything.badger.permission.BADGE_COUNT_WRITE"/>
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- T85: REQUEST_INSTALL_PACKAGES REMOVED — it is only consumed by the
+         legacy "open an APK received in a chat" flow (AndroidUtilities), but
+         on a SELF-SIGNED, NON-PLAY sideloaded app it is shaped exactly like a
+         dropper: Google Play Protect hard-blocks the FRESH install ("App not
+         installed"; update-in-place of an already-trusted install skips the
+         scan — the exact field report on Android 13/14/15/16). This fork
+         distributes via GitHub releases; nobody loses anything. -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="replace" />
 
 

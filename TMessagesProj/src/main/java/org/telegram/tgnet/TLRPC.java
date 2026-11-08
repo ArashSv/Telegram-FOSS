@@ -67809,6 +67809,66 @@ public class TLRPC {
             return result;
         }
 
+        /** T85 result holder for {@link #decodeParamsPiggyback}. */
+        public static final class Piggyback {
+            public String attachPath;
+            public HashMap<String, String> params;
+        }
+
+        /**
+         * T85: the "||k|=|v||...||realPath" params piggyback codec, extracted
+         * pure so the JVM contract suite can pin it. BYTE-IDENTICAL to the
+         * inline loop it replaces (writeAttachPath/readAttachPath delegate
+         * here). A value containing the "|=|" separator splits on its FIRST
+         * occurrence (limit 2) — XOSF2 envelopes are base64 and can never
+         * contain it, but the guard makes the format self-consistent.
+         */
+        public static String encodeParamsPiggyback(HashMap<String, String> params, String path) {
+            if (params != null && !params.isEmpty()) {
+                for (HashMap.Entry<String, String> entry : params.entrySet()) {
+                    path = entry.getKey() + "|=|" + entry.getValue() + "||" + path;
+                }
+                path = "||" + path;
+            }
+            return path;
+        }
+
+        /**
+         * T85: decode the piggyback. Non-piggyback strings pass through
+         * trimmed (upstream behavior for the plain trailing blank);
+         * piggyback strings merge into {@code existing} (a new map when
+         * null) and return the real attachPath.
+         */
+        public static Piggyback decodeParamsPiggyback(String raw, HashMap<String, String> existing) {
+            Piggyback out = new Piggyback();
+            if (raw == null) {
+                out.attachPath = null;
+                out.params = existing;
+                return out;
+            }
+            if (!raw.startsWith("||")) {
+                out.attachPath = raw.trim();
+                out.params = existing;
+                return out;
+            }
+            String[] args = raw.split("\\|\\|");
+            if (args.length <= 0) {
+                out.attachPath = raw;
+                out.params = existing;
+                return out;
+            }
+            HashMap<String, String> into = existing != null ? existing : new HashMap<>();
+            for (int a = 1; a < args.length - 1; a++) {
+                String[] kv = args[a].split("\\|=\\|", 2);
+                if (kv.length == 2) {
+                    into.put(kv[0], kv[1]);
+                }
+            }
+            out.attachPath = args[args.length - 1].trim();
+            out.params = into;
+            return out;
+        }
+
         public void readAttachPath(AbstractSerializedData stream, long currentUserId) {
             boolean hasMedia = media != null && !(media instanceof TL_messageMediaEmpty) && !(media instanceof TL_messageMediaWebPage);
             boolean fixCaption = !TextUtils.isEmpty(message) &&
@@ -67832,27 +67892,38 @@ public class TLRPC {
                 if (stream.remaining() > 0) {
                     attachPath = stream.readString(false);
                     if (attachPath != null) {
-                        if ((id < 0 || send_state == 3 || legacy) && attachPath.startsWith("||")) {
-                            String args[] = attachPath.split("\\|\\|");
-                            if (args.length > 0) {
-                                if (params == null) {
-                                    params = new HashMap<>();
-                                }
-                                for (int a = 1; a < args.length - 1; a++) {
-                                    String args2[] = args[a].split("\\|=\\|");
-                                    if (args2.length == 2) {
-                                        params.put(args2[0], args2[1]);
-                                    }
-                                }
-                                attachPath = args[args.length - 1].trim();
-                                if (legacy) {
-                                    layer = Utilities.parseInt(params.get("legacy_layer"));
-                                }
+                        // T85: the "||params||" piggyback is self-describing —
+                        // parse it whenever present (upstream only ever wrote
+                        // it for local/unsent rows, so the id<0 gate used to be
+                        // enough; XOSF2 locked rows now carry it on RECEIVED
+                        // media rows too).
+                        if (attachPath.startsWith("||")) {
+                            Piggyback pb = decodeParamsPiggyback(attachPath, params);
+                            params = pb.params;
+                            attachPath = pb.attachPath;
+                            if (legacy) {
+                                layer = Utilities.parseInt(params.get("legacy_layer"));
                             }
                         } else {
                             attachPath = attachPath.trim();
                         }
                     }
+                }
+            } else if (hasMedia && stream.remaining() > 0) {
+                // T85: RECEIVED media rows (out=false, server id>0) never took
+                // the branch above, so the trailing attachPath string the
+                // writer ALWAYS appends was silently dropped — together with
+                // the "||params||" piggyback the XOSF2 locked rows carry (the
+                // "receiver cannot recognize the encrypted file" root cause:
+                // xoF2/xoF2Env vanished on every storage round-trip). The
+                // writer appends the string for every message, so consuming
+                // it here is format-safe; rows without the piggyback carry a
+                // single blank.
+                attachPath = stream.readString(false);
+                if (attachPath != null) {
+                    Piggyback pb = decodeParamsPiggyback(attachPath, params);
+                    params = pb.params;
+                    attachPath = pb.attachPath;
                 }
             }
             if ((flags & MESSAGE_FLAG_FWD) != 0 && id < 0) {
@@ -67889,11 +67960,14 @@ public class TLRPC {
                     layer = LAYER;
                     params.put("legacy_layer", "" + LAYER);
                 }
-                if ((id < 0 || send_state == 3 || legacy) && params != null && params.size() > 0) {
-                    for (HashMap.Entry<String, String> entry : params.entrySet()) {
-                        path = entry.getKey() + "|=|" + entry.getValue() + "||" + path;
-                    }
-                    path = "||" + path;
+                // T85: XOSF2 locked rows carry their envelope in params on
+                // RECEIVED rows too (server id > 0) — the piggyback must be
+                // written for them or every storage round-trip loses the lock
+                // (the "receiver cannot recognize the encrypted file" root
+                // cause). Unsolicited params on received rows are otherwise
+                // still dropped, exactly like upstream.
+                if (id < 0 || send_state == 3 || legacy || params != null && params.containsKey("xoF2Env")) {
+                    path = encodeParamsPiggyback(params, path);
                 }
                 stream.writeString(path);
                 if ((flags & MESSAGE_FLAG_FWD) != 0 && id < 0) {

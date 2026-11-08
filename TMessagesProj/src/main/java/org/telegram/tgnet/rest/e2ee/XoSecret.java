@@ -99,6 +99,21 @@ public final class XoSecret {
         return dialogId < 0 && isSecretChatId(account, -dialogId);
     }
 
+    /**
+     * T85: sentinel carried in {@code key_fingerprint} of the EncryptedChat
+     * objects ChatActivity fabricates to render REST secret chats in the
+     * Telegram secret-chat chrome (lock + user template + secret menus).
+     * Real MTProto encrypted chats always carry a genuine DH fingerprint, so
+     * this value is collision-free by construction.
+     */
+    public static final long REST_FABRICATED_FINGERPRINT = 0x5245535453454352L; // "RESTSECR"
+
+    /** T85: TRUE for the ChatActivity-fabricated REST secret chat objects. */
+    public static boolean isRestFabricatedEncryptedChat(TLRPC.EncryptedChat chat) {
+        return chat instanceof TLRPC.TL_encryptedChat
+                && chat.key_fingerprint == REST_FABRICATED_FINGERPRINT;
+    }
+
     /** Backend chat id for a secret dialog id (negates). */
     public static long chatIdOfDialog(long dialogId) {
         return -dialogId;

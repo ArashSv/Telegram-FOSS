@@ -331,6 +331,11 @@ jobs:
           "$AAPT2" dump badging "$APK" | head -n 1
           EXPECTED_VC=$(( (5000 + GITHUB_RUN_NUMBER) * 10 + 9 ))
           "$AAPT2" dump badging "$APK" | grep -o "versionCode='[0-9]*'" | grep -q "versionCode='$EXPECTED_VC'" || { echo "FATAL: versionCode != $EXPECTED_VC (monotonic scheme broken)" >&2; exit 1; }
+          echo "== T85 gate: no install-packages permissions (Play Protect dropper heuristic)"
+          if "$AAPT2" dump badging "$APK" | grep -q "REQUEST_INSTALL_PACKAGES"; then
+            echo "FATAL: the APK declares android.permission.REQUEST_INSTALL_PACKAGES — Play Protect hard-blocks fresh installs of self-signed sideloaded apps carrying it (the 'app not installed' field report)" >&2
+            exit 1
+          fi
           echo "T64 gate: ALL GREEN"
 
       # ── T66 gate: Android 15 16KB page-size compliance ──

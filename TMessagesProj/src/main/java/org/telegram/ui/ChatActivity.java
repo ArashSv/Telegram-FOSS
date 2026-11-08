@@ -2352,6 +2352,13 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         }
 
         if (chatId != 0) {
+            // T85: a REST SECRET chat (chats.type='secret', dialog id -chatId)
+            // opens as the PEER USER chat with the full Telegram secret-chat
+            // chrome — lock beside the name, user profile, secret menus — and
+            // NEVER the group template (the "a group with two members" field
+            // report). The dialog id stays -chatId: every send / history /
+            // read / sync path (XOSC1 ECIES) is byte-identical to before.
+            if (!resolveRestSecretChat(chatId)) {
             currentChat = getMessagesController().getChat(chatId);
             if (currentChat == null) {
                 final CountDownLatch countDownLatch = new CountDownLatch(1);
@@ -2384,6 +2391,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                 } else {
                     getMessagesController().startShortPoll(currentChat, classGuid, false);
                 }
+            }
             }
         } else if (userId != 0) {
             currentUser = getMessagesController().getUser(userId);
@@ -3679,7 +3687,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         };
         avatarContainer.allowShorterStatus = true;
         avatarContainer.premiumIconHiddable = true;
-        avatarContainer.allowDrawStories = dialog_id < 0 && !isTopic;
+        avatarContainer.allowDrawStories = dialog_id < 0 && !isTopic && currentEncryptedChat == null; // T85: never on secret chats
         avatarContainer.setClipChildren(false);
         AndroidUtilities.updateViewVisibilityAnimated(avatarContainer, true, 1f, false);
         updateTopicTitleIcon();
@@ -3925,7 +3933,9 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             if (dialog_id < 0 && org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(dialog_id)) {
                 headerItem.lazilyAddSubItem(xo_e2ee_info, R.drawable.ic_lock_header, LocaleController.getString(R.string.XoE2eeMenu));
             }
-            if (currentEncryptedChat != null) {
+            if (currentEncryptedChat != null && !isRestSecretChat()) {
+                // T85: the MTProto self-destruct service message is unroutable
+                // on the REST transport — hide the TTL item for REST secrets.
                 timeItem2 = headerItem.lazilyAddSubItem(chat_enc_timer, R.drawable.msg_autodelete, LocaleController.getString("SetTimer", R.string.SetTimer));
             }
             if (currentChat != null && !isTopic) {
@@ -11610,7 +11620,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                     TLRPC.Message message = messages.get(i - chatAdapter.messagesStartRow).messageOwner;
                     if (message != null) {
                         boolean scrollDown = message.date < date;
-                        if (isSecretChat()) {
+                        if (isSecretChat() && !isRestSecretChat()) {
                             scrollDown = !scrollDown;
                         }
                         scrollDirection = scrollDown ? RecyclerAnimationScrollHelper.SCROLL_DIRECTION_DOWN : RecyclerAnimationScrollHelper.SCROLL_DIRECTION_UP;
@@ -11783,6 +11793,18 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                             // T82: NO eager arm clear — video prepare stamps the
                             // رمز on a worker thread; the 60s TTL in
                             // XoFilePassSend owns the lifetime.
+                            // T85: clear the picker selection for the
+                            // encrypted send too — the password dialog
+                            // inserts an async step between the user's send
+                            // intent and this point, and ANY later plain
+                            // dismiss() of the attach sheet (outside-touch,
+                            // back) must never find a live selection and pop
+                            // the "Discard Selection?" confirmation.
+                            if (button == 9 && chatAttachAlert != null
+                                    && chatAttachAlert.getPhotoLayout() != null) {
+                                chatAttachAlert.getPhotoLayout().getSelectedPhotos().clear();
+                                chatAttachAlert.getPhotoLayout().getSelectedPhotosOrder().clear();
+                            }
                         }
                         if (scheduleDate != 0) {
                             if (scheduledMessagesCount == -1) {
@@ -15278,7 +15300,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         int scrollFromIndex = 0;
         if (fromMessageId != 0) {
             boolean scrollDown = fromMessageId < id;
-            if (isSecretChat()) {
+            if (isSecretChat() && !isRestSecretChat()) {
                 scrollDown = !scrollDown;
             }
             scrollDirection = scrollDown ? RecyclerAnimationScrollHelper.SCROLL_DIRECTION_DOWN : RecyclerAnimationScrollHelper.SCROLL_DIRECTION_UP;
@@ -15295,7 +15317,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                         }
                         scrollFromIndex = i - chatAdapter.messagesStartRow;
                         boolean scrollDown = messageObject.getId() < id;
-                        if (isSecretChat()) {
+                        if (isSecretChat() && !isRestSecretChat()) {
                             scrollDown = !scrollDown;
                         }
                         scrollDirection = scrollDown ? RecyclerAnimationScrollHelper.SCROLL_DIRECTION_DOWN : RecyclerAnimationScrollHelper.SCROLL_DIRECTION_UP;
@@ -19431,7 +19453,10 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                     }
                 }
                 MessageObject prevObj;
-                if (currentEncryptedChat == null) {
+                // T85: REST secret chats keep POSITIVE server ids — the
+                // negative-id ordering of legacy MTProto encrypted chats must
+                // not apply to them.
+                if (currentEncryptedChat == null || isRestSecretChat()) {
                     if (createUnreadMessageAfterId != 0 && load_type != 1 && a + 1 < messArr.size()) {
                         prevObj = messArr.get(a + 1);
                         if (obj.isOut() && !obj.messageOwner.from_scheduled || prevObj.getId() >= createUnreadMessageAfterId) {
@@ -19488,7 +19513,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                     }
                 }
                 if (load_type != 2 && unreadMessageObject == null && createUnreadMessageAfterId != 0 &&
-                        (currentEncryptedChat == null && (!obj.isOut() || obj.messageOwner.from_scheduled) && messageId >= createUnreadMessageAfterId || currentEncryptedChat != null && (!obj.isOut() || obj.messageOwner.from_scheduled) && messageId <= createUnreadMessageAfterId) &&
+                        ((currentEncryptedChat == null || isRestSecretChat()) && (!obj.isOut() || obj.messageOwner.from_scheduled) && messageId >= createUnreadMessageAfterId || currentEncryptedChat != null && !isRestSecretChat() && (!obj.isOut() || obj.messageOwner.from_scheduled) && messageId <= createUnreadMessageAfterId) &&
                         (load_type == 1 || prevObj != null || prevObj == null && createUnreadLoading && a == messArr.size() - 1) && chatMode != MODE_SAVED && chatMode != MODE_QUICK_REPLIES) {
                     TLRPC.Message dateMsg = new TLRPC.TL_message();
                     dateMsg.message = "";
@@ -19526,7 +19551,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             }
 
             if (load_type == 1) {
-                if (!chatWasReset && messArr.size() != count && (!isCache || currentEncryptedChat != null || forwardEndReached[loadIndex])) {
+                if (!chatWasReset && messArr.size() != count && (!isCache || currentEncryptedChat != null && !isRestSecretChat() || forwardEndReached[loadIndex])) {
                     forwardEndReached[loadIndex] = true;
                     if (loadIndex != 1) {
                         first_unread_id = 0;
@@ -19568,7 +19593,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             } else {
                 if (messArr.size() < count && load_type != 3 && load_type != 4) {
                     if (isCache) {
-                        if (currentEncryptedChat != null || loadIndex == 1 && mergeDialogId != 0 && isEnd) {
+                        if (currentEncryptedChat != null && !isRestSecretChat() || loadIndex == 1 && mergeDialogId != 0 && isEnd) {
                             endReached[loadIndex] = true;
                         }
                         if (load_type != 2) {
@@ -19780,7 +19805,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                 updateBottomOverlay();
             }
 
-            if (newRowsCount == 0 && (mergeDialogId != 0 && loadIndex == 0 || currentEncryptedChat != null && !endReached[0])) {
+            if (newRowsCount == 0 && (mergeDialogId != 0 && loadIndex == 0 || currentEncryptedChat != null && !isRestSecretChat() && !endReached[0])) {
                 first = true;
                 if (chatListView != null) {
                     chatListView.setEmptyView(null);
@@ -27310,7 +27335,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                                 } else if (holder.itemView instanceof ChatActionCell) {
                                     messageId = ((ChatActionCell) holder.itemView).getMessageObject().getId();
                                 }
-                                if (messageId > 0 && currentEncryptedChat == null || messageId < 0 && currentEncryptedChat != null) {
+                                if (messageId > 0 && (currentEncryptedChat == null || isRestSecretChat()) || messageId < 0 && currentEncryptedChat != null && !isRestSecretChat()) {
                                     offset = holder.itemView.getBottom() - chatListView.getMeasuredHeight();
                                     if (BuildVars.LOGS_ENABLED) {
                                         FileLog.d("save offset = " + offset + " for mid " + messageId);
@@ -31816,7 +31841,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
                 if (messageObject.getDialogId() == mergeDialogId && startMessageObject.getDialogId() != mergeDialogId) {
                     continue;
                 }
-                if ((currentEncryptedChat == null && messageObject.getId() > messageId || currentEncryptedChat != null && messageObject.getId() < messageId) && (messageObject.isVoice() || messageObject.isRoundVideo()) && !messageObject.isVoiceOnce() && !messageObject.isRoundOnce() && (!playingUnreadMedia || messageObject.isContentUnread() && !messageObject.isOut())) {
+                if (((currentEncryptedChat == null || isRestSecretChat()) && messageObject.getId() > messageId || currentEncryptedChat != null && !isRestSecretChat() && messageObject.getId() < messageId) && (messageObject.isVoice() || messageObject.isRoundVideo()) && !messageObject.isVoiceOnce() && !messageObject.isRoundOnce() && (!playingUnreadMedia || messageObject.isContentUnread() && !messageObject.isOut())) {
                     messageObjects.add(messageObject);
                 }
             }
@@ -32074,6 +32099,117 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
     }
 
     /**
+     * T85: TRUE for a REST secret chat (chats.type='secret') rendered through
+     * the Telegram secret-chat chrome. Unlike the legacy MTProto encrypted
+     * chats, these keep POSITIVE server message ids and the chat-space dialog
+     * id — every "encrypted chats have negative local ids" ordering branch in
+     * the tree must treat them like a normal chat.
+     */
+    public boolean isRestSecretChat() {
+        return currentEncryptedChat != null
+                && org.telegram.tgnet.rest.e2ee.XoSecret.isRestFabricatedEncryptedChat(currentEncryptedChat);
+    }
+
+    /**
+     * T85: resolve a backend secret chat (chats.type='secret') as the PEER
+     * USER + a fabricated {@link TLRPC.TL_encryptedChat} so the whole upstream
+     * secret-chat UX activates (lock in the header, user profile, secret
+     * menus) while the DATA layer (dialog id -chatId, XOSC1 envelopes,
+     * chat-space addressing) stays exactly as shipped.
+     *
+     * @return true when resolved as a secret chat (currentUser +
+     *         currentEncryptedChat + dialog_id are set)
+     */
+    private boolean resolveRestSecretChat(long chatId) {
+        if (!org.telegram.tgnet.rest.e2ee.XoSecret.isSecretDialog(currentAccount, -chatId)) {
+            return false;
+        }
+        long peerId = org.telegram.tgnet.rest.e2ee.XoSecret.secretPeerUser(currentAccount, chatId);
+        if (peerId == 0) {
+            // index cold (the very first open before any chats/list scan) —
+            // fall through to the group-shaped render; it heals on the next
+            // open once the index is warm
+            return false;
+        }
+        TLRPC.User peer = getMessagesController().getUser(peerId);
+        if (peer == null) {
+            final MessagesStorage messagesStorage = getMessagesStorage();
+            final CountDownLatch countDownLatch = new CountDownLatch(1);
+            final TLRPC.User[] holder = new TLRPC.User[1];
+            messagesStorage.getStorageQueue().postRunnable(() -> {
+                holder[0] = messagesStorage.getUser(peerId);
+                countDownLatch.countDown();
+            });
+            try {
+                countDownLatch.await();
+            } catch (Exception e) {
+                FileLog.e(e);
+            }
+            peer = holder[0];
+            if (peer != null) {
+                getMessagesController().putUser(peer, true);
+            }
+        }
+        if (peer == null) {
+            // last resort: a minimal local user synthesized from the secret
+            // chat's display data (title + mirrored avatar ride the TL_chat
+            // the scan already registered) — the chat renders correctly and
+            // self-heals to the full user once the dialogs scan lands it
+            TLRPC.TL_chat meta = org.telegram.tgnet.rest.RestChatIndex.getInstance(currentAccount).secretChat(chatId);
+            if (meta != null && meta.title != null) {
+                peer = new TLRPC.TL_user();
+                peer.id = peerId;
+                String title = meta.title;
+                int sp = title.indexOf(' ');
+                if (sp > 0) {
+                    peer.first_name = title.substring(0, sp);
+                    peer.last_name = title.substring(sp + 1);
+                } else {
+                    peer.first_name = title;
+                    peer.last_name = "";
+                }
+                peer.status = null;
+                peer.photo = meta.photo instanceof TLRPC.TL_chatPhoto ? copyChatPhoto((TLRPC.TL_chatPhoto) meta.photo) : null;
+            }
+        }
+        if (peer == null) {
+            return false;
+        }
+        currentUser = peer;
+        TLRPC.TL_encryptedChat encChat = new TLRPC.TL_encryptedChat();
+        encChat.id = (int) chatId;
+        encChat.date = (int) (System.currentTimeMillis() / 1000L);
+        encChat.admin_id = getUserConfig().getClientUserId();
+        encChat.participant_id = peerId;
+        encChat.user_id = peerId;
+        encChat.access_hash = 0;
+        encChat.g_a_or_b = new byte[0];
+        encChat.key_fingerprint = org.telegram.tgnet.rest.e2ee.XoSecret.REST_FABRICATED_FINGERPRINT;
+        encChat.ttl = 0;
+        // the layer MUST equal the current one or the legacy open path sends
+        // an unroutable notify-layer service message on every open
+        encChat.layer = SecretChatHelper.CURRENT_SECRET_CHAT_LAYER;
+        currentEncryptedChat = encChat;
+        dialog_id = -chatId;
+        return true;
+    }
+
+    private static TLRPC.TL_userProfilePhoto copyChatPhoto(TLRPC.TL_chatPhoto chatPhoto) {
+        try {
+            TLRPC.TL_userProfilePhoto photo = new TLRPC.TL_userProfilePhoto();
+            photo.photo_small = chatPhoto.photo_small;
+            photo.photo_big = chatPhoto.photo_big;
+            photo.dc_id = chatPhoto.dc_id;
+            photo.has_video = false;
+            photo.flags = chatPhoto.flags;
+            return photo;
+        } catch (Exception e) {
+            FileLog.e(e);
+            return null;
+        }
+    }
+
+    /**
      * T81: TRUE when the "Send as Encrypted File" action may be offered in
      * this chat — private CLOUD 1:1 dialogs only (positive dialog id = user
      * space). Secret chats are ALREADY end-to-end encrypted (the action
@@ -32114,7 +32250,19 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
      * wrong رمز re-opens the dialog with an error.
      */
     public void showXoFilePassDialog(boolean forSend, MessageObject toUnlock, Runnable onConfirmed) {
+        showXoFilePassDialog(forSend, toUnlock, onConfirmed, null);
+    }
+
+    /**
+     * T85: full form — {@code onDismissed} always runs when the dialog
+     * leaves the screen (confirm, cancel, outside), so callers can restore
+     * attach-sheet state they suppressed for the dialog's lifetime.
+     */
+    public void showXoFilePassDialog(boolean forSend, MessageObject toUnlock, Runnable onConfirmed, Runnable onDismissed) {
         if (getParentActivity() == null) {
+            if (onDismissed != null) {
+                onDismissed.run();
+            }
             return;
         }
         android.content.Context context = getParentActivity();
@@ -32213,7 +32361,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             }
         });
         builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
-        showDialog(builder.create());
+        showDialog(builder.create(), onDismissed);
     }
 
     /**
