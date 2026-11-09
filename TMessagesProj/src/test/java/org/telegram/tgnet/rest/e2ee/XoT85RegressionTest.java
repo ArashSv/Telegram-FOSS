@@ -182,7 +182,10 @@ public class XoT85RegressionTest {
         chat.put("mode", "secret");
         JSONObject peer = new JSONObject();
         peer.put("id", 10071L);
-        peer.put("first_name", "Peer");
+        // T85b (CI run 176): the backend wire contract carries display_name
+        // (parseUser builds first_name FROM it — "first_name" is never read),
+        // so the fixture must mirror the REAL chats/list payload shape.
+        peer.put("display_name", "Peer");
         peer.put("username", "peer");
         chat.put("peer", peer);
         arr.put(chat);
