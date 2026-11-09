@@ -32361,7 +32361,16 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
             }
         });
         builder.setNegativeButton(LocaleController.getString(R.string.Cancel), null);
-        showDialog(builder.create(), onDismissed);
+        // T85b (CI run 173): showDialog takes a Dialog.OnDismissListener, not a
+        // Runnable — adapt. The listener fires on EVERY dismissal path (confirm,
+        // cancel, outside), which is exactly the restore contract. If the
+        // fragment refuses to show the dialog (transition animation in
+        // progress) the restore must still happen or the attach sheet would
+        // never regain outside-dismiss.
+        android.content.Dialog.OnDismissListener xoDismissAdapter = onDismissed == null ? null : d -> onDismissed.run();
+        if (showDialog(builder.create(), xoDismissAdapter) == null && onDismissed != null) {
+            onDismissed.run();
+        }
     }
 
     /**
