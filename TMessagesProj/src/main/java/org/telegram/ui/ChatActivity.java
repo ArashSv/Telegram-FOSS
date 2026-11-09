@@ -32367,7 +32367,7 @@ public class ChatActivity extends BaseFragment implements NotificationCenter.Not
         // fragment refuses to show the dialog (transition animation in
         // progress) the restore must still happen or the attach sheet would
         // never regain outside-dismiss.
-        android.content.Dialog.OnDismissListener xoDismissAdapter = onDismissed == null ? null : d -> onDismissed.run();
+        android.app.Dialog.OnDismissListener xoDismissAdapter = onDismissed == null ? null : d -> onDismissed.run();
         if (showDialog(builder.create(), xoDismissAdapter) == null && onDismissed != null) {
             onDismissed.run();
         }
