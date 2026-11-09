@@ -1,8 +1,5 @@
 package org.telegram.tgnet.rest;
 
-import android.util.LongSparseArray;
-import android.util.SparseArray;
-
 import org.telegram.messenger.FileLog;
 import org.telegram.tgnet.TLRPC;
 
@@ -50,17 +47,17 @@ public final class RestChatIndex {
     }
 
     /** user_id -> backend chat_id for private chats. */
-    private final LongSparseArray<Long> privateChatByUser = new LongSparseArray<>();
+    private final HashMap<Long, Long> privateChatByUser = new HashMap<>();
     /** backend chat_id -> user_id for private chats (reverse view). */
-    private final SparseArray<Long> userByPrivateChat = new SparseArray<>();
+    private final HashMap<Integer, Long> userByPrivateChat = new HashMap<>();
     /** T78: user_id -> backend SECRET chat id (separate row per pair). */
-    private final LongSparseArray<Long> secretChatByUser = new LongSparseArray<>();
+    private final HashMap<Long, Long> secretChatByUser = new HashMap<>();
     /** T78: backend SECRET chat id -> peer user id (reverse view). */
-    private final SparseArray<Long> userBySecretChat = new SparseArray<>();
+    private final HashMap<Integer, Long> userBySecretChat = new HashMap<>();
     /** backend chat_id -> last seen group Chat object (for sync chatsArr hydration). */
-    private final SparseArray<TLRPC.TL_chat> groupChats = new SparseArray<>();
+    private final HashMap<Integer, TLRPC.TL_chat> groupChats = new HashMap<>();
     /** T78: backend SECRET chat id -> last seen Chat object (peer info for UI). */
-    private final SparseArray<TLRPC.TL_chat> secretChats = new SparseArray<>();
+    private final HashMap<Integer, TLRPC.TL_chat> secretChats = new HashMap<>();
     /** backend chat_id -> chat type ("private" | "group" | "channel"). */
     private final HashMap<Long, String> chatTypes = new HashMap<>();
     /** T80: backend chat_id -> encryption mode ("cloud" | "secret"). The
@@ -70,7 +67,7 @@ public final class RestChatIndex {
      * column default, and keeps every decision path total). */
     private final HashMap<Long, String> chatModes = new HashMap<>();
     /** message id -> backend chat_id, for revoke deletes (deleteMessages carries ids only). */
-    private final SparseArray<Long> chatByMessageId = new SparseArray<>();
+    private final HashMap<Integer, Long> chatByMessageId = new HashMap<>();
     /** T71: bounded cache of recently SEEN messages — the E2EE forward
      * conversion needs the source plaintext/envelope, which no other
      * component keeps in memory (the server stores ciphertext only). */
@@ -309,7 +306,7 @@ public final class RestChatIndex {
     public static final class ScanResult {
         public final ArrayList<TLRPC.TL_user> users = new ArrayList<>();
         public final ArrayList<TLRPC.TL_chat> chats = new ArrayList<>();
-        public final LongSparseArray<TLRPC.TL_user> userByChat = new LongSparseArray<>();
+        public final HashMap<Long, TLRPC.TL_user> userByChat = new HashMap<>();
 
         /** T82: backend chat ids that arrived as type="secret"+peer but were
          *  previously poisoned into groups (the payloadFromRow peer bug).

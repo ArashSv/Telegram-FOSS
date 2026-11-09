@@ -76,7 +76,12 @@ public class XoT85RegressionTest {
         String encoded = TLRPC.Message.encodeParamsPiggyback(params, " ");
         assertTrue("must carry the sentinel prefix", encoded.startsWith("||"));
         TLRPC.Message.Piggyback pb = TLRPC.Message.decodeParamsPiggyback(encoded, null);
-        assertEquals(" ", pb.attachPath);
+        // T85b (CI run 175): the decoder TRIMS the trailing path — exactly like
+        // the upstream inline code it replaced. The writer's blank " " is a
+        // serialization convention; an UNTRIMMED " " would read as a REAL
+        // attach path downstream (TextUtils.isEmpty(" ") is false). The params
+        // are the payload; the path normalizes to "".
+        assertEquals("", pb.attachPath);
         assertNotNull(pb.params);
         assertEquals("1", pb.params.get("xoF2"));
         assertEquals("XOSF2:eyJ2IjoxLCJmaWQiOjk5OTksInBsIjo0MDk2fQ==", pb.params.get("xoF2Env"));
@@ -88,7 +93,7 @@ public class XoT85RegressionTest {
         // decoder must stay compatible with rows already in users' databases
         String legacy = "||fwd_peer|=|-100200300||ve|=|-1_ab|| ";
         TLRPC.Message.Piggyback pb = TLRPC.Message.decodeParamsPiggyback(legacy, null);
-        assertEquals(" ", pb.attachPath);
+        assertEquals("", pb.attachPath); // trimmed — upstream-identical
         assertEquals("-100200300", pb.params.get("fwd_peer"));
         assertEquals("-1_ab", pb.params.get("ve"));
         // and the encoder reproduces the same shape for the same input
