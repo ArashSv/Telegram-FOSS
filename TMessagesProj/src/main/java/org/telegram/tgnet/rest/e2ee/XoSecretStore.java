@@ -1089,7 +1089,9 @@ public final class XoSecretStore {
         private FileOutputStream appendStream;
         private boolean appendHeaderWritten;
 
-        private static final byte[] HEADER = {'X', 'O', 'M', 'K', 1};
+        // NOT static: array initializers are not compile-time constants and
+        // statics are illegal in inner classes (run 182) — instance field.
+        private final byte[] HEADER = {'X', 'O', 'M', 'K', 1};
 
         void initLocked(byte[] key, LinkedHashMap<Long, String> hotCache) {
             if (initialized) {
