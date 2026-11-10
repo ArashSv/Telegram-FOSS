@@ -1854,7 +1854,7 @@ public class FileLoadOperation {
             if (plainLen <= 0) {
                 FileLog.e("E2EE decrypt: envelope lacks the plaintext length for file " + backendId);
                 org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.decrypt", 0,
-                        "file=" + backendId + " no-plainlen cs=" + meta.chunkSize + " thumb=" + thumbRequest);
+                        "file=" + backendId + " no-plainlen cs=" + meta.chunkSize + " thumb=" + restThumbRequest);
                 return false;
             }
             long chunks = (plainLen + chunkSize - 1) / chunkSize;
