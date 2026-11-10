@@ -45,25 +45,38 @@ public class XoT86RegressionTest {
     @BeforeClass
     public static void init() throws Exception {
         XoTestEnv.init();
-        boolean needsFilesDir = false;
-        try {
-            needsFilesDir = org.telegram.messenger.ApplicationLoader.applicationContext == null
-                    || org.telegram.messenger.ApplicationLoader.applicationContext.getFilesDir() == null;
-        } catch (Throwable t) {
-            needsFilesDir = true;
-        }
-        if (needsFilesDir) {
-            filesDir = Files.createTempDirectory("xot86").toFile();
-            org.telegram.messenger.ApplicationLoader.applicationContext =
-                    new android.content.ContextWrapper(
-                            org.telegram.messenger.ApplicationLoader.applicationContext) {
-                        @Override
-                        public File getFilesDir() {
-                            return filesDir;
-                        }
-                    };
-        } else {
-            filesDir = org.telegram.messenger.ApplicationLoader.applicationContext.getFilesDir();
+        // T86 (run 181 lesson): ALWAYS plant a self-sufficient context.
+        // (1) getFilesDir: a FRESH temp dir — this class owns its files and
+        //     shares nothing with earlier test classes (the pre-T86 harness
+        //     reused the first class's dir; order-dependent pollution made
+        //     every reload assertion flaky).
+        // (2) getSharedPreferences: delegate DIRECTLY to the env's in-memory
+        //     fake — a bare ContextWrapper cannot delegate (the stub jar
+        //     no-ops its constructor, so mBase is null and non-overridden
+        //     methods return defaults), and the entitlement mirror stores
+        //     through prefs (FakeSharedPreferences).
+        filesDir = Files.createTempDirectory("xot86").toFile();
+        final android.content.Context base = org.telegram.messenger.ApplicationLoader.applicationContext;
+        org.telegram.messenger.ApplicationLoader.applicationContext =
+                new android.content.ContextWrapper(base) {
+                    @Override
+                    public File getFilesDir() {
+                        return filesDir;
+                    }
+
+                    @Override
+                    public android.content.SharedPreferences getSharedPreferences(String name, int mode) {
+                        return XoTestEnv.FakeSharedPreferences.forName(name);
+                    }
+                };
+        XoSecretStore.resetForTests();
+        XoE2eeFileRegistry.resetForTests();
+    }
+
+    private static void cleanFiles() {
+        for (String name : new String[]{"xo_secret_state_0.bin", "xo_media_keys_0.bin", "xo_e2ee_files_0.bin"}) {
+            //noinspection ResultOfMethodCallIgnored
+            new File(filesDir, name).delete();
         }
         XoSecretStore.resetForTests();
     }
@@ -84,6 +97,7 @@ public class XoT86RegressionTest {
 
     @Test
     public void keysSurviveBeyondTheOldLruCap() {
+        cleanFiles();
         XoSecretStore store = XoSecretStore.getInstance(0);
         // 450 media messages × 1 body key — the pre-T86 LRU (400) evicted
         // the first ~50; the journal must retain EVERY one of them
@@ -101,6 +115,7 @@ public class XoT86RegressionTest {
 
     @Test
     public void journalPersistsAcrossRestartAndHandlesTornTail() throws Exception {
+        cleanFiles();
         XoSecretStore store = XoSecretStore.getInstance(0);
         store.putMediaKeys(21_001, metaJson(8192, 65536, 0));
         store.putMediaKeys(21_002, metaJson(16384, 65536, 0));
@@ -121,6 +136,7 @@ public class XoT86RegressionTest {
 
     @Test
     public void journalMigrationCarriesPreT86HotCache() {
+        cleanFiles();
         // simulate the pre-T86 world: keys only in the blob's LRU. Put 450,
         // drop the journal (the pre-T86 builds had none), restart: the blob's
         // retained entries must migrate into the new journal on first use.
@@ -145,6 +161,7 @@ public class XoT86RegressionTest {
 
     @Test
     public void journalKeyMismatchSelfResets() {
+        cleanFiles();
         // a wiped store re-mints the journal key; records written by the LOST
         // key must reset the journal (not poison it with undecryptable rows)
         XoSecretStore store = XoSecretStore.getInstance(0);
@@ -166,6 +183,7 @@ public class XoT86RegressionTest {
 
     @Test
     public void putMediaKeysNotesRegistryBodyAndThumbIds() {
+        cleanFiles();
         XoSecretStore store = XoSecretStore.getInstance(0);
         store.putMediaKeys(50_001, metaJson(4096, 131072, 50_002));
         XoE2eeFileRegistry registry = XoE2eeFileRegistry.getInstance(0);
@@ -177,6 +195,7 @@ public class XoT86RegressionTest {
 
     @Test
     public void registryRoundTripAndSemantics() {
+        cleanFiles();
         XoE2eeFileRegistry registry = XoE2eeFileRegistry.getInstance(0);
         registry.note(60_001);
         registry.note(60_002);
@@ -197,6 +216,7 @@ public class XoT86RegressionTest {
 
     @Test
     public void registryToleratesCorruptTail() throws Exception {
+        cleanFiles();
         XoE2eeFileRegistry registry = XoE2eeFileRegistry.getInstance(0);
         registry.note(61_001);
         registry.markDecrypted(61_002);
@@ -215,6 +235,7 @@ public class XoT86RegressionTest {
 
     @Test
     public void logoutWipeClearsJournalAndRegistry() {
+        cleanFiles();
         XoSecretStore store = XoSecretStore.getInstance(0);
         store.putMediaKeys(70_001, metaJson(4096, 131072, 70_002));
         XoE2eeFileRegistry registry = XoE2eeFileRegistry.getInstance(0);
@@ -229,6 +250,7 @@ public class XoT86RegressionTest {
 
     @Test
     public void blobCorruptWipeKeepsRegistryFailClosed() {
+        cleanFiles();
         // THE pin of the fail-closed backstop: when the blob/keystore dies,
         // the media keys die with it — but the registry (plaintext,
         // keystore-independent) must survive so the download gate can refuse

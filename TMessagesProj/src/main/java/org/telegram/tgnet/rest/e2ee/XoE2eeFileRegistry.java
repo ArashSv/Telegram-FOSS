@@ -82,6 +82,17 @@ public final class XoE2eeFileRegistry {
     private boolean loaded;
     private int rawRecords;
     private FileOutputStream appendStream;
+    private boolean appendHeaderWritten;
+
+    private static final byte[] HEADER;
+    static {
+        HEADER = new byte[MAGIC.length + 1];
+        HEADER[0] = MAGIC[0];
+        HEADER[1] = MAGIC[1];
+        HEADER[2] = MAGIC[2];
+        HEADER[3] = MAGIC[3];
+        HEADER[4] = VERSION;
+    }
 
     private XoE2eeFileRegistry(int account) {
         this.account = account;
@@ -225,7 +236,19 @@ public final class XoE2eeFileRegistry {
     private void appendLocked(byte tag, long backendFileId) {
         try {
             if (appendStream == null) {
-                appendStream = new FileOutputStream(registryFile(), true);
+                File f = registryFile();
+                appendStream = new FileOutputStream(f, true);
+                appendHeaderWritten = false;
+                if (f.length() > 0) {
+                    appendHeaderWritten = true; // existing file already carries the header
+                }
+            }
+            if (!appendHeaderWritten) {
+                // T86 fix (run 181): a FRESH registry file must carry the
+                // magic header or the loader discards it as "unrecognized" —
+                // appends without it lost every fact on the first restart.
+                appendStream.write(HEADER);
+                appendHeaderWritten = true;
             }
             byte[] record = new byte[RECORD_BYTES];
             record[0] = tag;
@@ -257,8 +280,7 @@ public final class XoE2eeFileRegistry {
         FileOutputStream out = null;
         try {
             out = new FileOutputStream(tmp);
-            out.write(MAGIC);
-            out.write(VERSION);
+            out.write(HEADER);
             for (Long id : known) {
                 byte[] record = new byte[RECORD_BYTES];
                 record[0] = TAG_KNOWN;
@@ -303,6 +325,7 @@ public final class XoE2eeFileRegistry {
             } catch (Exception ignore) {
             }
             appendStream = null;
+            appendHeaderWritten = false;
         }
     }
 

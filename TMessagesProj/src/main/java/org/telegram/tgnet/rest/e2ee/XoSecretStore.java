@@ -1087,6 +1087,9 @@ public final class XoSecretStore {
         private boolean initialized;
         private int rawRecords;
         private FileOutputStream appendStream;
+        private boolean appendHeaderWritten;
+
+        private static final byte[] HEADER = {'X', 'O', 'M', 'K', 1};
 
         void initLocked(byte[] key, LinkedHashMap<Long, String> hotCache) {
             if (initialized) {
@@ -1128,6 +1131,15 @@ public final class XoSecretStore {
                 File file = journalFile();
                 if (appendStream == null) {
                     appendStream = new FileOutputStream(file, true);
+                    appendHeaderWritten = false;
+                }
+                if (!appendHeaderWritten && file.length() == 0) {
+                    // T86 fix (run 181): a FRESH journal must carry the magic
+                    // header or the loader discards the whole file as
+                    // "unrecognized" — appends without it lost every key on
+                    // the first restart. Header goes before the first record.
+                    appendStream.write(HEADER);
+                    appendHeaderWritten = true;
                 }
                 byte[] len = new byte[2];
                 int recordLen = iv.length + ct.length;
@@ -1236,7 +1248,7 @@ public final class XoSecretStore {
             FileOutputStream out = null;
             try {
                 out = new FileOutputStream(tmp);
-                out.write(new byte[]{'X', 'O', 'M', 'K', 1});
+                out.write(HEADER);
                 for (Map.Entry<Long, String> e : entries.entrySet()) {
                     JSONObject payload = new JSONObject();
                     payload.put("i", e.getKey());
@@ -1287,6 +1299,7 @@ public final class XoSecretStore {
                 } catch (Exception ignore) {
                 }
                 appendStream = null;
+                appendHeaderWritten = false;
             }
         }
 
