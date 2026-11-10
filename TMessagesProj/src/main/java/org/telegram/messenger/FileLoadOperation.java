@@ -988,6 +988,38 @@ public class FileLoadOperation {
             }
             finalFileExist = false;
         }
+        // T86: poisoned-cache heal for e2ee files. The pre-T86 finish gate
+        // treated "keys missing" as "not encrypted" and renamed raw
+        // CIPHERTEXT into the cache as the real video/GIF/file (the size
+        // check above passes — the attestation is over the ciphertext). A
+        // cached file whose id is a KNOWN encrypted blob but that never
+        // finished a verified plaintext decrypt IS that artifact: delete it
+        // and re-download, so the honest finish gate (+ restored keys) can
+        // produce the real file. One-shot per id via the decrypted marker.
+        if (finalFileExist && webLocation == null && location != null && !(parentObject instanceof TLRPC.TL_theme)) {
+            try {
+                org.telegram.tgnet.rest.RestFileBridge bridge =
+                        org.telegram.tgnet.rest.RestFileBridge.getInstance(currentAccount);
+                long backendIdForCache = bridge.resolveBackendFileId(location);
+                if (backendIdForCache > 0) {
+                    org.telegram.tgnet.rest.e2ee.XoE2eeFileRegistry e2eeRegistry =
+                            org.telegram.tgnet.rest.e2ee.XoE2eeFileRegistry.getInstance(currentAccount);
+                    if (e2eeRegistry.known(backendIdForCache) && !e2eeRegistry.isDecrypted(backendIdForCache)) {
+                        if (BuildVars.LOGS_ENABLED) {
+                            FileLog.d("REST e2ee: deleting poisoned cache file " + cacheFileFinal.getName() + " (file " + backendIdForCache + " never decrypted)");
+                        }
+                        org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.poisoned-cache", 0,
+                                "file=" + backendIdForCache + " size=" + cacheFileFinal.length());
+                        if (!delegate.hasAnotherRefOnFile(cacheFileFinal.toString())) {
+                            cacheFileFinal.delete();
+                        }
+                        finalFileExist = cacheFileFinal.exists();
+                    }
+                }
+            } catch (Throwable t) {
+                FileLog.e(t);
+            }
+        }
 
 
         if (!finalFileExist) {
@@ -1782,6 +1814,7 @@ public class FileLoadOperation {
             org.telegram.tgnet.rest.e2ee.XoSecret secretMgr =
                     org.telegram.tgnet.rest.e2ee.XoSecret.getInstance(currentAccount);
             org.telegram.tgnet.rest.e2ee.XoSecret.MediaMeta meta = secretMgr.mediaKeysFor(backendId);
+            boolean restThumbRequest = isRestThumbRequest(location);
             if (meta == null || meta.fileKey == null) {
                 // T82: a LOCKED XOSF2 file (password-encrypted, not yet
                 // unwrapped) — the ciphertext must never be saved/opened as
@@ -1793,14 +1826,25 @@ public class FileLoadOperation {
                             "file=" + backendId + " pw-locked refused");
                     return false;
                 }
+                // T86: a KNOWN encrypted blob without media keys (journal
+                // lost to a store wipe) must NEVER pass through — the old
+                // "not an E2EE file" fall-through renamed raw ciphertext
+                // into the cache as the real file. Fail closed and honestly;
+                // the poisoned-cache heal re-downloads once keys exist.
+                if (org.telegram.tgnet.rest.e2ee.XoE2eeFileRegistry.getInstance(currentAccount).known(backendId)) {
+                    FileLog.e("E2EE decrypt: keys missing for known encrypted file " + backendId + " — refusing ciphertext");
+                    org.telegram.tgnet.rest.e2ee.XoE2eeLog.event(currentAccount, "dl.decrypt", 0,
+                            "file=" + backendId + " keys-missing-known-e2ee thumb=" + restThumbRequest);
+                    return false;
+                }
                 return true; // not an E2EE file — untouched flow
             }
-            boolean thumbRequest = isRestThumbRequest(location);
-            if (thumbRequest) {
+            if (restThumbRequest) {
                 byte[] key = meta.thumbKey != null ? meta.thumbKey : meta.fileKey;
                 byte[] blob = readFileBytes(tempFile, 4 * 1024 * 1024);
                 byte[] plain = org.telegram.tgnet.rest.e2ee.XoE2EEMedia.decryptChunk(key, 0, blob);
                 writeFileBytes(tempFile, plain);
+                org.telegram.tgnet.rest.e2ee.XoE2eeFileRegistry.getInstance(currentAccount).markDecrypted(backendId);
                 return true;
             }
             // full body: deterministic chunk split from the envelope's
@@ -1871,6 +1915,9 @@ public class FileLoadOperation {
                     return false;
                 }
             }
+            // T86: the verified plaintext decrypt is the poisoned-cache
+            // heal's completion marker — later cache hits are trusted.
+            org.telegram.tgnet.rest.e2ee.XoE2eeFileRegistry.getInstance(currentAccount).markDecrypted(backendId);
             return true;
         } catch (Throwable t) {
             // ANY decrypt failure (tamper, reorder, wrong key) must not hand

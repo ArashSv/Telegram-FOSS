@@ -82,7 +82,18 @@ public final class XoSecretStore {
     private final HashMap<Long, String> peerKeys = new HashMap<>();
 
     // backend file id -> media meta json (fk/pl/cs/th/tk/tf)
+    // HOT CACHE ONLY (bounded): the durable lifetime guarantee is the
+    // MediaKeyJournal below — evicting from this map no longer loses keys.
     private final LinkedHashMap<Long, String> mediaKeys = new LinkedHashMap<>();
+
+    // T86: unbounded persistent media-key journal (append-only, encrypted
+    // with a journal key kept keystore-protected in the main blob). The
+    // pre-T86 400-entry LRU evicted keys permanently — the finish decrypt
+    // gate then treated "keys missing" as "not encrypted" and cached raw
+    // ciphertext as the real file. The journal makes key loss a structural
+    // impossibility short of whole-store wipes (covered by the e2ee file
+    // registry's fail-closed gate).
+    private MediaKeyJournal mediaKeyJournal;
 
     // upload intents (location -> json) + tree binding, identical mechanics to before
     private final HashMap<String, String> uploadIntents = new HashMap<>();
@@ -208,6 +219,9 @@ public final class XoSecretStore {
     // ------------------------------------------------------------------ media keys
 
     public void putMediaKeys(long backendFileId, String metaJson) {
+        if (backendFileId <= 0 || metaJson == null || metaJson.isEmpty()) {
+            return;
+        }
         synchronized (lock) {
             loadLocked();
             mediaKeys.remove(backendFileId);
@@ -215,14 +229,32 @@ public final class XoSecretStore {
             while (mediaKeys.size() > MEDIA_KEYS_MAX) {
                 mediaKeys.remove(mediaKeys.keySet().iterator().next());
             }
+            journalLocked().put(backendFileId, metaJson);
             markDirtyLocked();
+        }
+        // T86: every registration is also a registry note — the download
+        // finish gate uses this to FAIL-CLOSED when keys are ever missing
+        // for a known encrypted file (never again pass ciphertext through).
+        long thumbId = 0;
+        try {
+            thumbId = new JSONObject(metaJson).optLong("tf", 0);
+        } catch (Exception ignore) {
+        }
+        XoE2eeFileRegistry registry = XoE2eeFileRegistry.getInstance(account);
+        registry.note(backendFileId);
+        if (thumbId > 0) {
+            registry.note(thumbId);
         }
     }
 
     public String getMediaKeys(long backendFileId) {
         synchronized (lock) {
             loadLocked();
-            return mediaKeys.get(backendFileId);
+            String json = mediaKeys.get(backendFileId);
+            if (json != null) {
+                return json;
+            }
+            return journalLocked().get(backendFileId);
         }
     }
 
@@ -239,6 +271,7 @@ public final class XoSecretStore {
                 json.put("tf", thumbBackendFileId);
                 json.put("tk", XoSecretEnvelope.b64Encode(thumbKey));
                 albumThumbKeys.put(bodyBackendFileId, json.toString());
+                XoE2eeFileRegistry.getInstance(account).note(thumbBackendFileId);
                 markDirtyLocked();
             } catch (Exception e) {
                 FileLog.e("XoSecretStore: album thumb note failed", e);
@@ -778,25 +811,53 @@ public final class XoSecretStore {
 
     // ------------------------------------------------------------------ wipe
 
-    /** Destroys ALL secret-chat state (logout). */
+    /** Destroys ALL secret-chat state (logout). Clears the e2ee file registry too. */
     public void wipe() {
         synchronized (lock) {
-            privateKey = null;
-            publicKey = null;
-            registeredThisInstall = false;
-            peerKeys.clear();
-            mediaKeys.clear();
-            albumThumbKeys.clear();
-            sentInners.clear();
-            uploadIntents.clear();
-            uploadTreeLocations.clear();
-            filePasswords.clear();
-            pwLockedFiles.clear();
+            wipeCoreLocked();
+            XoE2eeFileRegistry.getInstance(account).wipe();
             dirty = false;
             File file = blobFile();
             if (file.exists() && !file.delete()) {
                 FileLog.e("XoSecretStore: unable to delete " + file.getName());
             }
+        }
+    }
+
+    /**
+     * T86: the corrupt-blob recovery path. Clears the same in-memory state
+     * as {@link #wipe()} but PRESERVES the e2ee file registry — the
+     * registry is the plaintext, keystore-independent record of which file
+     * ids are encrypted, and its fail-closed gate is exactly what protects
+     * old media when the keystore dies and the keys become unrecoverable.
+     * Wiping it here would re-open the pre-T86 ciphertext-pass-through hole
+     * for every message recorded before the wipe.
+     */
+    private void wipeBlobCorruptLocked() {
+        wipeCoreLocked();
+        dirty = false;
+        File file = blobFile();
+        if (file.exists() && !file.delete()) {
+            FileLog.e("XoSecretStore: unable to delete " + file.getName());
+        }
+    }
+
+    private void wipeCoreLocked() {
+        privateKey = null;
+        publicKey = null;
+        registeredThisInstall = false;
+        peerKeys.clear();
+        mediaKeys.clear();
+        albumThumbKeys.clear();
+        sentInners.clear();
+        uploadIntents.clear();
+        uploadTreeLocations.clear();
+        filePasswords.clear();
+        pwLockedFiles.clear();
+        mediaJournalKey = null;
+        if (mediaKeyJournal != null) {
+            mediaKeyJournal.wipe();
+            mediaKeyJournal = null;
         }
     }
 
@@ -865,6 +926,15 @@ public final class XoSecretStore {
                 pl.put(fid.longValue());
             }
             json.put("pwlocked", pl);
+
+            // T86: the media-key journal key — a random AES-256 key wrapped by
+            // the keystore-protected blob. Journal appends stay O(1) software
+            // AES-GCM ops; losing the blob loses the journal (by design — the
+            // whole store is unreadable then, and the e2ee file registry's
+            // fail-closed gate is the backstop).
+            if (mediaJournalKey != null) {
+                json.put("mkj", XoSecretEnvelope.b64Encode(mediaJournalKey));
+            }
 
             byte[] plain = json.toString().getBytes("UTF-8");
             byte[] blob = protect(plain);
@@ -958,12 +1028,271 @@ public final class XoSecretStore {
                     pwLockedFiles.add(pla.optLong(a));
                 }
             }
+            String mkj = json.optString("mkj", null);
+            if (mkj != null && mkj.length() > 0) {
+                try {
+                    mediaJournalKey = XoSecretEnvelope.b64Decode(mkj);
+                } catch (Exception e) {
+                    FileLog.e("XoSecretStore: journal key decode failed", e);
+                    mediaJournalKey = null;
+                }
+            }
         } catch (Throwable t) {
             // corrupt blob or keystore invalidation: our OWN key pair is the
             // only critical state — it regenerates and re-registers on next
             // use, and peers learn the new key from the registry/envelopes.
+            // T86: the e2ee file registry SURVIVES this wipe (see
+            // wipeBlobCorruptLocked) so the download gate stays fail-closed
+            // for every encrypted file the keys of which died with the blob.
             FileLog.e("XoSecretStore: state unreadable, wiping", t);
-            wipe();
+            wipeBlobCorruptLocked();
+        }
+    }
+
+    // ------------------------------------------------------------------ media-key journal
+
+    /** T86: random AES-256 journal key (wrapped in the keystore-protected blob). */
+    private byte[] mediaJournalKey;
+
+    private MediaKeyJournal journalLocked() {
+        if (mediaJournalKey == null) {
+            mediaJournalKey = new byte[32];
+            new java.security.SecureRandom().nextBytes(mediaJournalKey);
+            markDirtyLocked(); // persist the key BEFORE the journal is used
+        }
+        if (mediaKeyJournal == null) {
+            mediaKeyJournal = new MediaKeyJournal();
+            mediaKeyJournal.initLocked(mediaJournalKey, mediaKeys);
+        }
+        return mediaKeyJournal;
+    }
+
+    /**
+     * T86 — unbounded persistent store for e2ee media keys, replacing the
+     * old 400-entry LRU as the lifetime guarantee. Append-only binary log:
+     * each record is one file-id → meta-json mapping, AES-GCM encrypted with
+     * the journal key from the main blob. Appends are O(1); loads decrypt
+     * with software AES (no keystore round-trips); compaction rewrites the
+     * file (dedupe only — nothing is dropped). A journal that fails to
+     * decrypt with the CURRENT key (blob wiped → new key) self-resets —
+     * stale records are worthless, and the e2ee file registry keeps the
+     * download gate fail-closed for the ids the lost journal covered.
+     */
+    private final class MediaKeyJournal {
+
+        private static final int MAX_JOURNAL_ENTRIES = 50_000;
+        private static final long MAX_JOURNAL_BYTES = 8L * 1024 * 1024;
+
+        private final HashMap<Long, String> entries = new HashMap<>();
+        private boolean initialized;
+        private int rawRecords;
+        private FileOutputStream appendStream;
+
+        void initLocked(byte[] key, LinkedHashMap<Long, String> hotCache) {
+            if (initialized) {
+                return;
+            }
+            initialized = true;
+            File file = journalFile();
+            if (!file.exists()) {
+                // one-time migration: carry the blob's LRU entries (the only
+                // keys the pre-T86 builds had) into the durable journal
+                for (Map.Entry<Long, String> e : hotCache.entrySet()) {
+                    put(e.getKey(), e.getValue());
+                }
+                return;
+            }
+            loadLocked(key, file);
+        }
+
+        void put(long backendFileId, String metaJson) {
+            if (backendFileId <= 0 || metaJson == null || metaJson.isEmpty()) {
+                return;
+            }
+            try {
+                JSONObject payload = new JSONObject();
+                payload.put("i", backendFileId);
+                payload.put("m", metaJson);
+                byte[] plain = payload.toString().getBytes("UTF-8");
+                byte[] iv = new byte[12];
+                new java.security.SecureRandom().nextBytes(iv);
+                javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,
+                        new javax.crypto.spec.SecretKeySpec(mediaJournalKey, "AES"),
+                        new javax.crypto.spec.GCMParameterSpec(128, iv));
+                byte[] ct = cipher.doFinal(plain);
+                if (!initialized) {
+                    // journal key minted during a put before init — init lazily
+                    initLocked(mediaJournalKey, mediaKeys);
+                }
+                File file = journalFile();
+                if (appendStream == null) {
+                    appendStream = new FileOutputStream(file, true);
+                }
+                byte[] len = new byte[2];
+                int recordLen = iv.length + ct.length;
+                len[0] = (byte) recordLen;
+                len[1] = (byte) (recordLen >> 8);
+                appendStream.write(len);
+                appendStream.write(iv);
+                appendStream.write(ct);
+                appendStream.flush();
+                entries.put(backendFileId, metaJson);
+                rawRecords++;
+                compactIfNeededLocked(file);
+            } catch (Throwable t) {
+                FileLog.e("XoSecretStore: media-key journal put failed", t);
+                closeAppendStreamLocked();
+            }
+        }
+
+        String get(long backendFileId) {
+            return entries.get(backendFileId);
+        }
+
+        void wipe() {
+            entries.clear();
+            rawRecords = 0;
+            closeAppendStreamLocked();
+            File file = journalFile();
+            if (file.exists() && !file.delete()) {
+                FileLog.e("XoSecretStore: unable to delete " + file.getName());
+            }
+        }
+
+        private void loadLocked(byte[] key, File file) {
+            FileInputStream in = null;
+            try {
+                byte[] buf = new byte[(int) file.length()];
+                in = new FileInputStream(file);
+                int off = 0;
+                while (off < buf.length) {
+                    int read = in.read(buf, off, buf.length - off);
+                    if (read < 0) {
+                        break;
+                    }
+                    off += read;
+                }
+                if (buf.length < 5 || buf[0] != 'X' || buf[1] != 'O' || buf[2] != 'M'
+                        || buf[3] != 'K' || buf[4] != 1) {
+                    FileLog.e("XoSecretStore: media-key journal unrecognized, starting fresh");
+                    return;
+                }
+                javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+                javax.crypto.spec.SecretKeySpec keySpec = new javax.crypto.spec.SecretKeySpec(key, "AES");
+                int pos = 5;
+                while (pos + 2 <= buf.length) {
+                    int recordLen = ((buf[pos] & 0xFF) | ((buf[pos + 1] & 0xFF) << 8));
+                    if (recordLen <= 12 || pos + 2 + recordLen > buf.length) {
+                        // torn tail — keep everything before it
+                        break;
+                    }
+                    try {
+                        cipher.init(javax.crypto.Cipher.DECRYPT_MODE, keySpec,
+                                new javax.crypto.spec.GCMParameterSpec(128, buf, pos + 2, 12));
+                        byte[] plain = cipher.doFinal(buf, pos + 14, recordLen - 12);
+                        JSONObject payload = new JSONObject(new String(plain, "UTF-8"));
+                        long id = payload.optLong("i", 0);
+                        String meta = payload.optString("m", null);
+                        if (id > 0 && meta != null) {
+                            entries.put(id, meta);
+                            rawRecords++;
+                        }
+                    } catch (Throwable authFail) {
+                        // GCM auth failure with the CURRENT journal key = the
+                        // journal was written by a lost key generation (store
+                        // was wiped and re-minted). Stale records are useless.
+                        FileLog.e("XoSecretStore: media-key journal key mismatch, resetting journal");
+                        entries.clear();
+                        rawRecords = 0;
+                        closeAppendStreamLocked();
+                        //noinspection ResultOfMethodCallIgnored
+                        file.delete();
+                        return;
+                    }
+                    pos += 2 + recordLen;
+                }
+            } catch (Throwable t) {
+                FileLog.e("XoSecretStore: media-key journal load failed", t);
+            } finally {
+                if (in != null) {
+                    try {
+                        in.close();
+                    } catch (Exception ignore) {
+                    }
+                }
+            }
+        }
+
+        private void compactIfNeededLocked(File file) {
+            if (rawRecords <= entries.size() * 4
+                    || rawRecords <= 512
+                    || entries.size() >= MAX_JOURNAL_ENTRIES
+                    || file.length() <= MAX_JOURNAL_BYTES) {
+                return;
+            }
+            closeAppendStreamLocked();
+            File tmp = new File(file.getParentFile(), file.getName() + ".tmp");
+            FileOutputStream out = null;
+            try {
+                out = new FileOutputStream(tmp);
+                out.write(new byte[]{'X', 'O', 'M', 'K', 1});
+                for (Map.Entry<Long, String> e : entries.entrySet()) {
+                    JSONObject payload = new JSONObject();
+                    payload.put("i", e.getKey());
+                    payload.put("m", e.getValue());
+                    byte[] plain = payload.toString().getBytes("UTF-8");
+                    byte[] iv = new byte[12];
+                    new java.security.SecureRandom().nextBytes(iv);
+                    javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+                    cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,
+                            new javax.crypto.spec.SecretKeySpec(mediaJournalKey, "AES"),
+                            new javax.crypto.spec.GCMParameterSpec(128, iv));
+                    byte[] ct = cipher.doFinal(plain);
+                    int recordLen = iv.length + ct.length;
+                    out.write((byte) recordLen);
+                    out.write((byte) (recordLen >> 8));
+                    out.write(iv);
+                    out.write(ct);
+                }
+                out.flush();
+                out.getFD().sync();
+                out.close();
+                out = null;
+                if (!tmp.renameTo(file)) {
+                    file.delete();
+                    if (!tmp.renameTo(file)) {
+                        throw new IllegalStateException("journal compaction rename failed");
+                    }
+                }
+                rawRecords = entries.size();
+            } catch (Throwable t) {
+                FileLog.e("XoSecretStore: journal compaction failed (will retry)", t);
+                //noinspection ResultOfMethodCallIgnored
+                tmp.delete();
+            } finally {
+                if (out != null) {
+                    try {
+                        out.close();
+                    } catch (Exception ignore) {
+                    }
+                }
+            }
+        }
+
+        private void closeAppendStreamLocked() {
+            if (appendStream != null) {
+                try {
+                    appendStream.close();
+                } catch (Exception ignore) {
+                }
+                appendStream = null;
+            }
+        }
+
+        private File journalFile() {
+            Context context = ApplicationLoader.applicationContext;
+            return new File(context.getFilesDir(), "xo_media_keys_" + account + ".bin");
         }
     }
 
@@ -1076,5 +1405,6 @@ public final class XoSecretStore {
                 instances[a] = null;
             }
         }
+        XoE2eeFileRegistry.resetForTests();
     }
 }
