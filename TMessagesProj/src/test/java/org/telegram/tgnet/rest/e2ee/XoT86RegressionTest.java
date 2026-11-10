@@ -257,4 +257,40 @@ public class XoT86RegressionTest {
         assertTrue("REGISTRY MUST SURVIVE the blob wipe — the gate refuses ciphertext for this id",
                 freshRegistry.known(80_001));
     }
+
+    // ------------------------------------------- 4. panel entitlement mirror
+
+    @Test
+    public void parseSelfUserMirrorsPanelEntitlement() throws Exception {
+        // v2.12.1 (T86): the panel grants users.multi_account; the self
+        // payload carries it and parseUser(self) must mirror it per user id
+        org.json.JSONObject self = new org.json.JSONObject()
+                .put("id", 90_001L)
+                .put("display_name", "Fairy")
+                .put("multi_account", true);
+        org.telegram.tgnet.TLRPC.TL_user u = org.telegram.tgnet.rest.TlJsonMapper.parseUser(self, true);
+        assertTrue(XoSpecialAccounts.hasPanelEntitlement(90_001));
+        assertEquals("90 001 mirrored from the self payload", u.id, 90_001);
+
+        // truthy numeric form
+        org.telegram.tgnet.rest.TlJsonMapper.parseUser(new org.json.JSONObject()
+                .put("id", 90_002L)
+                .put("display_name", "x")
+                .put("multi_account", 1), true);
+        assertTrue(XoSpecialAccounts.hasPanelEntitlement(90_002));
+
+        // an older backend that omits the key CLEARs the mirror (the
+        // entitlement is not sticky beyond the payload)
+        org.telegram.tgnet.rest.TlJsonMapper.parseUser(new org.json.JSONObject()
+                .put("id", 90_002L)
+                .put("display_name", "x"), true);
+        assertFalse(XoSpecialAccounts.hasPanelEntitlement(90_002));
+
+        // public (non-self) payloads NEVER touch the mirror
+        org.telegram.tgnet.rest.TlJsonMapper.parseUser(new org.json.JSONObject()
+                .put("id", 90_003L)
+                .put("display_name", "x")
+                .put("multi_account", true), false);
+        assertFalse(XoSpecialAccounts.hasPanelEntitlement(90_003));
+    }
 }

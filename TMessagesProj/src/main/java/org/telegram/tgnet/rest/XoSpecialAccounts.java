@@ -213,9 +213,61 @@ public final class XoSpecialAccounts {
      */
     public static final String MULTI_ACCOUNT_WIRE = "40411130";
 
-    /** True when the given wire phone (UserConfig phone digits) is the privileged demo account. */
+    /**
+     * True when the given wire phone (UserConfig phone digits) is the privileged demo account.
+     */
     public static boolean isMultiAccountWire(String wireDigits) {
         return MULTI_ACCOUNT_WIRE.equals(digitsOnly(wireDigits));
+    }
+
+    // ── panel-granted multi-account entitlement (T86, v2.12.1) ────────
+
+    /**
+     * Server contract (AuthController.assertMultiAccountAllowed, case 3b):
+     * the admin panel can grant users.multi_account = 1 to ANY user, which
+     * authorizes adding further accounts from that user's live session.
+     * The flag rides the self user JSON (UserMapper::selfJson). The client
+     * mirrors it into a tiny persistent per-user flag store (not the
+     * TLRPC.User — it would die on every MessagesStorage round-trip) and
+     * the account surfaces treat it exactly like the legacy +11 1130 wire.
+     * The SERVER stays the authority: a stale client flag only hides or
+     * shows UI; the wire still refuses with MULTI_ACCOUNT_FORBIDDEN.
+     */
+    private static final String ENTITLEMENTS_PREFS = "xo_multi_account";
+
+    private static android.content.SharedPreferences entitlementPrefs() {
+        return ApplicationLoader.applicationContext
+                .getSharedPreferences(ENTITLEMENTS_PREFS, android.content.Context.MODE_PRIVATE);
+    }
+
+    /** Records the panel-granted entitlement seen on a self user payload. */
+    public static void notePanelEntitlement(long userId, boolean enabled) {
+        if (userId <= 0) {
+            return;
+        }
+        try {
+            String key = "ma_" + userId;
+            android.content.SharedPreferences prefs = entitlementPrefs();
+            if (prefs.getBoolean(key, false) == enabled) {
+                return;
+            }
+            prefs.edit().putBoolean(key, enabled).apply();
+            FileLog.d("XoSpecialAccounts: panel multi-account entitlement " + userId + " -> " + enabled);
+        } catch (Throwable t) {
+            FileLog.e(t);
+        }
+    }
+
+    /** True when the panel granted multi-account to this user id. */
+    public static boolean hasPanelEntitlement(long userId) {
+        if (userId <= 0) {
+            return false;
+        }
+        try {
+            return entitlementPrefs().getBoolean("ma_" + userId, false);
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /**
@@ -244,12 +296,31 @@ public final class XoSpecialAccounts {
     }
 
     /**
-     * True when ANY logged-in session belongs to the owner (+11 1130) —
-     * the multi-account capability. The previously selected account is
-     * irrelevant: the owner's session keys the entitlement wherever it sits.
+     * True when ANY logged-in session carries the multi-account capability —
+     * the legacy +11 1130 owner wire OR the T86 panel-granted entitlement
+     * (users.multi_account = 1 mirrored from the self payload). The
+     * previously selected account is irrelevant: the capability keys to the
+     * SESSION wherever its slot sits.
      */
     public static boolean isMultiAccountAllowedForCurrent() {
-        return findOwnerAccountNum() >= 0;
+        if (findOwnerAccountNum() >= 0) {
+            return true;
+        }
+        try {
+            for (int a = 0; a < org.telegram.messenger.UserConfig.MAX_ACCOUNT_COUNT; a++) {
+                org.telegram.messenger.UserConfig config = org.telegram.messenger.UserConfig.getInstance(a);
+                if (config == null || !config.isClientActivated()) {
+                    continue;
+                }
+                org.telegram.tgnet.TLRPC.User user = config.getCurrentUser();
+                if (user != null && hasPanelEntitlement(user.id)) {
+                    return true;
+                }
+            }
+        } catch (Throwable t) {
+            FileLog.e(t);
+        }
+        return false;
     }
 
     /**

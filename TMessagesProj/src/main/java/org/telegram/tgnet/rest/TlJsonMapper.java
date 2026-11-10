@@ -79,6 +79,18 @@ public final class TlJsonMapper {
         if (self) {
             user.flags |= 1024;
             user.self = true;
+            // T86 (v2.12.1): the panel-granted multi-account entitlement
+            // rides the self payload (UserMapper::selfJson). Mirror it into
+            // the persistent per-user flag store — the account surfaces
+            // (XoSpecialAccounts.isMultiAccountAllowedForCurrent) treat it
+            // exactly like the legacy +11 1130 wire. Truthy-shape tolerant
+            // (same contract as the contact flag above); an older backend
+            // that omits the key clears the mirror — correct degradation.
+            Object multiObj = object.opt("multi_account");
+            boolean multiAccount = (multiObj instanceof Boolean && (Boolean) multiObj)
+                    || (multiObj instanceof Number && ((Number) multiObj).intValue() == 1)
+                    || (multiObj instanceof String && ("1".equals(multiObj) || "true".equalsIgnoreCase((String) multiObj)));
+            XoSpecialAccounts.notePanelEntitlement(user.id, multiAccount);
         }
         // T35: the contact-visibility rule (backend v1.8). When the viewer
         // holds this user as a contact the json carries contact_name (the
