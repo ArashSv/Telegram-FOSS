@@ -269,7 +269,7 @@ public class XoT86RegressionTest {
                 .put("display_name", "Fairy")
                 .put("multi_account", true);
         org.telegram.tgnet.TLRPC.TL_user u = org.telegram.tgnet.rest.TlJsonMapper.parseUser(self, true);
-        assertTrue(XoSpecialAccounts.hasPanelEntitlement(90_001));
+        assertTrue(org.telegram.tgnet.rest.XoSpecialAccounts.hasPanelEntitlement(90_001));
         assertEquals("90 001 mirrored from the self payload", u.id, 90_001);
 
         // truthy numeric form
@@ -277,20 +277,20 @@ public class XoT86RegressionTest {
                 .put("id", 90_002L)
                 .put("display_name", "x")
                 .put("multi_account", 1), true);
-        assertTrue(XoSpecialAccounts.hasPanelEntitlement(90_002));
+        assertTrue(org.telegram.tgnet.rest.XoSpecialAccounts.hasPanelEntitlement(90_002));
 
         // an older backend that omits the key CLEARs the mirror (the
         // entitlement is not sticky beyond the payload)
         org.telegram.tgnet.rest.TlJsonMapper.parseUser(new org.json.JSONObject()
                 .put("id", 90_002L)
                 .put("display_name", "x"), true);
-        assertFalse(XoSpecialAccounts.hasPanelEntitlement(90_002));
+        assertFalse(org.telegram.tgnet.rest.XoSpecialAccounts.hasPanelEntitlement(90_002));
 
         // public (non-self) payloads NEVER touch the mirror
         org.telegram.tgnet.rest.TlJsonMapper.parseUser(new org.json.JSONObject()
                 .put("id", 90_003L)
                 .put("display_name", "x")
                 .put("multi_account", true), false);
-        assertFalse(XoSpecialAccounts.hasPanelEntitlement(90_003));
+        assertFalse(org.telegram.tgnet.rest.XoSpecialAccounts.hasPanelEntitlement(90_003));
     }
 }
